@@ -33,6 +33,15 @@ class TaskPlanner {
         let estimatedTime: TimeInterval // in seconds
     }
     
+    // MARK: - AI-Generated Task Plan
+    
+    struct AITaskPlan: Codable {
+        let steps: [String]
+        let reasoning: String
+        let estimatedTime: String
+        let complexity: String
+    }
+    
     // MARK: - Analysis Methods
     
     /// Analyze task complexity and suggest steps
@@ -367,7 +376,7 @@ class TaskPlanner {
     /// Format task plan for display
     static func formatPlan(_ plan: [String]) -> String {
         var formatted = "## Task Plan\n\n"
-        
+
         for (index, step) in plan.enumerated() {
             // Check if this is a phase header
             if step.hasPrefix("Phase") || step.hasPrefix("阶段") {
@@ -380,10 +389,28 @@ class TaskPlanner {
                 formatted += "\(index + 1). \(step)\n"
             }
         }
-        
+
         return formatted
     }
-    
+
+    /// Format task plan with complexity metadata for execution display
+    static func formatPlanForExecution(_ plan: [String], analysis: TaskAnalysis) -> String {
+        var formatted = "## Task Plan\n"
+        formatted += "Complexity: \(analysis.complexity) | Steps: \(plan.count) | Est. time: \(Int(analysis.estimatedTime))s\n\n"
+
+        for (index, step) in plan.enumerated() {
+            if step.hasPrefix("Phase") || step.hasPrefix("阶段") {
+                formatted += "\n### \(step)\n"
+            } else if step.hasPrefix("-") {
+                formatted += "\(step)\n"
+            } else {
+                formatted += "\(index + 1). \(step)\n"
+            }
+        }
+
+        return formatted
+    }
+
     // MARK: - Execution Guidance
     
     /// Generate execution guidance for the AI
@@ -442,5 +469,129 @@ class TaskPlanner {
         
         // Update project knowledge if needed
         // This could be expanded to learn more about the project
+    }
+    
+    // MARK: - AI-Enhanced Task Analysis
+    
+    /// Analyze task using AI to generate a real plan
+    static func analyzeTaskWithAI(_ input: String, memory: AgentMemory?) async -> AITaskPlan? {
+        // First, do a quick check if this task needs planning
+        let quickAnalysis = analyzeTask(input, memory: memory)
+        
+        // For simple tasks, don't bother with AI planning
+        guard quickAnalysis.complexity != .simple else {
+            return nil
+        }
+        
+        // This method is a placeholder - actual AI integration should be done through AgentEngine
+        // which has access to the AI service
+        return nil
+    }
+    
+    /// Generate a plan using AI (to be called from AgentEngine)
+    static func generatePlanWithAI(_ input: String, aiService: AIService, model: String = "claude-3-5-sonnet-20241022") async -> AITaskPlan? {
+        let planPrompt = """
+        分析以下任务，生成一个详细的执行计划。
+        
+        任务描述：\(input)
+        
+        请返回以下 JSON 格式：
+        {
+            "steps": ["步骤1", "步骤2", ...],
+            "reasoning": "为什么这样规划",
+            "estimatedTime": "预计时间",
+            "complexity": "简单/中等/复杂/非常复杂"
+        }
+        
+        注意：
+        1. 每个步骤应该是具体的、可执行的
+        2. 考虑任务的依赖关系
+        3. 如果需要探索项目结构，应该作为第一步
+        4. 如果需要修改文件，应该先读取理解
+        5. 如果需要测试，应该在修改后进行
+        """
+        
+        do {
+            let response = try await aiService.sendMessage(
+                [Message.system(planPrompt)],
+                tools: [],
+                model: model,
+                maxTokens: 1000
+            )
+            
+            if let content = response.content {
+                // Try to parse JSON from the response
+                if let jsonData = content.data(using: String.Encoding.utf8) {
+                    let plan = try JSONDecoder().decode(AITaskPlan.self, from: jsonData)
+                    return plan
+                }
+            }
+        } catch {
+            print("Failed to generate AI plan: \(error)")
+        }
+        
+        return nil
+    }
+    
+    /// Improved task analysis that uses AI when available
+    static func analyzeTaskEnhanced(_ input: String, memory: AgentMemory?, aiService: AIService? = nil, model: String = "claude-3-5-sonnet-20241022") async -> TaskAnalysis {
+        // First, do the quick analysis
+        let quickAnalysis = analyzeTask(input, memory: memory)
+        
+        // If we have an AI service and the task is complex, try AI planning
+        if let aiService = aiService, quickAnalysis.complexity != .simple {
+            if let aiPlan = await generatePlanWithAI(input, aiService: aiService, model: model) {
+                // Convert AI plan to TaskAnalysis
+                let complexity: TaskComplexity
+                switch aiPlan.complexity {
+                case "简单":
+                    complexity = .simple
+                case "中等":
+                    complexity = .moderate
+                case "复杂":
+                    complexity = .complex
+                case "非常复杂":
+                    complexity = .veryComplex
+                default:
+                    complexity = quickAnalysis.complexity
+                }
+                
+                return TaskAnalysis(
+                    complexity: complexity,
+                    estimatedSteps: aiPlan.steps.count,
+                    suggestedSteps: quickAnalysis.suggestedSteps, // Keep the suggested steps from quick analysis
+                    reasoning: aiPlan.reasoning,
+                    estimatedTime: parseEstimatedTime(aiPlan.estimatedTime)
+                )
+            }
+        }
+        
+        // Fall back to quick analysis
+        return quickAnalysis
+    }
+    
+    /// Parse estimated time string to TimeInterval
+    private static func parseEstimatedTime(_ timeString: String) -> TimeInterval {
+        // Try to parse time like "5分钟", "10分钟", "1小时"
+        let lowercased = timeString.lowercased()
+        
+        if lowercased.contains("分钟") || lowercased.contains("minute") {
+            let numbers = timeString.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                .compactMap { Int($0) }
+            if let minutes = numbers.first {
+                return TimeInterval(minutes * 60)
+            }
+        }
+        
+        if lowercased.contains("小时") || lowercased.contains("hour") {
+            let numbers = timeString.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                .compactMap { Int($0) }
+            if let hours = numbers.first {
+                return TimeInterval(hours * 3600)
+            }
+        }
+        
+        // Default to 5 minutes
+        return 300
     }
 }

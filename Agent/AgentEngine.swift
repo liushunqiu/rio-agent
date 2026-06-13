@@ -25,6 +25,7 @@ class AgentEngine: ObservableObject {
     private let toolRegistry = ToolRegistry.shared
     let memory = AgentMemory()
     let learningSystem = IntelligentLearningSystem()
+    let multiFileCoordinator = MultiFileCoordinator()
     let intelligentConfig = IntelligentAssistantConfigManager.shared
     private var aiService: AIService?
     var configuration: AIConfiguration
@@ -192,17 +193,23 @@ class AgentEngine: ObservableObject {
         
         // Analyze task complexity and generate plan if needed
         if intelligentConfig.config.enableTaskPlanning {
-            let taskAnalysis = TaskPlanner.analyzeTask(trimmedInput, memory: memory)
-            
+            // Use enhanced task analysis with AI
+            let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: aiService, model: configuration.model)
+
             // For complex tasks, generate a plan and inform the user
             if taskAnalysis.complexity != .simple && intelligentConfig.config.showTaskPlan {
                 let plan = TaskPlanner.decomposeTask(trimmedInput, memory: memory)
-                let formattedPlan = TaskPlanner.formatPlan(plan)
-                
+                let formattedPlan = TaskPlanner.formatPlanForExecution(plan, analysis: taskAnalysis)
+
                 // Add plan to messages for user to see
                 let planMessage = Message.system(formattedPlan)
                 messages.append(planMessage)
-                
+
+                // Store plan for execution guidance in system prompt
+                activePlan = plan
+                currentPlanStep = 0
+                activePlanAnalysis = taskAnalysis
+
                 // Add execution guidance
                 let guidance = TaskPlanner.generateExecutionGuidance(
                     analysis: taskAnalysis,
@@ -211,6 +218,8 @@ class AgentEngine: ObservableObject {
                 )
                 let guidanceMessage = Message.system(guidance)
                 messages.append(guidanceMessage)
+            } else {
+                clearActivePlan()
             }
         }
 
@@ -595,6 +604,10 @@ class AgentEngine: ObservableObject {
                     }
                 } else {
                     consecutiveErrors = 0
+                    // Advance task plan progress on successful tool execution
+                    if !activePlan.isEmpty {
+                        currentPlanStep = min(currentPlanStep + 1, activePlan.count)
+                    }
                 }
 
                 // Inject error reflection into tool results for AI to learn from
@@ -615,6 +628,8 @@ class AgentEngine: ObservableObject {
                 continue
             }
 
+            // Task complete — clear active plan
+            clearActivePlan()
             break
         }
     }
@@ -672,6 +687,10 @@ class AgentEngine: ObservableObject {
                     }
                 } else {
                     consecutiveErrors = 0
+                    // Advance task plan progress on successful tool execution
+                    if !activePlan.isEmpty {
+                        currentPlanStep = min(currentPlanStep + 1, activePlan.count)
+                    }
                 }
 
                 // Inject error reflection into tool results for AI to learn from
@@ -698,6 +717,8 @@ class AgentEngine: ObservableObject {
                 messages.append(assistantMessage)
             }
 
+            // Task complete — clear active plan
+            clearActivePlan()
             break
         }
     }
@@ -764,9 +785,10 @@ class AgentEngine: ObservableObject {
         // Get the latest user message for tool recommendation
         if let lastUserMessage = messages.last(where: { $0.role == .user }),
            !lastUserMessage.content.isEmpty {
-            let toolHint = ToolRecommender.generateHintWithMemory(
-                for: lastUserMessage.content, 
-                memory: memory, 
+            // Use enhanced tool recommendation with history
+            let toolHint = ToolRecommender.generateEnhancedHint(
+                for: lastUserMessage.content,
+                memory: memory,
                 config: intelligentConfig.config
             )
             if !toolHint.isEmpty {
@@ -905,6 +927,45 @@ RULES:
         if !memoryContext.isEmpty {
             prompt += "\n\n## Agent Memory\n\(memoryContext)"
         }
+
+        // Inject learning insights from accumulated patterns
+        if intelligentConfig.config.enableLearning {
+            let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
+            let topTools = memory.getMostUsedTools(limit: 3)
+            let insights = learningSystem.generateInsightsPrompt(
+                forTaskType: taskType.rawValue,
+                sessionTopTools: topTools
+            )
+            if !insights.isEmpty {
+                prompt += "\n\(insights)"
+            }
+        }
+
+        // Inject active task plan for execution guidance
+        if !activePlan.isEmpty, activePlanAnalysis != nil, intelligentConfig.config.enableTaskPlanning {
+            prompt += "\n\n## Active Task Execution Plan\n"
+            prompt += "You are currently executing a planned task. Follow these steps in order:\n\n"
+
+            for (index, step) in activePlan.enumerated() {
+                let marker: String
+                if index < currentPlanStep {
+                    marker = "[DONE]"
+                } else if index == currentPlanStep {
+                    marker = "[CURRENT - Focus on this step now]"
+                } else {
+                    marker = "[PENDING]"
+                }
+                prompt += "\(index + 1). \(marker) \(step)\n"
+            }
+
+            prompt += "\nInstructions:\n"
+            prompt += "- Complete the current step before moving to the next\n"
+            prompt += "- If a step requires information from a previous step, that is expected\n"
+
+            if currentPlanStep < activePlan.count {
+                prompt += "\nCurrent focus: Step \(currentPlanStep + 1) - \(activePlan[currentPlanStep])\n"
+            }
+        }
         
         // Inject project-specific knowledge if available
         if let dir = workingDirectory {
@@ -916,7 +977,14 @@ RULES:
             // Inject context awareness based on recent files
             if let lastFile = memory.session.recentFiles.first {
                 let fileContext = ContextAwareness.generateFileContext(for: lastFile)
-                prompt += ContextAwareness.generateContextPrompt(for: fileContext)
+                let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
+                prompt += ContextAwareness.generateContextPrompt(for: fileContext, taskType: taskType)
+
+                // Inject code quality analysis for the recent file
+                let codeAnalysis = generateCodeAnalysisContext(for: lastFile)
+                if !codeAnalysis.isEmpty {
+                    prompt += codeAnalysis
+                }
             }
             
             // Inject project context if we have enough information
@@ -924,6 +992,40 @@ RULES:
             if !directoryContents.isEmpty {
                 let projectContext = ContextAwareness.generateProjectContext(from: directoryContents, projectPath: dir)
                 prompt += ContextAwareness.generateContextPrompt(for: projectContext)
+            }
+            
+            // Inject deep project analysis (ProjectAnalyzer)
+            if intelligentConfig.config.enableContextAwareness {
+                let projectInfo: ProjectAnalyzer.ProjectInfo
+                if let cached = projectAnalysisCache, cached.path == dir {
+                    projectInfo = cached.result
+                } else {
+                    projectInfo = ProjectAnalyzer.analyzeProject(at: dir)
+                    projectAnalysisCache = (path: dir, result: projectInfo)
+                }
+                
+                if projectInfo.type != .unknown {
+                    prompt += "\n\n## Project Analysis\n"
+                    prompt += "- Type: \(projectInfo.type.description)\n"
+                    prompt += "- Languages: \(projectInfo.languages.joined(separator: ", "))\n"
+                    if !projectInfo.frameworks.isEmpty {
+                        prompt += "- Frameworks: \(projectInfo.frameworks.joined(separator: ", "))\n"
+                    }
+                    if !projectInfo.buildSystems.isEmpty {
+                        prompt += "- Build systems: \(projectInfo.buildSystems.joined(separator: ", "))\n"
+                    }
+                    if !projectInfo.entryPoints.isEmpty {
+                        prompt += "- Entry points: \(projectInfo.entryPoints.joined(separator: ", "))\n"
+                    }
+                    prompt += "- Total files: \(projectInfo.structure.totalFiles)\n"
+                    prompt += "- Total lines: \(projectInfo.structure.totalLines)\n"
+                    if !projectInfo.structure.directories.isEmpty {
+                        prompt += "- Key directories:\n"
+                        for dir in projectInfo.structure.directories.prefix(8) {
+                            prompt += "  - \(dir.path)/: \(dir.purpose)\n"
+                        }
+                    }
+                }
             }
         }
 
@@ -934,6 +1036,107 @@ RULES:
 
     /// Tracks recent tool errors for pattern detection
     private var recentErrors: [(toolName: String, error: String, timestamp: Date)] = []
+
+    // MARK: - Active Task Plan (single-agent mode)
+
+    /// Active execution plan steps from TaskPlanner
+    private var activePlan: [String] = []
+    /// Current step index in the active plan
+    private var currentPlanStep: Int = 0
+    /// Analysis metadata for the active plan
+    private var activePlanAnalysis: TaskPlanner.TaskAnalysis?
+
+    // MARK: - Code Analysis Cache
+
+    private var codeAnalysisCache: (path: String, contentHash: Int, result: String)?
+    private var projectAnalysisCache: (path: String, result: ProjectAnalyzer.ProjectInfo)?
+
+    /// Generate code quality context for a recently accessed file
+    private func generateCodeAnalysisContext(for filePath: String) -> String {
+        guard intelligentConfig.config.enableCodeAnalysis else { return "" }
+
+        guard let content = FileManager.default.contents(atPath: filePath),
+              let fileContent = String(data: content, encoding: .utf8) else {
+            return ""
+        }
+
+        // Limit analysis to reasonable file sizes
+        guard fileContent.count < 100_000 else { return "" }
+
+        // Check cache
+        let contentHash = fileContent.hashValue
+        if let cache = codeAnalysisCache, cache.path == filePath, cache.contentHash == contentHash {
+            return cache.result
+        }
+
+        var context = ""
+
+        // 1. Original code quality analysis
+        let fileType = ContextAwareness.detectFileType(from: filePath)
+        let scores = IntelligentCodeAnalyzer.analyzeCodeQuality(fileContent, fileType: fileType)
+        let suggestions = IntelligentCodeAnalyzer.generateSuggestions(for: scores)
+
+        let criticalIssues = scores.flatMap { $0.issues }.filter { $0.severity == .high || $0.severity == .critical }
+        if !criticalIssues.isEmpty || !suggestions.isEmpty {
+            context += "\n## Code Quality Insights (for \(filePath))\n"
+            for issue in criticalIssues.prefix(3) {
+                context += "- [\(issue.severity)] \(issue.message)\n"
+            }
+            for suggestion in suggestions.prefix(3) {
+                context += "- Suggestion: \(suggestion)\n"
+            }
+        }
+
+        // 2. Code structure analysis (CodeNavigator)
+        let fileAST = CodeNavigator.parseFile(filePath, content: fileContent)
+        if !fileAST.symbols.isEmpty {
+            context += "\n## Code Structure (for \(filePath))\n"
+            context += "- Imports: \(fileAST.imports.joined(separator: ", "))\n"
+
+            let functionSymbols = fileAST.symbols.filter { $0.kind == .function }
+            let typeSymbols = fileAST.symbols.filter { $0.kind == .class || $0.kind == .struct || $0.kind == .enum || $0.kind == .protocol }
+            let varSymbols = fileAST.symbols.filter { $0.kind == .variable }
+
+            if !typeSymbols.isEmpty {
+                context += "- Types: \(typeSymbols.map { $0.name }.joined(separator: ", "))\n"
+            }
+            if !functionSymbols.isEmpty {
+                context += "- Functions: \(functionSymbols.prefix(10).map { $0.name }.joined(separator: ", "))"
+                if functionSymbols.count > 10 { context += " (+\(functionSymbols.count - 10) more)" }
+                context += "\n"
+            }
+            if !varSymbols.isEmpty {
+                context += "- Variables: \(varSymbols.prefix(5).map { $0.name }.joined(separator: ", "))"
+                if varSymbols.count > 5 { context += " (+\(varSymbols.count - 5) more)" }
+                context += "\n"
+            }
+        }
+
+        // 3. Refactoring suggestions (RefactoringAdvisor)
+        let codeSmells = RefactoringAdvisor.analyzeFile(filePath, content: fileContent)
+        let highSeveritySmells = codeSmells.filter { $0.severity == .high || $0.severity == .critical }
+        if !highSeveritySmells.isEmpty {
+            context += "\n## Refactoring Suggestions (for \(filePath))\n"
+            for smell in highSeveritySmells.prefix(3) {
+                context += "- [\(smell.type.description)] \(smell.description)\n"
+                context += "  → \(smell.suggestion)\n"
+            }
+        }
+
+        guard !context.isEmpty else {
+            codeAnalysisCache = (path: filePath, contentHash: contentHash, result: "")
+            return ""
+        }
+
+        codeAnalysisCache = (path: filePath, contentHash: contentHash, result: context)
+        return context
+    }
+
+    private func clearActivePlan() {
+        activePlan = []
+        currentPlanStep = 0
+        activePlanAnalysis = nil
+    }
     
     private func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
         var results: [ToolResult] = []
@@ -1014,6 +1217,15 @@ RULES:
             )
             learningSystem.recordEvent(learningEvent)
             
+            // Record in ToolRecommender history for recommendations
+            let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
+            ToolRecommender.recordToolUsage(
+                tool: toolCall.name,
+                taskType: taskType,
+                success: result.status == .success,
+                executionTime: 0 // We don't track execution time yet
+            )
+            
             results.append(result)
         }
 
@@ -1078,7 +1290,58 @@ RULES:
             reflection += "Suggestion: Consider a different approach or ask the user for help.\n"
         }
 
+        // Add context-aware suggestions based on tool type
+        reflection += generateToolSpecificSuggestion(toolName: toolCall.name, error: result.error ?? "")
+
         return reflection
+    }
+    
+    /// Generate tool-specific suggestions based on error
+    private func generateToolSpecificSuggestion(toolName: String, error: String) -> String {
+        let errorLowercased = error.lowercased()
+        
+        switch toolName {
+        case "read_file":
+            if errorLowercased.contains("file not found") || errorLowercased.contains("no such file") {
+                return "\n💡 Tool-specific suggestion: Try using find_files to locate the file first.\n"
+            }
+            
+        case "write_file":
+            if errorLowercased.contains("permission denied") {
+                return "\n💡 Tool-specific suggestion: Check if you have write permissions to the directory.\n"
+            }
+            if errorLowercased.contains("no space") {
+                return "\n💡 Tool-specific suggestion: Free up disk space or try writing to a different location.\n"
+            }
+            
+        case "edit_file":
+            if errorLowercased.contains("old_text not found") || errorLowercased.contains("no match") {
+                return "\n💡 Tool-specific suggestion: The text to replace was not found. Use read_file to check the current content.\n"
+            }
+            
+        case "execute_command":
+            if errorLowercased.contains("command not found") {
+                return "\n💡 Tool-specific suggestion: Check if the command is installed and in PATH.\n"
+            }
+            if errorLowercased.contains("permission denied") {
+                return "\n💡 Tool-specific suggestion: The command may require elevated permissions.\n"
+            }
+            
+        case "search_files":
+            if errorLowercased.contains("invalid regex") || errorLowercased.contains("bad pattern") {
+                return "\n💡 Tool-specific suggestion: Check your search pattern for syntax errors.\n"
+            }
+            
+        case "find_files":
+            if errorLowercased.contains("no matches") || errorLowercased.contains("not found") {
+                return "\n💡 Tool-specific suggestion: Try a broader search pattern or check the directory.\n"
+            }
+            
+        default:
+            break
+        }
+        
+        return ""
     }
 
     private func showConfirmation(title: String, message: String) async -> ConfirmationResult {
@@ -1104,6 +1367,7 @@ RULES:
         currentTaskPlan = nil
         pendingInitConfirmation = false
         memory.clearSession()
+        clearActivePlan()
     }
 
     func loadConversation(_ conversation: Conversation) {

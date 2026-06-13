@@ -200,21 +200,161 @@ class ToolRecommender {
     }
     
     /// Generate tool hint with memory integration
-    static func generateHintWithMemory(for input: String, memory: AgentMemory?, config: IntelligentAssistantConfig? = nil) -> String {
+    static func generateHintWithMemory(for input: String, preferredTools: [String: String] = [:], config: IntelligentAssistantConfig? = nil) -> String {
         // Check if tool recommendations are enabled
+        let enableRecommendations = config?.enableToolRecommendations ?? true
+        guard enableRecommendations else { return "" }
+
+        let taskType = classifyTask(input)
+        let recommendation = recommend(for: taskType)
+
+        guard taskType != .unknown else { return "" }
+
+        var hint = "\n[Tool Recommendation]\n"
+        hint += "Task type: \(taskType)\n"
+
+        hint += "Primary tools: \(recommendation.primaryTools.joined(separator: ", "))\n"
+
+        // Add historically preferred tool if not already in primary tools
+        if let historicalTool = preferredTools[taskType.rawValue],
+           !recommendation.primaryTools.contains(historicalTool) {
+            hint += "Historically preferred: \(historicalTool)\n"
+        }
+
+        if !recommendation.avoidTools.isEmpty {
+            hint += "Avoid: \(recommendation.avoidTools.joined(separator: ", "))\n"
+        }
+
+        hint += "Reasoning: \(recommendation.reasoning)\n"
+
+        return hint
+    }
+    
+    // MARK: - History-Based Recommendations
+    
+    /// Tool usage history record
+    struct ToolUsageRecord {
+        let tool: String
+        let taskType: TaskType
+        let success: Bool
+        let timestamp: Date
+        let executionTime: TimeInterval
+    }
+    
+    /// In-memory tool usage history (for session-level tracking)
+    private static var usageHistory: [ToolUsageRecord] = []
+    private static let maxHistorySize = 100
+    
+    /// Record a tool usage
+    static func recordToolUsage(tool: String, taskType: TaskType, success: Bool, executionTime: TimeInterval) {
+        let record = ToolUsageRecord(
+            tool: tool,
+            taskType: taskType,
+            success: success,
+            timestamp: Date(),
+            executionTime: executionTime
+        )
+        usageHistory.append(record)
+        
+        // Keep history size manageable
+        if usageHistory.count > maxHistorySize {
+            usageHistory.removeFirst(usageHistory.count - maxHistorySize)
+        }
+    }
+    
+    /// Get tool success rates for a specific task type
+    static func getToolSuccessRates(for taskType: TaskType) -> [(tool: String, successRate: Double, totalUses: Int)] {
+        let taskRecords = usageHistory.filter { $0.taskType == taskType }
+        guard !taskRecords.isEmpty else { return [] }
+        
+        // Group by tool
+        var toolStats: [String: (success: Int, total: Int)] = [:]
+        for record in taskRecords {
+            let current = toolStats[record.tool] ?? (0, 0)
+            toolStats[record.tool] = (
+                success: current.success + (record.success ? 1 : 0),
+                total: current.total + 1
+            )
+        }
+        
+        // Calculate success rates
+        var results: [(tool: String, successRate: Double, totalUses: Int)] = []
+        for (tool, stats) in toolStats {
+            let successRate = Double(stats.success) / Double(stats.total)
+            results.append((tool: tool, successRate: successRate, totalUses: stats.total))
+        }
+        
+        // Sort by success rate (descending), then by total uses (descending)
+        results.sort { 
+            if $0.successRate != $1.successRate {
+                return $0.successRate > $1.successRate
+            }
+            return $0.totalUses > $1.totalUses
+        }
+        
+        return results
+    }
+    
+    /// Get recommendations based on history
+    static func recommendBasedOnHistory(for taskType: TaskType, minUses: Int = 2) -> [String] {
+        let successRates = getToolSuccessRates(for: taskType)
+        
+        // Filter tools with enough uses and good success rate
+        let recommended = successRates
+            .filter { $0.totalUses >= minUses && $0.successRate >= 0.7 }
+            .prefix(3)
+            .map { $0.tool }
+        
+        return Array(recommended)
+    }
+    
+    /// Enhanced recommendation that combines rules and history
+    static func recommendEnhanced(for taskType: TaskType, memory: AgentMemory? = nil) -> ToolRecommendation {
+        let ruleBasedRecommendation = recommend(for: taskType)
+        
+        // Get history-based recommendations
+        let historyBasedTools = recommendBasedOnHistory(for: taskType)
+        
+        // If we have history-based recommendations, use them
+        if !historyBasedTools.isEmpty {
+            // Combine rule-based and history-based, prioritizing history
+            var combinedPrimaryTools = historyBasedTools
+            for tool in ruleBasedRecommendation.primaryTools {
+                if !combinedPrimaryTools.contains(tool) {
+                    combinedPrimaryTools.append(tool)
+                }
+            }
+            
+            return ToolRecommendation(
+                primaryTools: combinedPrimaryTools,
+                optionalTools: ruleBasedRecommendation.optionalTools,
+                avoidTools: ruleBasedRecommendation.avoidTools,
+                reasoning: "Based on historical success and rules"
+            )
+        }
+        
+        // Fall back to rule-based recommendation
+        return ruleBasedRecommendation
+    }
+    
+    /// Generate enhanced hint with history integration
+    static func generateEnhancedHint(for input: String, memory: AgentMemory? = nil, config: IntelligentAssistantConfig? = nil) -> String {
         let enableRecommendations = config?.enableToolRecommendations ?? true
         guard enableRecommendations else { return "" }
         
         let taskType = classifyTask(input)
-        let recommendation = recommend(for: taskType)
+        let recommendation = recommendEnhanced(for: taskType, memory: memory)
         
         guard taskType != .unknown else { return "" }
         
         var hint = "\n[Tool Recommendation]\n"
         hint += "Task type: \(taskType)\n"
         
-        // Note: We can't directly access memory here due to actor isolation
-        // The memory integration will be handled in the system prompt generation
+        // Show history-based recommendations if available
+        let historyBasedTools = recommendBasedOnHistory(for: taskType)
+        if !historyBasedTools.isEmpty {
+            hint += "History-based tools: \(historyBasedTools.joined(separator: ", "))\n"
+        }
         
         hint += "Primary tools: \(recommendation.primaryTools.joined(separator: ", "))\n"
         
@@ -225,5 +365,10 @@ class ToolRecommender {
         hint += "Reasoning: \(recommendation.reasoning)\n"
         
         return hint
+    }
+    
+    /// Clear history (for testing or session reset)
+    static func clearHistory() {
+        usageHistory.removeAll()
     }
 }

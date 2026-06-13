@@ -121,6 +121,11 @@ class AgentMemory: ObservableObject {
     func getPreferredTool(for taskType: String) -> String? {
         return longTerm.preferredTools[taskType]
     }
+
+    /// Get all preferred tools mapping
+    func getAllPreferredTools() -> [String: String] {
+        return longTerm.preferredTools
+    }
     
     /// Learn from user correction
     func learnFromCorrection(original: String, corrected: String, reason: String) {

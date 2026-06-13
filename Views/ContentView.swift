@@ -82,7 +82,16 @@ struct ContentView: View {
                 modelName: agentEngine.configuration.model,
                 providerName: agentEngine.configuration.activeProvider.displayName,
                 estimatedTokens: agentEngine.getTotalTokensUsed(),
-                contextWindow: AIProvider.contextWindow(for: agentEngine.configuration.model)
+                contextWindow: AIProvider.contextWindow(for: agentEngine.configuration.model),
+                intelligentConfig: agentEngine.intelligentConfig.config,
+                memoryStats: MemoryStats(
+                    totalLearningEvents: agentEngine.memory.session.recentFiles.count + agentEngine.memory.session.recentCommands.count,
+                    toolPreferences: agentEngine.memory.session.workingPatterns.count,
+                    workflowPatterns: 0,
+                    errorPatterns: 0
+                ),
+                toolRecommendations: getToolRecommendations(for: agentEngine),
+                recentFiles: agentEngine.memory.session.recentFiles
             )
             .frame(width: 260)
         }
@@ -869,3 +878,22 @@ struct VisualEffectView: NSViewRepresentable {
         nsView.blendingMode = blendingMode
     }
 }
+
+// MARK: - Helper Functions
+
+@MainActor
+func getToolRecommendations(for agentEngine: AgentEngine) -> [String] {
+    // Get recent user message for task classification
+    guard let lastUserMessage = agentEngine.messages.last(where: { $0.role == .user }),
+          !lastUserMessage.content.isEmpty else {
+        return []
+    }
+    
+    // Classify task and get recommendations
+    let taskType = ToolRecommender.classifyTask(lastUserMessage.content)
+    let recommendation = ToolRecommender.recommend(for: taskType)
+    
+    return recommendation.primaryTools
+}
+
+

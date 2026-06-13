@@ -576,53 +576,88 @@ class ContextAwareness {
     }
     
     // MARK: - Context Injection
-    
-    static func generateContextPrompt(for fileContext: FileContext) -> String {
-        var prompt = "\n## File Context\n"
-        prompt += "- File type: \(fileContext.fileType.displayName)\n"
-        
-        if let framework = fileContext.framework {
-            prompt += "- Framework: \(framework)\n"
+
+    static func generateContextPrompt(for fileContext: FileContext, taskType: ToolRecommender.TaskType? = nil) -> String {
+        var prompt = "\n## File Context Guidance\n"
+
+        switch fileContext.fileType {
+        case .swift:
+            prompt += "- This is a Swift file. Use guard-let for early returns. Prefer trailing closures.\n"
+            prompt += "- Follow Swift API Design Guidelines. Use `let` over `var` where possible.\n"
+            prompt += "- For SwiftUI views, ensure @MainActor compliance when accessing @Published properties.\n"
+        case .javascript, .typescript:
+            prompt += "- Use const by default. Prefer arrow functions. Use async/await over callbacks.\n"
+            prompt += "- Follow ESLint rules if configured. Use strict equality (===).\n"
+        case .python:
+            prompt += "- Follow PEP 8. Use type hints. Prefer list comprehensions.\n"
+            prompt += "- Use virtual environments. Handle exceptions explicitly.\n"
+        case .rust:
+            prompt += "- Use Result for error handling. Prefer iterators. Respect ownership rules.\n"
+            prompt += "- Run `cargo clippy` after modifications to catch common mistakes.\n"
+        case .go:
+            prompt += "- Handle errors explicitly (no ignored errors). Follow Go naming conventions.\n"
+            prompt += "- Keep interfaces small. Use goroutines for concurrent operations.\n"
+        case .java, .kotlin:
+            prompt += "- Follow standard Java/Kotlin conventions. Use null-safety features in Kotlin.\n"
+        default:
+            prompt += "- File type: \(fileContext.fileType.displayName)\n"
         }
-        if let testFramework = fileContext.testFramework {
-            prompt += "- Test framework: \(testFramework)\n"
-        }
-        if let buildSystem = fileContext.buildSystem {
-            prompt += "- Build system: \(buildSystem)\n"
-        }
-        
-        if !fileContext.commonPatterns.isEmpty {
-            prompt += "\n### Common Patterns\n"
-            for pattern in fileContext.commonPatterns {
-                prompt += "- \(pattern)\n"
+
+        // Add task-specific guidance
+        if let taskType = taskType {
+            switch taskType {
+            case .codeModification:
+                prompt += "- When modifying: read the file first, understand context, then make targeted edits.\n"
+                prompt += "- Prefer edit_file over write_file for changes to existing files.\n"
+            case .debugging:
+                prompt += "- When debugging: search for error messages, read surrounding code, check recent changes.\n"
+            case .testing:
+                prompt += "- When testing: identify the test framework, run relevant tests, check for regressions.\n"
+            case .codeSearch:
+                prompt += "- When searching: use search_files for content patterns, find_files for file names.\n"
+            default:
+                break
             }
         }
-        
+
         return prompt
     }
-    
+
     static func generateContextPrompt(for projectContext: ProjectContext) -> String {
-        var prompt = "\n## Project Context\n"
-        prompt += "- Project type: \(projectContext.projectType.displayName)\n"
-        prompt += "- Primary language: \(projectContext.primaryLanguage.displayName)\n"
-        
-        if !projectContext.frameworks.isEmpty {
-            prompt += "- Frameworks: \(projectContext.frameworks.joined(separator: ", "))\n"
+        var prompt = "\n## Project Context Guidance\n"
+
+        switch projectContext.projectType {
+        case .macosApp:
+            prompt += "- This is a macOS app. Build with: xcodebuild or swift build.\n"
+            prompt += "- Ensure @MainActor compliance for UI-related code.\n"
+            prompt += "- Test with: xcodebuild test or swift test.\n"
+        case .iosApp:
+            prompt += "- This is an iOS app. Build with: xcodebuild -scheme <scheme> -destination 'platform=iOS Simulator,...'.\n"
+            prompt += "- Ensure @MainActor compliance for UI code.\n"
+        case .webFrontend:
+            prompt += "- This is a web frontend project. Common commands: npm run dev, npm run build, npm test.\n"
+            prompt += "- Check for linting: npm run lint. Check formatting: npm run format.\n"
+        case .webBackend:
+            prompt += "- This is a web backend project.\n"
+            if projectContext.primaryLanguage == .python {
+                prompt += "- Run with: python manage.py runserver (Django) or uvicorn main:app (FastAPI).\n"
+            }
+        case .cliTool:
+            prompt += "- This is a CLI tool. Build with the project's build system.\n"
+        case .library:
+            prompt += "- This is a library. Build with: swift build / cargo build / npm run build.\n"
+            prompt += "- Test with: swift test / cargo test / npm test.\n"
+        default:
+            prompt += "- Project type: \(projectContext.projectType.displayName)\n"
         }
+
         if !projectContext.buildSystems.isEmpty {
             prompt += "- Build systems: \(projectContext.buildSystems.joined(separator: ", "))\n"
         }
         if !projectContext.testFrameworks.isEmpty {
             prompt += "- Test frameworks: \(projectContext.testFrameworks.joined(separator: ", "))\n"
         }
-        
-        if !projectContext.directoryStructure.isEmpty {
-            prompt += "\n### Directory Structure\n"
-            for (dir, purpose) in projectContext.directoryStructure.sorted(by: { $0.key < $1.key }) {
-                prompt += "- \(dir)/: \(purpose)\n"
-            }
-        }
-        
+
         return prompt
     }
     

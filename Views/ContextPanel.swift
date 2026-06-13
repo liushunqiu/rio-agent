@@ -1,11 +1,16 @@
 import SwiftUI
 
+/// Context Panel - Right sidebar showing session context and intelligent assistant status
 struct ContextPanel: View {
     let messageCount: Int
     let modelName: String
     let providerName: String
     var estimatedTokens: Int = 0
     var contextWindow: Int = 200000
+    var intelligentConfig: IntelligentAssistantConfig = IntelligentAssistantConfig()
+    var memoryStats: MemoryStats = MemoryStats()
+    var toolRecommendations: [String] = []
+    var recentFiles: [String] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +35,81 @@ struct ContextPanel: View {
 
             ScrollView {
                 VStack(spacing: 20) {
+                    // Intelligent Assistant Status
+                    ContextSection(title: "智能助手") {
+                        HStack(spacing: 8) {
+                            Image(systemName: "brain.head.profile")
+                                .font(.system(size: 14))
+                                .foregroundColor(intelligentConfig.enableLearning ? Theme.accentPrimary : Theme.textTertiary)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(intelligentConfig.enableLearning ? "学习中" : "已禁用")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(intelligentConfig.enableLearning ? Theme.statusSuccess : Theme.textTertiary)
+                                
+                                Text("已学习 \(memoryStats.totalLearningEvents) 个模式")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.textTertiary)
+                            }
+                            
+                            Spacer()
+                            
+                            // Learning progress indicator
+                            if intelligentConfig.enableLearning {
+                                LearningProgressRing(
+                                    progress: min(Double(memoryStats.totalLearningEvents) / 100.0, 1.0),
+                                    size: 24
+                                )
+                            }
+                        }
+                        
+                        // Tool Recommendations
+                        if intelligentConfig.enableToolRecommendations && !toolRecommendations.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("推荐工具")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Theme.textTertiary)
+                                    .textCase(.uppercase)
+                                
+                                LazyVGrid(columns: [
+                                    GridItem(.flexible()),
+                                    GridItem(.flexible())
+                                ], spacing: 4) {
+                                    ForEach(toolRecommendations.prefix(4), id: \.self) { tool in
+                                        ToolRecommendationBadge(toolName: tool)
+                                    }
+                                }
+                            }
+                            .padding(.top, 8)
+                        }
+                        
+                        // Recent Files
+                        if intelligentConfig.enableContextAwareness && !recentFiles.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("最近文件")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Theme.textTertiary)
+                                    .textCase(.uppercase)
+                                
+                                ForEach(recentFiles.prefix(3), id: \.self) { file in
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "doc.text")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(Theme.textTertiary)
+                                        
+                                        Text(URL(fileURLWithPath: file).lastPathComponent)
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.textSecondary)
+                                            .lineLimit(1)
+                                        
+                                        Spacer()
+                                    }
+                                }
+                            }
+                            .padding(.top, 8)
+                        }
+                    }
+
                     // Session Info
                     ContextSection(title: "Session") {
                         ContextRow(label: "模型", value: modelName)
@@ -70,6 +150,101 @@ struct ContextPanel: View {
         }
         return "\(count)"
     }
+}
+
+// MARK: - Learning Progress Ring
+
+struct LearningProgressRing: View {
+    let progress: Double
+    let size: CGFloat
+    
+    var body: some View {
+        ZStack {
+            // Background ring
+            Circle()
+                .stroke(Theme.bgTertiary, lineWidth: 3)
+                .frame(width: size, height: size)
+            
+            // Progress ring
+            Circle()
+                .trim(from: 0, to: CGFloat(min(progress, 1.0)))
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(colors: [Theme.accentPrimary, Theme.statusSuccess]),
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .frame(width: size, height: size)
+                .rotationEffect(.degrees(-90))
+                .animation(.easeInOut(duration: 0.5), value: progress)
+            
+            // Percentage text
+            Text("\(Int(progress * 100))%")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(Theme.textPrimary)
+        }
+    }
+}
+
+// MARK: - Tool Recommendation Badge
+
+struct ToolRecommendationBadge: View {
+    let toolName: String
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: toolIcon)
+                .font(.system(size: 9))
+                .foregroundColor(Theme.accentPrimary)
+            
+            Text(toolDisplayName)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Theme.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(Theme.accentPrimary.opacity(0.1))
+        .cornerRadius(Theme.radiusSM)
+    }
+    
+    private var toolIcon: String {
+        switch toolName {
+        case "read_file": return "doc.text"
+        case "write_file": return "square.and.pencil"
+        case "edit_file": return "pencil"
+        case "search_files": return "magnifyingglass"
+        case "find_files": return "folder"
+        case "list_directory": return "list.bullet"
+        case "execute_command": return "terminal"
+        case "apply_patch": return "doc.plaintext"
+        default: return "wrench"
+        }
+    }
+    
+    private var toolDisplayName: String {
+        switch toolName {
+        case "read_file": return "读取文件"
+        case "write_file": return "写入文件"
+        case "edit_file": return "编辑文件"
+        case "search_files": return "搜索"
+        case "find_files": return "查找文件"
+        case "list_directory": return "目录列表"
+        case "execute_command": return "执行命令"
+        case "apply_patch": return "应用补丁"
+        default: return toolName
+        }
+    }
+}
+
+// MARK: - Memory Stats
+
+struct MemoryStats {
+    var totalLearningEvents: Int = 0
+    var toolPreferences: Int = 0
+    var workflowPatterns: Int = 0
+    var errorPatterns: Int = 0
 }
 
 // MARK: - Section
