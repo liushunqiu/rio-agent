@@ -1,0 +1,289 @@
+import Foundation
+
+class OpenAIService: AIService {
+    let provider: AIProvider
+    private let apiKey: String
+    private let baseURL: String
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config)
+    }()
+
+    init(apiKey: String, baseURL: String = "https://api.openai.com", provider: AIProvider = .openAI) {
+        self.apiKey = apiKey
+        // Strip trailing slashes and any trailing /v1 path to avoid duplication
+        var cleaned = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        if cleaned.hasSuffix("/v1") {
+            cleaned = String(cleaned.dropLast(3))
+        }
+        self.baseURL = cleaned
+        self.provider = provider
+    }
+
+    // MARK: - Non-streaming
+
+    func sendMessage(
+        _ messages: [Message],
+        tools: [[String: Any]],
+        model: String,
+        maxTokens: Int = AppConstants.maxTokens
+    ) async throws -> AIResponse {
+        let url = URL(string: "\(baseURL)/v1/chat/completions")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let body = buildRequestBody(messages: messages, tools: tools, model: model, stream: false, maxTokens: maxTokens)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw AIServiceError.timeout
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AIServiceError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw AIServiceError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+        }
+
+        return try parseResponse(data)
+    }
+
+    // MARK: - Streaming
+
+    func sendMessageStreaming(
+        _ messages: [Message],
+        tools: [[String: Any]],
+        model: String,
+        maxTokens: Int = AppConstants.maxTokens,
+        onChunk: @escaping (String) async -> Void,
+        onThinkingChunk: @escaping (String) async -> Void
+    ) async throws -> AIResponse {
+        let url = URL(string: "\(baseURL)/v1/chat/completions")!
+        RioLogger.service.apiRequest(provider: "OpenAI", model: model, messageCount: messages.count)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let body = buildRequestBody(messages: messages, tools: tools, model: model, stream: true, maxTokens: maxTokens)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        var fullContent = ""
+        var fullReasoning = ""
+        var toolCallAccumulators: [Int: (id: String, name: String, args: String)] = [:]
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw AIServiceError.timeout
+        } catch {
+            RioLogger.service.error("❌ 请求失败: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AIServiceError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            var errorData = Data()
+            for try await byte in bytes {
+                errorData.append(byte)
+            }
+            let errorBody = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            RioLogger.service.error("❌ API 错误 (\(httpResponse.statusCode)): \(errorBody, privacy: .public)")
+            throw AIServiceError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
+        }
+
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+
+            let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            guard !jsonStr.isEmpty, jsonStr != "[DONE]" else { continue }
+
+            guard let data = jsonStr.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let firstChoice = choices.first,
+                  let delta = firstChoice["delta"] as? [String: Any] else { continue }
+
+            // Handle text content — goes to the main reply
+            if let content = delta["content"] as? String, !content.isEmpty {
+                fullContent += content
+                await onChunk(content)
+            }
+
+            // Handle reasoning_content — goes to the thinking channel (separate from reply)
+            if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
+                fullReasoning += reasoning
+                await onThinkingChunk(reasoning)
+            }
+
+            // Handle tool calls
+            if let toolCallDeltas = delta["tool_calls"] as? [[String: Any]] {
+                for tcDelta in toolCallDeltas {
+                    let index = tcDelta["index"] as? Int ?? 0
+
+                    if let id = tcDelta["id"] as? String {
+                        toolCallAccumulators[index] = (id: id, name: "", args: "")
+                    }
+
+                    if let function = tcDelta["function"] as? [String: Any] {
+                        var acc = toolCallAccumulators[index] ?? (id: "", name: "", args: "")
+                        if let name = function["name"] as? String {
+                            acc.name += name
+                        }
+                        if let args = function["arguments"] as? String {
+                            acc.args += args
+                        }
+                        toolCallAccumulators[index] = acc
+                    }
+                }
+            }
+        }
+
+        RioLogger.service.apiResponse(provider: "OpenAI", contentLength: fullContent.count, toolCallCount: toolCallAccumulators.count)
+
+        // Build final tool calls
+        var toolCalls: [ToolCall] = []
+        for (_, acc) in toolCallAccumulators.sorted(by: { $0.key < $1.key }) {
+            var arguments: [String: AnyCodable] = [:]
+            if let argsData = acc.args.data(using: .utf8),
+               let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
+                arguments = argsDict.mapValues { AnyCodable($0) }
+            }
+            toolCalls.append(ToolCall(id: acc.id, name: acc.name, arguments: arguments))
+        }
+
+        return AIResponse(
+            content: fullContent.isEmpty ? nil : fullContent,
+            reasoningContent: fullReasoning.isEmpty ? nil : fullReasoning,
+            toolCalls: toolCalls.isEmpty ? nil : toolCalls,
+            usage: nil
+        )
+    }
+
+    // MARK: - Request Builder
+
+    private func buildRequestBody(messages: [Message], tools: [[String: Any]], model: String, stream: Bool, maxTokens: Int = AppConstants.maxTokens) -> [String: Any] {
+        var apiMessages: [[String: Any]] = []
+
+        for message in messages {
+            var apiMessage: [String: Any] = [
+                "role": message.role.rawValue,
+                "content": message.content
+            ]
+
+            if let toolCalls = message.toolCalls, !toolCalls.isEmpty {
+                apiMessage["tool_calls"] = toolCalls.map { tc in
+                    let argsData = (try? JSONSerialization.data(withJSONObject: tc.arguments.mapValues { $0.value })) ?? Data()
+                    let argsString = String(data: argsData, encoding: .utf8) ?? "{}"
+                    return [
+                        "id": tc.id,
+                        "type": "function",
+                        "function": [
+                            "name": tc.name,
+                            "arguments": argsString
+                        ]
+                    ]
+                }
+            }
+
+            if let toolResults = message.toolResults, !toolResults.isEmpty {
+                for tr in toolResults {
+                    let content: String
+                    if tr.status == .error {
+                        content = tr.error ?? "Unknown error"
+                    } else {
+                        content = tr.output
+                    }
+                    var resultMsg: [String: Any] = [
+                        "role": "tool",
+                        "tool_call_id": tr.toolCallId,
+                        "content": content
+                    ]
+                    apiMessages.append(resultMsg)
+                }
+            } else {
+                apiMessages.append(apiMessage)
+            }
+        }
+
+        var body: [String: Any] = [
+            "model": model,
+            "messages": apiMessages,
+            "max_tokens": maxTokens,
+            "stream": stream
+        ]
+
+        if !tools.isEmpty {
+            body["tools"] = tools
+        }
+
+        return body
+    }
+
+    // MARK: - Response Parser
+
+    private func parseResponse(_ data: Data) throws -> AIResponse {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AIServiceError.invalidResponse
+        }
+
+        guard let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any] else {
+            throw AIServiceError.invalidResponse
+        }
+
+        let content = message["content"] as? String
+
+        var toolCalls: [ToolCall]?
+        if let calls = message["tool_calls"] as? [[String: Any]] {
+            toolCalls = calls.compactMap { call in
+                guard let id = call["id"] as? String,
+                      let function = call["function"] as? [String: Any],
+                      let name = function["name"] as? String,
+                      let argumentsString = function["arguments"] as? String else {
+                    return nil
+                }
+
+                guard let argumentsData = argumentsString.data(using: .utf8),
+                      let arguments = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any] else {
+                    return nil
+                }
+
+                let codableArguments = arguments.mapValues { AnyCodable($0) }
+                return ToolCall(id: id, name: name, arguments: codableArguments)
+            }
+        }
+
+        let reasoningContent = message["reasoning_content"] as? String
+
+        var usage: AIResponse.Usage?
+        if let usageDict = json["usage"] as? [String: Any],
+           let promptTokens = usageDict["prompt_tokens"] as? Int,
+           let completionTokens = usageDict["completion_tokens"] as? Int {
+            usage = AIResponse.Usage(promptTokens: promptTokens, completionTokens: completionTokens)
+        }
+
+        return AIResponse(content: content, reasoningContent: reasoningContent, toolCalls: toolCalls, usage: usage)
+    }
+}

@@ -1,0 +1,86 @@
+import Foundation
+import os
+
+@MainActor
+class ConversationManager: ObservableObject {
+    @Published var conversations: [Conversation] = []
+    @Published var currentConversation: Conversation?
+
+    private let saveKey = "saved_conversations"
+
+    init() {
+        loadConversations()
+    }
+
+    // MARK: - Public Methods
+
+    func createNewConversation() -> Conversation {
+        let conversation = Conversation()
+        conversations.insert(conversation, at: 0)
+        currentConversation = conversation
+        saveConversations()
+        return conversation
+    }
+
+    func selectConversation(_ conversation: Conversation) {
+        currentConversation = conversation
+    }
+
+    func deleteConversation(_ conversation: Conversation) {
+        conversations.removeAll { $0.id == conversation.id }
+        if currentConversation?.id == conversation.id {
+            currentConversation = conversations.first
+        }
+        saveConversations()
+    }
+
+    func updateCurrentConversation(messages: [Message], workingDirectory: String? = nil) {
+        guard var current = currentConversation else { return }
+        current.messages = messages
+        current.workingDirectory = workingDirectory
+        current.updatedAt = Date()
+
+        if current.title == "新对话", let firstUserMsg = messages.first(where: { $0.role == .user }) {
+            let text = firstUserMsg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                let newTitle = text.count > 50 ? String(text.prefix(50)) + "..." : text
+                current.title = newTitle
+                RioLogger.config.info("🏷️ 标题已更新: \(newTitle)")
+            }
+        }
+
+        // 同步更新 currentConversation，确保 @Published 属性正确触发 UI 刷新
+        currentConversation = current
+        
+        // 更新 conversations 数组中对应的元素
+        if let index = conversations.firstIndex(where: { $0.id == current.id }) {
+            conversations[index] = current
+        } else {
+            // 如果找不到，可能是新对话，插入到数组开头
+            conversations.insert(current, at: 0)
+        }
+        
+        saveConversations()
+    }
+
+    // MARK: - Persistence
+
+    private func saveConversations() {
+        do {
+            let data = try JSONEncoder().encode(conversations)
+            UserDefaults.standard.set(data, forKey: saveKey)
+        } catch {
+            RioLogger.config.error("保存对话失败: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func loadConversations() {
+        guard let data = UserDefaults.standard.data(forKey: saveKey) else { return }
+        do {
+            conversations = try JSONDecoder().decode([Conversation].self, from: data)
+            currentConversation = conversations.first
+        } catch {
+            RioLogger.config.error("加载对话失败: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+}
