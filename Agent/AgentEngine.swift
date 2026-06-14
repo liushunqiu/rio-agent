@@ -24,9 +24,7 @@ class AgentEngine: ObservableObject {
 
     private let toolRegistry = ToolRegistry.shared
     let memory = AgentMemory()
-    let learningSystem = IntelligentLearningSystem()
     let multiFileCoordinator = MultiFileCoordinator()
-    let intelligentConfig = IntelligentAssistantConfigManager.shared
     private var aiService: AIService?
     var configuration: AIConfiguration
     var multiAgentConfig: MultiAgentConfig
@@ -192,35 +190,32 @@ class AgentEngine: ObservableObject {
         }
         
         // Analyze task complexity and generate plan if needed
-        if intelligentConfig.config.enableTaskPlanning {
-            // Use enhanced task analysis with AI
-            let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: aiService, model: configuration.model)
+        let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: aiService, model: configuration.model)
 
-            // For complex tasks, generate a plan and inform the user
-            if taskAnalysis.complexity != .simple && intelligentConfig.config.showTaskPlan {
-                let plan = TaskPlanner.decomposeTask(trimmedInput, memory: memory)
-                let formattedPlan = TaskPlanner.formatPlanForExecution(plan, analysis: taskAnalysis)
+        // For complex tasks, generate a plan and inform the user
+        if taskAnalysis.complexity != .simple {
+            let plan = TaskPlanner.decomposeTask(trimmedInput, memory: memory)
+            let formattedPlan = TaskPlanner.formatPlanForExecution(plan, analysis: taskAnalysis)
 
-                // Add plan to messages for user to see
-                let planMessage = Message.system(formattedPlan)
-                messages.append(planMessage)
+            // Add plan to messages for user to see
+            let planMessage = Message.system(formattedPlan)
+            messages.append(planMessage)
 
-                // Store plan for execution guidance in system prompt
-                activePlan = plan
-                currentPlanStep = 0
-                activePlanAnalysis = taskAnalysis
+            // Store plan for execution guidance in system prompt
+            activePlan = plan
+            currentPlanStep = 0
+            activePlanAnalysis = taskAnalysis
 
-                // Add execution guidance
-                let guidance = TaskPlanner.generateExecutionGuidance(
-                    analysis: taskAnalysis,
-                    currentStep: nil,
-                    totalSteps: plan.count
-                )
-                let guidanceMessage = Message.system(guidance)
-                messages.append(guidanceMessage)
-            } else {
-                clearActivePlan()
-            }
+            // Add execution guidance
+            let guidance = TaskPlanner.generateExecutionGuidance(
+                analysis: taskAnalysis,
+                currentStep: nil,
+                totalSteps: plan.count
+            )
+            let guidanceMessage = Message.system(guidance)
+            messages.append(guidanceMessage)
+        } else {
+            clearActivePlan()
         }
 
         isProcessing = true
@@ -260,6 +255,9 @@ class AgentEngine: ObservableObject {
             self.error = error.localizedDescription
         }
 
+        // Auto-compact if too many messages (save tokens)
+        await autoCompactIfNeeded()
+        
         isProcessing = false
     }
 
@@ -285,6 +283,8 @@ class AgentEngine: ObservableObject {
             await initProject()
         case "/clear":
             clearConversation()
+        case "/compact", "/summarize":
+            await compactConversation()
         case "/export":
             if let path = exportToFile() {
                 let msg = Message.system("✅ 对话已导出到: \(path)")
@@ -416,6 +416,9 @@ class AgentEngine: ObservableObject {
         /clear   - 清除当前对话历史
                   开始新的对话
         
+        /compact - 压缩对话上下文
+                  将历史消息压缩为摘要，节省 token 消耗
+        
         /export  - 导出当前对话为 Markdown 文件
                   保存到用户选择的位置
         
@@ -425,6 +428,7 @@ class AgentEngine: ObservableObject {
         💡 提示:
         - 命令必须以 / 开头
         - 命令不区分大小写
+        - 当对话较长时，使用 /compact 可节省 token 消耗
         - 设置工作目录后，/init 会自动分析项目并生成 AGENT.md
         """)
         messages.append(helpMessage)
@@ -489,7 +493,8 @@ class AgentEngine: ObservableObject {
             var hasThinkingContent = false
             // Buffer to coalesce rapid streaming chunks into fewer UI updates
             // 使用更大的缓冲区和更长的间隔来减少UI更新频率
-            let buffer = StreamBuffer(interval: 0.05, maxCharsBeforeFlush: 100)
+            // 12fps + 500字符批量，大幅减少 SwiftUI 重绘次数
+            let buffer = StreamBuffer(interval: 0.08, maxCharsBeforeFlush: 500)
 
             let response: AIResponse
             do {
@@ -780,22 +785,7 @@ class AgentEngine: ObservableObject {
     }
 
     private func getContextMessages() -> [Message] {
-        var systemMsg = buildSystemMessage()
-        
-        // Get the latest user message for tool recommendation
-        if let lastUserMessage = messages.last(where: { $0.role == .user }),
-           !lastUserMessage.content.isEmpty {
-            // Use enhanced tool recommendation with history
-            let toolHint = ToolRecommender.generateEnhancedHint(
-                for: lastUserMessage.content,
-                memory: memory,
-                config: intelligentConfig.config
-            )
-            if !toolHint.isEmpty {
-                // Append tool hint to system message
-                systemMsg = Message.system(systemMsg.content + toolHint)
-            }
-        }
+        let systemMsg = buildSystemMessage()
         
         let contextWindow = AIProvider.contextWindow(for: configuration.model)
         let threshold = Int(Double(contextWindow) * 0.85)
@@ -803,8 +793,7 @@ class AgentEngine: ObservableObject {
         var totalTokens = estimateTokens(systemMsg.content)
         var keptMessages: [Message] = []
 
-        // 估算所有消息的 token，从最新往最旧遍历
-        // 先把所有消息倒序（最新在前），保留直到达到 85% 阈值
+        // Estimate tokens for all messages, keep from newest to oldest
         let reversedMessages = messages.reversed()
         var keepCount = 0
         for msg in reversedMessages {
@@ -817,8 +806,51 @@ class AgentEngine: ObservableObject {
             keepCount += 1
         }
 
-        // 恢复正序
-        return [systemMsg] + keptMessages.reversed()
+        // Restore chronological order and compress old tool outputs
+        return [systemMsg] + compressToolOutputs(keptMessages.reversed())
+    }
+    
+    /// Compress tool outputs in old messages to save tokens
+    private func compressToolOutputs(_ messages: [Message]) -> [Message] {
+        let maxOutputLength = 2000 // Max chars for tool output in old messages
+        let recentMessageCount = 4 // Keep recent messages uncompressed
+        
+        return messages.enumerated().map { index, message in
+            // Keep recent messages unchanged
+            guard index < messages.count - recentMessageCount else {
+                return message
+            }
+            
+            // Compress old tool results
+            guard let toolResults = message.toolResults, !toolResults.isEmpty else {
+                return message
+            }
+            
+            let compressedResults = toolResults.map { result -> ToolResult in
+                guard result.output.count > maxOutputLength else {
+                    return result
+                }
+                
+                let truncated = String(result.output.prefix(maxOutputLength))
+                return ToolResult(
+                    toolCallId: result.toolCallId,
+                    status: result.status,
+                    output: "\(truncated)\n\n[... output truncated, \(result.output.count - maxOutputLength) more chars ...]",
+                    error: result.error
+                )
+            }
+            
+            return Message(
+                id: message.id,
+                role: message.role,
+                content: message.content,
+                thinkingContent: message.thinkingContent,
+                thinkingDuration: message.thinkingDuration,
+                toolCalls: message.toolCalls,
+                toolResults: compressedResults,
+                isStreaming: message.isStreaming
+            )
+        }
     }
 
     private func buildSystemMessage() -> Message {
@@ -922,110 +954,19 @@ RULES:
             }
         }
         
-        // Inject memory context
-        let memoryContext = memory.generateMemoryContext()
-        if !memoryContext.isEmpty {
-            prompt += "\n\n## Agent Memory\n\(memoryContext)"
-        }
-
-        // Inject learning insights from accumulated patterns
-        if intelligentConfig.config.enableLearning {
-            let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
-            let topTools = memory.getMostUsedTools(limit: 3)
-            let insights = learningSystem.generateInsightsPrompt(
-                forTaskType: taskType.rawValue,
-                sessionTopTools: topTools
-            )
-            if !insights.isEmpty {
-                prompt += "\n\(insights)"
-            }
-        }
-
-        // Inject active task plan for execution guidance
-        if !activePlan.isEmpty, activePlanAnalysis != nil, intelligentConfig.config.enableTaskPlanning {
+        // Inject active task plan (minimal, only when executing)
+        if !activePlan.isEmpty, activePlanAnalysis != nil {
             prompt += "\n\n## Active Task Execution Plan\n"
-            prompt += "You are currently executing a planned task. Follow these steps in order:\n\n"
-
             for (index, step) in activePlan.enumerated() {
                 let marker: String
                 if index < currentPlanStep {
                     marker = "[DONE]"
                 } else if index == currentPlanStep {
-                    marker = "[CURRENT - Focus on this step now]"
+                    marker = "[CURRENT]"
                 } else {
                     marker = "[PENDING]"
                 }
                 prompt += "\(index + 1). \(marker) \(step)\n"
-            }
-
-            prompt += "\nInstructions:\n"
-            prompt += "- Complete the current step before moving to the next\n"
-            prompt += "- If a step requires information from a previous step, that is expected\n"
-
-            if currentPlanStep < activePlan.count {
-                prompt += "\nCurrent focus: Step \(currentPlanStep + 1) - \(activePlan[currentPlanStep])\n"
-            }
-        }
-        
-        // Inject project-specific knowledge if available
-        if let dir = workingDirectory {
-            let projectContext = memory.generateProjectContext(for: dir)
-            if !projectContext.isEmpty {
-                prompt += projectContext
-            }
-            
-            // Inject context awareness based on recent files
-            if let lastFile = memory.session.recentFiles.first {
-                let fileContext = ContextAwareness.generateFileContext(for: lastFile)
-                let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
-                prompt += ContextAwareness.generateContextPrompt(for: fileContext, taskType: taskType)
-
-                // Inject code quality analysis for the recent file
-                let codeAnalysis = generateCodeAnalysisContext(for: lastFile)
-                if !codeAnalysis.isEmpty {
-                    prompt += codeAnalysis
-                }
-            }
-            
-            // Inject project context if we have enough information
-            let directoryContents = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
-            if !directoryContents.isEmpty {
-                let projectContext = ContextAwareness.generateProjectContext(from: directoryContents, projectPath: dir)
-                prompt += ContextAwareness.generateContextPrompt(for: projectContext)
-            }
-            
-            // Inject deep project analysis (ProjectAnalyzer)
-            if intelligentConfig.config.enableContextAwareness {
-                let projectInfo: ProjectAnalyzer.ProjectInfo
-                if let cached = projectAnalysisCache, cached.path == dir {
-                    projectInfo = cached.result
-                } else {
-                    projectInfo = ProjectAnalyzer.analyzeProject(at: dir)
-                    projectAnalysisCache = (path: dir, result: projectInfo)
-                }
-                
-                if projectInfo.type != .unknown {
-                    prompt += "\n\n## Project Analysis\n"
-                    prompt += "- Type: \(projectInfo.type.description)\n"
-                    prompt += "- Languages: \(projectInfo.languages.joined(separator: ", "))\n"
-                    if !projectInfo.frameworks.isEmpty {
-                        prompt += "- Frameworks: \(projectInfo.frameworks.joined(separator: ", "))\n"
-                    }
-                    if !projectInfo.buildSystems.isEmpty {
-                        prompt += "- Build systems: \(projectInfo.buildSystems.joined(separator: ", "))\n"
-                    }
-                    if !projectInfo.entryPoints.isEmpty {
-                        prompt += "- Entry points: \(projectInfo.entryPoints.joined(separator: ", "))\n"
-                    }
-                    prompt += "- Total files: \(projectInfo.structure.totalFiles)\n"
-                    prompt += "- Total lines: \(projectInfo.structure.totalLines)\n"
-                    if !projectInfo.structure.directories.isEmpty {
-                        prompt += "- Key directories:\n"
-                        for dir in projectInfo.structure.directories.prefix(8) {
-                            prompt += "  - \(dir.path)/: \(dir.purpose)\n"
-                        }
-                    }
-                }
             }
         }
 
@@ -1045,92 +986,6 @@ RULES:
     private var currentPlanStep: Int = 0
     /// Analysis metadata for the active plan
     private var activePlanAnalysis: TaskPlanner.TaskAnalysis?
-
-    // MARK: - Code Analysis Cache
-
-    private var codeAnalysisCache: (path: String, contentHash: Int, result: String)?
-    private var projectAnalysisCache: (path: String, result: ProjectAnalyzer.ProjectInfo)?
-
-    /// Generate code quality context for a recently accessed file
-    private func generateCodeAnalysisContext(for filePath: String) -> String {
-        guard intelligentConfig.config.enableCodeAnalysis else { return "" }
-
-        guard let content = FileManager.default.contents(atPath: filePath),
-              let fileContent = String(data: content, encoding: .utf8) else {
-            return ""
-        }
-
-        // Limit analysis to reasonable file sizes
-        guard fileContent.count < 100_000 else { return "" }
-
-        // Check cache
-        let contentHash = fileContent.hashValue
-        if let cache = codeAnalysisCache, cache.path == filePath, cache.contentHash == contentHash {
-            return cache.result
-        }
-
-        var context = ""
-
-        // 1. Original code quality analysis
-        let fileType = ContextAwareness.detectFileType(from: filePath)
-        let scores = IntelligentCodeAnalyzer.analyzeCodeQuality(fileContent, fileType: fileType)
-        let suggestions = IntelligentCodeAnalyzer.generateSuggestions(for: scores)
-
-        let criticalIssues = scores.flatMap { $0.issues }.filter { $0.severity == .high || $0.severity == .critical }
-        if !criticalIssues.isEmpty || !suggestions.isEmpty {
-            context += "\n## Code Quality Insights (for \(filePath))\n"
-            for issue in criticalIssues.prefix(3) {
-                context += "- [\(issue.severity)] \(issue.message)\n"
-            }
-            for suggestion in suggestions.prefix(3) {
-                context += "- Suggestion: \(suggestion)\n"
-            }
-        }
-
-        // 2. Code structure analysis (CodeNavigator)
-        let fileAST = CodeNavigator.parseFile(filePath, content: fileContent)
-        if !fileAST.symbols.isEmpty {
-            context += "\n## Code Structure (for \(filePath))\n"
-            context += "- Imports: \(fileAST.imports.joined(separator: ", "))\n"
-
-            let functionSymbols = fileAST.symbols.filter { $0.kind == .function }
-            let typeSymbols = fileAST.symbols.filter { $0.kind == .class || $0.kind == .struct || $0.kind == .enum || $0.kind == .protocol }
-            let varSymbols = fileAST.symbols.filter { $0.kind == .variable }
-
-            if !typeSymbols.isEmpty {
-                context += "- Types: \(typeSymbols.map { $0.name }.joined(separator: ", "))\n"
-            }
-            if !functionSymbols.isEmpty {
-                context += "- Functions: \(functionSymbols.prefix(10).map { $0.name }.joined(separator: ", "))"
-                if functionSymbols.count > 10 { context += " (+\(functionSymbols.count - 10) more)" }
-                context += "\n"
-            }
-            if !varSymbols.isEmpty {
-                context += "- Variables: \(varSymbols.prefix(5).map { $0.name }.joined(separator: ", "))"
-                if varSymbols.count > 5 { context += " (+\(varSymbols.count - 5) more)" }
-                context += "\n"
-            }
-        }
-
-        // 3. Refactoring suggestions (RefactoringAdvisor)
-        let codeSmells = RefactoringAdvisor.analyzeFile(filePath, content: fileContent)
-        let highSeveritySmells = codeSmells.filter { $0.severity == .high || $0.severity == .critical }
-        if !highSeveritySmells.isEmpty {
-            context += "\n## Refactoring Suggestions (for \(filePath))\n"
-            for smell in highSeveritySmells.prefix(3) {
-                context += "- [\(smell.type.description)] \(smell.description)\n"
-                context += "  → \(smell.suggestion)\n"
-            }
-        }
-
-        guard !context.isEmpty else {
-            codeAnalysisCache = (path: filePath, contentHash: contentHash, result: "")
-            return ""
-        }
-
-        codeAnalysisCache = (path: filePath, contentHash: contentHash, result: context)
-        return context
-    }
 
     private func clearActivePlan() {
         activePlan = []
@@ -1202,20 +1057,6 @@ RULES:
                     solution: "" // Will be filled when error is resolved
                 )
             }
-            
-            // Record learning event
-            let learningEvent = IntelligentLearningSystem.LearningEvent(
-                type: result.status == .success ? .successPattern : .errorPattern,
-                timestamp: Date(),
-                context: [
-                    "tool": toolCall.name,
-                    "taskType": ToolRecommender.classifyTask(memory.session.currentTask ?? "").description,
-                    "success": result.status == .success
-                ],
-                outcome: result.status == .success ? "Success" : (result.error ?? "Unknown error"),
-                success: result.status == .success
-            )
-            learningSystem.recordEvent(learningEvent)
             
             // Record in ToolRecommender history for recommendations
             let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
@@ -1369,6 +1210,166 @@ RULES:
         memory.clearSession()
         clearActivePlan()
     }
+    
+    /// Auto-compact conversation when message count exceeds threshold
+    private func autoCompactIfNeeded() async {
+        let autoCompactThreshold = 50
+        
+        guard messages.count > autoCompactThreshold else {
+            return
+        }
+        
+        // Perform AI-powered compaction silently
+        let maxMessages = 30
+        await performCompaction(keepRecent: maxMessages, showNotification: false)
+    }
+    
+    /// Compact conversation by summarizing old messages with AI
+    func compactConversation() async {
+        let maxMessages = 20
+        
+        guard messages.count > maxMessages else {
+            let msg = Message.system("💬 当前对话较短（\(messages.count) 条消息），无需压缩。")
+            messages.append(msg)
+            return
+        }
+        
+        await performCompaction(keepRecent: maxMessages, showNotification: true)
+    }
+    
+    /// Perform AI-powered conversation compaction
+    private func performCompaction(keepRecent: Int, showNotification: Bool) async {
+        guard let aiService = aiService else {
+            // Fallback to simple compaction if no AI service
+            performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
+            return
+        }
+        
+        let oldMessages = Array(messages.prefix(messages.count - keepRecent))
+        let recentMessages = Array(messages.suffix(keepRecent))
+        
+        // Build conversation text for summarization
+        var conversationText = ""
+        for msg in oldMessages {
+            let role: String
+            switch msg.role {
+            case .user: role = "用户"
+            case .assistant: role = "助手"
+            case .system: role = "系统"
+            }
+            
+            if !msg.content.isEmpty {
+                conversationText += "\(role): \(msg.content)\n"
+            }
+            
+            // Include tool usage info
+            if let toolCalls = msg.toolCalls {
+                for tc in toolCalls {
+                    conversationText += "\(role) 调用工具: \(tc.name)\n"
+                }
+            }
+        }
+        
+        // Limit conversation text to avoid token overflow
+        let maxInputLength = 10000
+        if conversationText.count > maxInputLength {
+            conversationText = String(conversationText.prefix(maxInputLength)) + "\n... (对话内容已截断)"
+        }
+        
+        // Create summarization prompt
+        let summaryPrompt = """
+        请将以下对话历史压缩为简洁的摘要。要求：
+        
+        1. 保留所有重要的上下文信息（用户的需求、已完成的任务、发现的问题）
+        2. 保留关键的技术细节（文件路径、函数名、代码修改）
+        3. 保留当前的工作状态（正在做什么、下一步计划）
+        4. 使用结构化格式，便于后续 AI 继续工作
+        
+        对话历史：
+        \(conversationText)
+        
+        请输出压缩后的摘要（使用 Markdown 格式）：
+        """
+        
+        do {
+            let summaryMessages = [Message.system(summaryPrompt)]
+            let response = try await aiService.sendMessage(
+                summaryMessages,
+                tools: [],
+                model: configuration.model,
+                maxTokens: 1000
+            )
+            
+            if let summary = response.content, !summary.isEmpty {
+                // Create summary message with metadata
+                let summaryMessage = Message.system("## 对话历史摘要（AI 压缩）\n\n\(summary)\n\n*（已压缩 \(oldMessages.count) 条历史消息，保留最近 \(recentMessages.count) 条）*")
+                
+                // Replace messages
+                messages = [summaryMessage] + recentMessages
+                
+                if showNotification {
+                    let msg = Message.system("✅ 已使用 AI 压缩 \(oldMessages.count) 条历史消息。")
+                    messages.append(msg)
+                }
+            } else {
+                // Fallback if AI returns empty
+                performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
+            }
+        } catch {
+            // Fallback on error
+            performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
+        }
+    }
+    
+    /// Simple rule-based compaction (fallback)
+    private func performSimpleCompaction(keepRecent: Int, showNotification: Bool) {
+        let oldMessages = Array(messages.prefix(messages.count - keepRecent))
+        let recentMessages = Array(messages.suffix(keepRecent))
+        
+        var summary = "## 对话历史摘要\n\n"
+        var userMessages: [String] = []
+        var toolCallsMade: [String] = []
+        
+        for msg in oldMessages {
+            switch msg.role {
+            case .user:
+                if !msg.content.isEmpty {
+                    userMessages.append(String(msg.content.prefix(80)))
+                }
+            case .assistant:
+                if let toolCalls = msg.toolCalls {
+                    for tc in toolCalls {
+                        toolCallsMade.append(tc.name)
+                    }
+                }
+            case .system:
+                break
+            }
+        }
+        
+        if !userMessages.isEmpty {
+            summary += "**用户请求:**\n"
+            for (index, msg) in userMessages.prefix(3).enumerated() {
+                summary += "\(index + 1). \(msg)\n"
+            }
+            if userMessages.count > 3 {
+                summary += "... 还有 \(userMessages.count - 3) 个请求\n"
+            }
+        }
+        
+        if !toolCallsMade.isEmpty {
+            let uniqueTools = Set(toolCallsMade)
+            summary += "\n**使用的工具:** \(uniqueTools.joined(separator: ", "))\n"
+        }
+        
+        let summaryMessage = Message.system(summary)
+        messages = [summaryMessage] + recentMessages
+        
+        if showNotification {
+            let msg = Message.system("✅ 已压缩 \(oldMessages.count) 条历史消息。")
+            messages.append(msg)
+        }
+    }
 
     func loadConversation(_ conversation: Conversation) {
         messages = conversation.messages
@@ -1469,10 +1470,8 @@ class StreamBuffer {
     private var lastFlush = Date()
     private let interval: TimeInterval
     private let maxCharsBeforeFlush: Int
-    private var updateCount = 0
-    private let maxUpdatesPerSecond = 15  // 限制每秒最大更新次数
 
-    init(interval: TimeInterval = 0.15, maxCharsBeforeFlush: Int = 300) {
+    init(interval: TimeInterval = 0.08, maxCharsBeforeFlush: Int = 500) {
         self.interval = interval
         self.maxCharsBeforeFlush = maxCharsBeforeFlush
     }
@@ -1481,20 +1480,14 @@ class StreamBuffer {
     func appendThinking(_ chunk: String) { thinkingAccumulator += chunk }
 
     private var shouldFlushNow: Bool {
-        // 限制更新频率
         let now = Date()
         let elapsed = now.timeIntervalSince(lastFlush)
-        
-        // 如果距离上次更新时间太短，且累积内容不多，则延迟更新
-        if elapsed < 0.02 && contentAccumulator.count < 20 && thinkingAccumulator.count < 20 {
-            return false
-        }
-        
-        // 达到最大字符数限制
+
+        // 达到最大字符数限制时立即刷新，不管时间间隔
         if contentAccumulator.count >= maxCharsBeforeFlush { return true }
         if thinkingAccumulator.count >= maxCharsBeforeFlush { return true }
-        
-        // 达到时间间隔
+
+        // 达到时间间隔后刷新
         return elapsed >= interval
     }
 
@@ -1504,7 +1497,6 @@ class StreamBuffer {
         let c = contentAccumulator; contentAccumulator = ""
         let t = thinkingAccumulator; thinkingAccumulator = ""
         lastFlush = Date()
-        updateCount += 1
         await update(c, t)
     }
 

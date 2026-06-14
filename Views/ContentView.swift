@@ -83,14 +83,6 @@ struct ContentView: View {
                 providerName: agentEngine.configuration.activeProvider.displayName,
                 estimatedTokens: agentEngine.getTotalTokensUsed(),
                 contextWindow: AIProvider.contextWindow(for: agentEngine.configuration.model),
-                intelligentConfig: agentEngine.intelligentConfig.config,
-                memoryStats: MemoryStats(
-                    totalLearningEvents: agentEngine.memory.session.recentFiles.count + agentEngine.memory.session.recentCommands.count,
-                    toolPreferences: agentEngine.memory.session.workingPatterns.count,
-                    workflowPatterns: 0,
-                    errorPatterns: 0
-                ),
-                toolRecommendations: getToolRecommendations(for: agentEngine),
                 recentFiles: agentEngine.memory.session.recentFiles
             )
             .frame(width: 260)
@@ -206,7 +198,7 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 20)
+            .padding(.top, 8)
             .padding(.bottom, 14)
 
             // Divider
@@ -407,6 +399,7 @@ struct MainContentView: View {
             }
         }
         .background(Theme.bgPrimary)
+        .ignoresSafeArea(.container, edges: .top)
         .animation(.easeInOut(duration: 0.3), value: agentEngine.messages.isEmpty)
         .onAppear {
             isInputFocused = true
@@ -467,7 +460,7 @@ struct TopBar: View {
             .help("设置")
         }
         .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .padding(.vertical, 8)
         .background(
             Theme.bgSecondary
                 .overlay(
@@ -609,7 +602,7 @@ struct InputArea: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 14)
-                    .padding(.bottom, 10)
+                    .padding(.bottom, 12)
 
                 // Bottom toolbar
                 HStack(spacing: 10) {
@@ -880,20 +873,4 @@ struct VisualEffectView: NSViewRepresentable {
 }
 
 // MARK: - Helper Functions
-
-@MainActor
-func getToolRecommendations(for agentEngine: AgentEngine) -> [String] {
-    // Get recent user message for task classification
-    guard let lastUserMessage = agentEngine.messages.last(where: { $0.role == .user }),
-          !lastUserMessage.content.isEmpty else {
-        return []
-    }
-    
-    // Classify task and get recommendations
-    let taskType = ToolRecommender.classifyTask(lastUserMessage.content)
-    let recommendation = ToolRecommender.recommend(for: taskType)
-    
-    return recommendation.primaryTools
-}
-
 

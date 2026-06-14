@@ -40,11 +40,16 @@ struct Message: Identifiable, Codable, Hashable {
     }
 
     static func == (lhs: Message, rhs: Message) -> Bool {
-        lhs.id == rhs.id
-        && lhs.content == rhs.content
-        && lhs.thinkingContent == rhs.thinkingContent
-        && lhs.thinkingDuration == rhs.thinkingDuration
-        && lhs.isStreaming == rhs.isStreaming
+        // 快速路径：同一实例直接返回 true
+        guard lhs.id == rhs.id else { return false }
+        // 快速路径：长度不同则内容一定不同，避免昂贵的字符串逐字符比较
+        guard lhs.content.count == rhs.content.count,
+              lhs.thinkingContent?.count == rhs.thinkingContent?.count,
+              lhs.thinkingDuration == rhs.thinkingDuration,
+              lhs.isStreaming == rhs.isStreaming else { return false }
+        // 长度相同时才做完整字符串比较（流式场景下极少见）
+        return lhs.content == rhs.content
+            && lhs.thinkingContent == rhs.thinkingContent
     }
 
     func hash(into hasher: inout Hasher) {

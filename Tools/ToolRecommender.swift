@@ -199,37 +199,6 @@ class ToolRecommender {
         return hint
     }
     
-    /// Generate tool hint with memory integration
-    static func generateHintWithMemory(for input: String, preferredTools: [String: String] = [:], config: IntelligentAssistantConfig? = nil) -> String {
-        // Check if tool recommendations are enabled
-        let enableRecommendations = config?.enableToolRecommendations ?? true
-        guard enableRecommendations else { return "" }
-
-        let taskType = classifyTask(input)
-        let recommendation = recommend(for: taskType)
-
-        guard taskType != .unknown else { return "" }
-
-        var hint = "\n[Tool Recommendation]\n"
-        hint += "Task type: \(taskType)\n"
-
-        hint += "Primary tools: \(recommendation.primaryTools.joined(separator: ", "))\n"
-
-        // Add historically preferred tool if not already in primary tools
-        if let historicalTool = preferredTools[taskType.rawValue],
-           !recommendation.primaryTools.contains(historicalTool) {
-            hint += "Historically preferred: \(historicalTool)\n"
-        }
-
-        if !recommendation.avoidTools.isEmpty {
-            hint += "Avoid: \(recommendation.avoidTools.joined(separator: ", "))\n"
-        }
-
-        hint += "Reasoning: \(recommendation.reasoning)\n"
-
-        return hint
-    }
-    
     // MARK: - History-Based Recommendations
     
     /// Tool usage history record
@@ -335,36 +304,6 @@ class ToolRecommender {
         
         // Fall back to rule-based recommendation
         return ruleBasedRecommendation
-    }
-    
-    /// Generate enhanced hint with history integration
-    static func generateEnhancedHint(for input: String, memory: AgentMemory? = nil, config: IntelligentAssistantConfig? = nil) -> String {
-        let enableRecommendations = config?.enableToolRecommendations ?? true
-        guard enableRecommendations else { return "" }
-        
-        let taskType = classifyTask(input)
-        let recommendation = recommendEnhanced(for: taskType, memory: memory)
-        
-        guard taskType != .unknown else { return "" }
-        
-        var hint = "\n[Tool Recommendation]\n"
-        hint += "Task type: \(taskType)\n"
-        
-        // Show history-based recommendations if available
-        let historyBasedTools = recommendBasedOnHistory(for: taskType)
-        if !historyBasedTools.isEmpty {
-            hint += "History-based tools: \(historyBasedTools.joined(separator: ", "))\n"
-        }
-        
-        hint += "Primary tools: \(recommendation.primaryTools.joined(separator: ", "))\n"
-        
-        if !recommendation.avoidTools.isEmpty {
-            hint += "Avoid: \(recommendation.avoidTools.joined(separator: ", "))\n"
-        }
-        
-        hint += "Reasoning: \(recommendation.reasoning)\n"
-        
-        return hint
     }
     
     /// Clear history (for testing or session reset)

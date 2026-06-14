@@ -114,8 +114,7 @@ struct SettingsView: View {
             HStack(spacing: 0) {
                 DarkTabButton(title: "AI 配置", icon: "cpu", isSelected: selectedTab == 0) { selectedTab = 0 }
                 DarkTabButton(title: "Multi-Agent", icon: "person.3.fill", isSelected: selectedTab == 1) { selectedTab = 1 }
-                DarkTabButton(title: "智能助手", icon: "brain.head.profile", isSelected: selectedTab == 2) { selectedTab = 2 }
-                DarkTabButton(title: "关于", icon: "info.circle", isSelected: selectedTab == 3) { selectedTab = 3 }
+                DarkTabButton(title: "关于", icon: "info.circle", isSelected: selectedTab == 2) { selectedTab = 2 }
             }
             .padding(.horizontal, 16)
 
@@ -143,8 +142,6 @@ struct SettingsView: View {
                             )
                         )
                     case 2:
-                        IntelligentAssistantSettingsView()
-                    case 3:
                         darkAboutView
                     default:
                         EmptyView()

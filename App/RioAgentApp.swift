@@ -9,6 +9,7 @@ struct RioAgentApp: App {
             ContentView()
                 .environmentObject(appState)
                 .frame(minWidth: 900, minHeight: 600)
+                .ignoresSafeArea(.container, edges: .top)
                 .onAppear {
                     appState.setup()
                     // 窗口初次打开：填满屏幕可见区域（非全屏模式）

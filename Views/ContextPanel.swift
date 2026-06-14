@@ -1,15 +1,12 @@
 import SwiftUI
 
-/// Context Panel - Right sidebar showing session context and intelligent assistant status
+/// Context Panel - Right sidebar showing session context
 struct ContextPanel: View {
     let messageCount: Int
     let modelName: String
     let providerName: String
     var estimatedTokens: Int = 0
     var contextWindow: Int = 200000
-    var intelligentConfig: IntelligentAssistantConfig = IntelligentAssistantConfig()
-    var memoryStats: MemoryStats = MemoryStats()
-    var toolRecommendations: [String] = []
     var recentFiles: [String] = []
 
     var body: some View {
@@ -35,78 +32,23 @@ struct ContextPanel: View {
 
             ScrollView {
                 VStack(spacing: 20) {
-                    // Intelligent Assistant Status
-                    ContextSection(title: "智能助手") {
-                        HStack(spacing: 8) {
-                            Image(systemName: "brain.head.profile")
-                                .font(.system(size: 14))
-                                .foregroundColor(intelligentConfig.enableLearning ? Theme.accentPrimary : Theme.textTertiary)
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(intelligentConfig.enableLearning ? "学习中" : "已禁用")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(intelligentConfig.enableLearning ? Theme.statusSuccess : Theme.textTertiary)
-                                
-                                Text("已学习 \(memoryStats.totalLearningEvents) 个模式")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(Theme.textTertiary)
-                            }
-                            
-                            Spacer()
-                            
-                            // Learning progress indicator
-                            if intelligentConfig.enableLearning {
-                                LearningProgressRing(
-                                    progress: min(Double(memoryStats.totalLearningEvents) / 100.0, 1.0),
-                                    size: 24
-                                )
-                            }
-                        }
-                        
-                        // Tool Recommendations
-                        if intelligentConfig.enableToolRecommendations && !toolRecommendations.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("推荐工具")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(Theme.textTertiary)
-                                    .textCase(.uppercase)
-                                
-                                LazyVGrid(columns: [
-                                    GridItem(.flexible()),
-                                    GridItem(.flexible())
-                                ], spacing: 4) {
-                                    ForEach(toolRecommendations.prefix(4), id: \.self) { tool in
-                                        ToolRecommendationBadge(toolName: tool)
-                                    }
+                    // Recent Files
+                    if !recentFiles.isEmpty {
+                        ContextSection(title: "最近文件") {
+                            ForEach(recentFiles.prefix(5), id: \.self) { file in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.text")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.textTertiary)
+                                    
+                                    Text(URL(fileURLWithPath: file).lastPathComponent)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.textSecondary)
+                                        .lineLimit(1)
+                                    
+                                    Spacer()
                                 }
                             }
-                            .padding(.top, 8)
-                        }
-                        
-                        // Recent Files
-                        if intelligentConfig.enableContextAwareness && !recentFiles.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("最近文件")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(Theme.textTertiary)
-                                    .textCase(.uppercase)
-                                
-                                ForEach(recentFiles.prefix(3), id: \.self) { file in
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "doc.text")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(Theme.textTertiary)
-                                        
-                                        Text(URL(fileURLWithPath: file).lastPathComponent)
-                                            .font(.system(size: 11))
-                                            .foregroundColor(Theme.textSecondary)
-                                            .lineLimit(1)
-                                        
-                                        Spacer()
-                                    }
-                                }
-                            }
-                            .padding(.top, 8)
                         }
                     }
 
