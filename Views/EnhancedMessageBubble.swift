@@ -79,8 +79,8 @@ struct EnhancedMessageBubble: View {
                 MessageFooter(message: message)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
     
@@ -181,7 +181,8 @@ struct EnhancedChatView: View {
                             ))
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
                 }
                 .onChange(of: messages.count) { _, newCount in
                     // 新消息到达时，自动跳到最后一页
@@ -357,9 +358,9 @@ struct PaginationBar: View {
             .foregroundColor(followLatest ? Theme.accentPrimary : Theme.textTertiary)
             .help(followLatest ? "流式输出时自动跳转最新页（点击解锁）" : "已解锁翻页，点击锁定自动跟随")
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .background(Theme.bgSecondary.opacity(0.8))
+        .padding(.horizontal, 24)
+        .padding(.vertical, 9)
+        .background(Theme.bgSecondary.opacity(0.72))
         .overlay(
             Rectangle()
                 .fill(Theme.borderSubtle)

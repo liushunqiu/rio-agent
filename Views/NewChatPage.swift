@@ -1,11 +1,7 @@
 import SwiftUI
 
-private let brandGreen = Color(red: 0.30, green: 0.85, blue: 0.55)
-private let brandGradient = LinearGradient(
-    colors: [Color(red: 0.25, green: 0.80, blue: 0.50), Color(red: 0.35, green: 0.90, blue: 0.60)],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-)
+private let brandGreen = Theme.accentPrimary
+private let brandGradient = Theme.accentGradient
 
 struct NewChatPage: View {
     @State private var viewModel = NewChatViewModel()
@@ -15,27 +11,22 @@ struct NewChatPage: View {
     @FocusState private var isInputFocused: Bool
     @State private var appears = false
 
-    private let maxCardWidth: CGFloat = 640
+    private let maxCardWidth: CGFloat = 700
 
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                Spacer()
-
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
-                        Spacer()
-                            .frame(height: max(20, geometry.size.height * 0.10))
+                        Spacer().frame(height: max(28, geometry.size.height * 0.12))
 
                         headerArea
 
-                        Spacer()
-                            .frame(height: max(20, geometry.size.height * 0.03))
+                        Spacer().frame(height: 26)
 
                         inputCard
 
-                        Spacer()
-                            .frame(height: 10)
+                        Spacer().frame(height: 12)
 
                         workingDirectorySection
                     }
@@ -46,7 +37,7 @@ struct NewChatPage: View {
                 Spacer()
             }
         }
-        .background(windowBackground)
+        .background(Color.clear)
         .opacity(appears ? 1 : 0)
         .onAppear {
             withAnimation(.easeOut(duration: 0.4)) {
@@ -59,29 +50,30 @@ struct NewChatPage: View {
     }
 
     private var headerArea: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(brandGreen.opacity(0.12))
-                    .frame(width: 48, height: 48)
+                    .fill(Theme.bgGlass)
+                    .frame(width: 58, height: 58)
                     .overlay(
                         Circle()
-                            .stroke(brandGreen.opacity(0.25), lineWidth: 1)
+                            .stroke(Theme.borderDefault, lineWidth: 1)
                     )
+                    .shadow(color: Theme.accentPrimary.opacity(0.20), radius: 18, x: 0, y: 8)
 
                 Image(systemName: "bolt.fill")
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(brandGradient)
             }
 
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 Text("不止聊天，搞定一切")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundColor(Theme.textPrimary)
 
                 Text("本地运行、自主规划、安全可控的 AI 工作搭子")
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
             }
         }
     }
@@ -107,9 +99,9 @@ struct NewChatPage: View {
                 if viewModel.inputText.isEmpty {
                     Text("描述任务，/ 快捷调用，@ 添加上下文")
                         .font(.system(size: 14))
-                        .foregroundColor(.secondary.opacity(0.5))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 14)
+                        .foregroundColor(Theme.textTertiary)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
                         .allowsHitTesting(false)
                 }
 
@@ -119,10 +111,10 @@ struct NewChatPage: View {
                         .font(.system(size: 14))
                         .lineLimit(3...6)
                         .focused($isInputFocused)
-                        .foregroundColor(.primary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 14)
-                        .frame(minHeight: 72, maxHeight: 120)
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                        .frame(minHeight: 84, maxHeight: 140)
                         .onSubmit {
                             submitIfPossible()
                         }
@@ -137,12 +129,13 @@ struct NewChatPage: View {
             }
         }
         .frame(maxWidth: maxCardWidth)
-        .background(Theme.bgTertiary)
-        .cornerRadius(14)
+        .background(Theme.bgInput.opacity(0.92))
+        .cornerRadius(Theme.radiusXL)
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(isInputFocused ? brandGreen.opacity(0.35) : Theme.borderDefault, lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.radiusXL)
+                .stroke(isInputFocused ? brandGreen.opacity(0.42) : Theme.borderDefault, lineWidth: 1)
         )
+        .shadow(color: Theme.shadowStrong.opacity(0.7), radius: 28, x: 0, y: 18)
         .padding(.horizontal, 24)
         .sheet(isPresented: $viewModel.isShowingFilePicker) {
             FilePickerView(workingDirectory: workingDirectory.wrappedValue) { filePath in
@@ -178,11 +171,11 @@ struct NewChatPage: View {
 
                 Text(folderDisplayName)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Theme.textSecondary)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(Color.primary.opacity(0.03))
+            .background(Theme.bgGlass)
             .cornerRadius(7)
             .overlay(
                 RoundedRectangle(cornerRadius: 7)
@@ -218,14 +211,6 @@ struct NewChatPage: View {
         let text = viewModel.inputText
         viewModel.clearInput()
         onSubmit(text)
-    }
-
-    private var windowBackground: Color {
-        #if os(macOS)
-        Color(nsColor: .windowBackgroundColor)
-        #else
-        Color(uiColor: .systemBackground)
-        #endif
     }
 }
 

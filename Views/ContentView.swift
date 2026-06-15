@@ -41,7 +41,7 @@ struct ContentView: View {
 
             // Divider
             Rectangle()
-                .fill(Theme.borderSubtle)
+                .fill(Theme.borderSubtle.opacity(0.8))
                 .frame(width: 1)
 
             // Main content
@@ -78,7 +78,7 @@ struct ContentView: View {
 
             // Divider
             Rectangle()
-                .fill(Theme.borderSubtle)
+                .fill(Theme.borderSubtle.opacity(0.8))
                 .frame(width: 1)
 
             // Context panel (right sidebar)
@@ -92,7 +92,7 @@ struct ContentView: View {
             )
             .frame(width: 260)
         }
-        .background(Theme.bgPrimary)
+        .background(AppBackgroundView())
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showingSettings, onDismiss: {
             // 不管用什么方式关闭设置面板，都保存一次
@@ -151,6 +151,27 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Background
+
+struct AppBackgroundView: View {
+    var body: some View {
+        ZStack {
+            Theme.bgPrimary
+
+            LinearGradient(
+                colors: [
+                    Theme.accentSoft.opacity(0.16),
+                    Color.clear,
+                    Theme.accentPrimary.opacity(0.08)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        .ignoresSafeArea()
+    }
+}
+
 // MARK: - Sidebar
 
 struct SidebarView: View {
@@ -169,8 +190,12 @@ struct SidebarView: View {
                 HStack(spacing: 10) {
                     ZStack {
                         RoundedRectangle(cornerRadius: Theme.radiusMD)
-                            .fill(Theme.accentPrimary.opacity(0.15))
-                            .frame(width: 32, height: 32)
+                            .fill(Theme.bgGlass)
+                            .frame(width: 34, height: 34)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                    .stroke(Theme.borderDefault, lineWidth: 1)
+                            )
                         Image(systemName: "bolt.fill")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(Theme.accentGradient)
@@ -192,12 +217,12 @@ struct SidebarView: View {
                     }
                     .foregroundColor(Theme.textPrimary)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-                    .background(Theme.bgTertiary)
+                    .padding(.vertical, 10)
+                    .background(Theme.accentPrimary.opacity(0.13))
                     .cornerRadius(Theme.radiusMD)
                     .overlay(
                         RoundedRectangle(cornerRadius: Theme.radiusMD)
-                            .stroke(Theme.borderDefault, lineWidth: 1)
+                            .stroke(Theme.accentPrimary.opacity(0.22), lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -273,12 +298,19 @@ struct SidebarView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
+                    .background(Theme.bgGlass.opacity(0.5))
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight()
             }
         }
-        .background(Theme.bgSecondary)
+        .background(
+            LinearGradient(
+                colors: [Theme.bgSecondary.opacity(0.96), Theme.bgPrimary.opacity(0.90)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 }
 
@@ -292,6 +324,11 @@ struct ConversationRow: View {
             Image(systemName: "bubble.left")
                 .font(.system(size: 12))
                 .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
+                .frame(width: 18, height: 18)
+                .background(
+                    Circle()
+                        .fill(isSelected ? Theme.accentPrimary.opacity(0.13) : Color.clear)
+                )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(conversation.title)
@@ -310,11 +347,11 @@ struct ConversationRow: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .fill(isSelected ? Theme.bgTertiary : (isHovered ? Theme.bgTertiary.opacity(0.5) : Color.clear))
+                .fill(isSelected ? Theme.bgGlass : (isHovered ? Theme.bgGlass.opacity(0.55) : Color.clear))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .stroke(isSelected ? Theme.accentPrimary.opacity(0.3) : Color.clear, lineWidth: 1)
+                .stroke(isSelected ? Theme.accentPrimary.opacity(0.28) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
     }
@@ -405,7 +442,7 @@ struct MainContentView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .background(Theme.bgPrimary)
+        .background(Color.clear)
         .ignoresSafeArea(.container, edges: .top)
         .animation(.easeInOut(duration: 0.3), value: agentEngine.messages.isEmpty)
         .onAppear {
@@ -469,15 +506,12 @@ struct TopBar: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 8)
         .background(
-            Theme.bgSecondary
-                .overlay(
-                    VStack {
-                        Spacer()
-                        Rectangle()
-                            .fill(Theme.borderSubtle)
-                            .frame(height: 1)
-                    }
-                )
+            Theme.bgSecondary.opacity(0.78)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(Theme.borderSubtle)
+                        .frame(height: 1)
+                }
         )
     }
 }
@@ -569,10 +603,6 @@ struct InputArea: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Rectangle()
-                .fill(Theme.borderSubtle)
-                .frame(height: 1)
-
             VStack(spacing: 0) {
                 // 已选择的文件标签
                 if !selectedFiles.isEmpty {
@@ -608,7 +638,7 @@ struct InputArea: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, 14)
+                    .padding(.top, 16)
                     .padding(.bottom, 12)
 
                 // Bottom toolbar
@@ -620,16 +650,16 @@ struct InputArea: View {
                     Button(action: {
                         isShowingFilePicker = true
                     }) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Image(systemName: "at")
                                 .font(.system(size: 11))
                             Text("添加文件")
                                 .font(.system(size: 11, weight: .medium))
                         }
                         .foregroundColor(Theme.textSecondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Theme.bgTertiary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Theme.bgGlass)
                         .cornerRadius(Theme.radiusSM)
                         .overlay(
                             RoundedRectangle(cornerRadius: Theme.radiusSM)
@@ -652,7 +682,7 @@ struct InputArea: View {
                         }) {
                             ZStack {
                                 Circle()
-                                    .fill(Theme.statusError.opacity(0.15))
+                                    .fill(Theme.statusError.opacity(0.18))
                                     .frame(width: 32, height: 32)
 
                                 RoundedRectangle(cornerRadius: 3)
@@ -672,7 +702,7 @@ struct InputArea: View {
                         }) {
                             ZStack {
                                 Circle()
-                                    .fill(text.isEmpty ? AnyShapeStyle(Theme.bgTertiary) : AnyShapeStyle(Theme.accentGradient))
+                                    .fill(text.isEmpty ? AnyShapeStyle(Theme.bgGlass) : AnyShapeStyle(Theme.accentGradient))
                                     .frame(width: 32, height: 32)
 
                                 Image(systemName: "arrow.up")
@@ -688,16 +718,25 @@ struct InputArea: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
             }
-            .background(Theme.bgInput)
-            .cornerRadius(Theme.radiusLG)
+            .background(Theme.bgInput.opacity(0.94))
+            .cornerRadius(Theme.radiusXL)
             .overlay(
-                RoundedRectangle(cornerRadius: Theme.radiusLG)
-                    .stroke(isFocused ? Theme.accentPrimary.opacity(0.4) : Theme.borderSubtle, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusXL)
+                    .stroke(isFocused ? Theme.accentPrimary.opacity(0.45) : Theme.borderDefault, lineWidth: 1)
             )
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .shadow(color: Theme.shadowStrong.opacity(0.55), radius: 20, x: 0, y: 12)
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 16)
         }
-        .background(Theme.bgSecondary)
+        .background(
+            Theme.bgSecondary.opacity(0.70)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Theme.borderSubtle)
+                        .frame(height: 1)
+                }
+        )
         .sheet(isPresented: $isShowingFilePicker) {
             FilePickerView(workingDirectory: workingDirectory) { filePath in
                 addFileReference(filePath)
@@ -761,7 +800,7 @@ struct FolderSelector: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(Theme.bgTertiary)
+            .background(Theme.bgGlass)
             .cornerRadius(Theme.radiusSM)
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.radiusSM)
@@ -814,7 +853,7 @@ struct ModelBadge: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Theme.bgTertiary.opacity(0.5))
+        .background(Theme.bgGlass)
         .cornerRadius(Theme.radiusSM)
     }
 

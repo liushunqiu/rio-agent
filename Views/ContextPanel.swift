@@ -16,7 +16,7 @@ struct ContextPanel: View {
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle")
                         .font(.system(size: 12))
-                        .foregroundColor(Theme.textTertiary)
+                        .foregroundColor(Theme.accentPrimary)
                     Text("上下文")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Theme.textPrimary)
@@ -24,14 +24,14 @@ struct ContextPanel: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.vertical, 15)
 
             Rectangle()
                 .fill(Theme.borderSubtle)
                 .frame(height: 1)
 
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 14) {
                     // Recent Files
                     if !recentFiles.isEmpty {
                         ContextSection(title: "最近文件") {
@@ -72,10 +72,16 @@ struct ContextPanel: View {
 
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.vertical, 16)
             }
         }
-        .background(Theme.bgSecondary)
+        .background(
+            LinearGradient(
+                colors: [Theme.bgSecondary.opacity(0.96), Theme.bgPrimary.opacity(0.92)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     private func formatDate(_ date: Date) -> String {
@@ -196,7 +202,7 @@ struct ContextSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundColor(Theme.accentPrimary)
@@ -205,6 +211,14 @@ struct ContextSection<Content: View>: View {
             VStack(alignment: .leading, spacing: 6) {
                 content
             }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.bgGlass)
+            .cornerRadius(Theme.radiusMD)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .stroke(Theme.borderSubtle, lineWidth: 1)
+            )
         }
     }
 }
@@ -218,12 +232,13 @@ struct ContextRow: View {
     var body: some View {
         HStack {
             Text(label)
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundColor(Theme.textSecondary)
             Spacer()
             Text(value)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(Theme.textPrimary)
+                .lineLimit(1)
         }
     }
 }

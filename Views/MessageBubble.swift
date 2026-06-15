@@ -50,7 +50,7 @@ struct MessageBubble: View {
             }
         }
         .padding(.horizontal, 24)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 }
@@ -66,11 +66,13 @@ struct MessageContent: View {
             Text(message.content)
                 .font(.system(size: 14))
                 .foregroundColor(Theme.textOnAccent)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 13)
+                .padding(.horizontal, 17)
+                .padding(.vertical, 12)
                 .background(Theme.userBubble)
                 .cornerRadius(Theme.radiusLG)
+                .shadow(color: Theme.accentPrimary.opacity(0.18), radius: 12, x: 0, y: 6)
                 .textSelection(.enabled)
+                .frame(maxWidth: 620, alignment: .trailing)
         } else if message.role == .system {
             // System message
             HStack(spacing: 8) {
@@ -100,7 +102,7 @@ struct MessageContent: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: 820, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: Theme.radiusLG)
                             .fill(Theme.assistantBubbleBg)
@@ -109,12 +111,13 @@ struct MessageContent: View {
                         RoundedRectangle(cornerRadius: Theme.radiusLG)
                             .stroke(Theme.assistantBubbleBorder, lineWidth: 1)
                     )
+                    .shadow(color: Theme.shadowSoft, radius: 10, x: 0, y: 4)
             } else {
                 // 流式输出完成后使用完整的Markdown渲染
                 MarkdownRenderer(text: message.content)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: 820, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: Theme.radiusLG)
                             .fill(Theme.assistantBubbleBg)
@@ -123,6 +126,7 @@ struct MessageContent: View {
                         RoundedRectangle(cornerRadius: Theme.radiusLG)
                             .stroke(Theme.assistantBubbleBorder, lineWidth: 1)
                     )
+                    .shadow(color: Theme.shadowSoft, radius: 10, x: 0, y: 4)
             }
         }
     }

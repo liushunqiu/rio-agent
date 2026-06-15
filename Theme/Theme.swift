@@ -3,22 +3,24 @@ import SwiftUI
 // MARK: - Design System
 
 enum Theme {
-    // MARK: Backgrounds (Raycast-inspired dark palette)
-    static let bgPrimary = Color(red: 0.07, green: 0.07, blue: 0.09)
-    static let bgSecondary = Color(red: 0.10, green: 0.10, blue: 0.13)
-    static let bgTertiary = Color(red: 0.13, green: 0.13, blue: 0.17)
-    static let bgElevated = Color(red: 0.15, green: 0.15, blue: 0.20)
-    static let bgInput = Color(red: 0.11, green: 0.11, blue: 0.15)
+    // MARK: Backgrounds
+    static let bgPrimary = Color(red: 0.045, green: 0.050, blue: 0.060)
+    static let bgSecondary = Color(red: 0.070, green: 0.078, blue: 0.092)
+    static let bgTertiary = Color(red: 0.105, green: 0.116, blue: 0.135)
+    static let bgElevated = Color(red: 0.130, green: 0.145, blue: 0.165)
+    static let bgInput = Color(red: 0.080, green: 0.092, blue: 0.110)
+    static let bgGlass = Color.white.opacity(0.045)
 
     // MARK: Text
-    static let textPrimary = Color(red: 0.93, green: 0.93, blue: 0.96)
-    static let textSecondary = Color(red: 0.58, green: 0.58, blue: 0.66)
-    static let textTertiary = Color(red: 0.40, green: 0.40, blue: 0.48)
+    static let textPrimary = Color(red: 0.94, green: 0.96, blue: 0.98)
+    static let textSecondary = Color(red: 0.62, green: 0.67, blue: 0.72)
+    static let textTertiary = Color(red: 0.42, green: 0.48, blue: 0.54)
     static let textOnAccent = Color.white
 
     // MARK: Accents
-    static let accentPrimary = Color(red: 0.48, green: 0.40, blue: 0.95)
-    static let accentSecondary = Color(red: 0.30, green: 0.58, blue: 0.98)
+    static let accentPrimary = Color(red: 0.24, green: 0.78, blue: 0.62)
+    static let accentSecondary = Color(red: 0.34, green: 0.58, blue: 0.96)
+    static let accentSoft = Color(red: 0.22, green: 0.62, blue: 0.80)
     static let accentGradient = LinearGradient(
         colors: [accentPrimary, accentSecondary],
         startPoint: .topLeading,
@@ -38,13 +40,13 @@ enum Theme {
 
     // MARK: Semantic Colors
     static let userBubble = LinearGradient(
-        colors: [Color(red: 0.40, green: 0.35, blue: 0.85), Color(red: 0.30, green: 0.50, blue: 0.90)],
+        colors: [Color(red: 0.18, green: 0.58, blue: 0.52), Color(red: 0.28, green: 0.46, blue: 0.86)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
-    static let assistantBubbleBg = Color(red: 0.11, green: 0.11, blue: 0.15)
-    static let assistantBubbleBorder = Color.white.opacity(0.05)
-    static let codeBackground = Color(red: 0.05, green: 0.05, blue: 0.07)
+    static let assistantBubbleBg = Color(red: 0.075, green: 0.086, blue: 0.102)
+    static let assistantBubbleBorder = Color.white.opacity(0.07)
+    static let codeBackground = Color(red: 0.035, green: 0.042, blue: 0.052)
     static let toolCallBg = Color(red: 0.14, green: 0.12, blue: 0.08)
     static let toolCallBorder = Color(red: 0.95, green: 0.70, blue: 0.25).opacity(0.3)
     static let thinkingBg = Color(red: 0.12, green: 0.10, blue: 0.08)
@@ -61,6 +63,9 @@ enum Theme {
     static let radiusMD: CGFloat = 10
     static let radiusLG: CGFloat = 14
     static let radiusXL: CGFloat = 20
+
+    static let shadowSoft = Color.black.opacity(0.18)
+    static let shadowStrong = Color.black.opacity(0.32)
 
     static let spaceXS: CGFloat = 4
     static let spaceSM: CGFloat = 8
