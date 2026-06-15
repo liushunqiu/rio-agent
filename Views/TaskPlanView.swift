@@ -124,22 +124,49 @@ struct DarkSubTaskRow: View {
     let subTask: SubTask
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: statusIcon)
                 .font(.system(size: 12))
                 .foregroundColor(statusColor)
                 .frame(width: 18)
+                .padding(.top, 2)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(subTask.description)
                     .font(.system(size: 12))
                     .foregroundColor(Theme.textSecondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
 
                 if let worker = subTask.assignedWorker {
-                    Text(worker.name)
-                        .font(.system(size: 10, design: .monospaced))
+                    HStack(spacing: 6) {
+                        Label(worker.name, systemImage: workerIcon(worker))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.textSecondary)
+
+                        Text(worker.capability.displayName)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(Theme.accentPrimary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Theme.accentPrimary.opacity(0.12))
+                            .cornerRadius(Theme.radiusSM)
+
+                        Text(worker.model)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text("未分配执行 Agent")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.statusWarning)
+                }
+
+                if let reason = subTask.assignmentReason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.system(size: 10))
                         .foregroundColor(Theme.textTertiary)
+                        .lineLimit(2)
                 }
             }
 
@@ -155,6 +182,16 @@ struct DarkSubTaskRow: View {
         .padding(8)
         .background(Theme.bgTertiary)
         .cornerRadius(Theme.radiusSM)
+    }
+
+    private func workerIcon(_ worker: AgentConfig) -> String {
+        switch worker.capability {
+        case .search: return "magnifyingglass"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .file: return "doc.text"
+        case .general: return "person.fill"
+        case .custom: return "slider.horizontal.3"
+        }
     }
 
     private var statusIcon: String {

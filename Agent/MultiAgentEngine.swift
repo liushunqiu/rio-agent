@@ -100,7 +100,7 @@ class MultiAgentEngine: ObservableObject {
             plan.status = .executing
             currentPlan = plan
 
-            let results = try await executeSubTasks(subTasks)
+            let results = try await executeSubTasks(subTasks, plan: &plan)
 
             // Step 3: Orchestrator synthesizes results
             plan.status = .synthesizing
@@ -202,13 +202,15 @@ class MultiAgentEngine: ObservableObject {
 
             let workerId = (taskDict["worker_id"] as? String).flatMap(UUID.init(uuidString:))
             let workerType = AgentCapability(workerType: taskDict["worker_type"] as? String ?? "general")
+            let reason = taskDict["reason"] as? String
             let worker = selectWorker(id: workerId, capability: workerType)
 
             return SubTask(
                 description: description,
                 workerId: workerId,
                 workerType: workerType,
-                assignedWorker: worker
+                assignedWorker: worker,
+                assignmentReason: reason
             )
         }
     }
@@ -240,7 +242,7 @@ class MultiAgentEngine: ObservableObject {
 
     // MARK: - Parallel Execution
 
-    private func executeSubTasks(_ subTasks: [SubTask]) async throws -> [UUID: String] {
+    private func executeSubTasks(_ subTasks: [SubTask], plan: inout TaskPlan) async throws -> [UUID: String] {
         var results: [UUID: String] = [:]
 
         // Execute in parallel with concurrency limit
@@ -250,6 +252,7 @@ class MultiAgentEngine: ObservableObject {
             for subTask in subTasks {
                 guard let worker = subTask.assignedWorker,
                       let service = services[worker.id] else {
+                    updateSubTask(subTask.id, in: &plan, status: .failed, result: "服务不可用或未配置")
                     continue
                 }
 
@@ -257,9 +260,11 @@ class MultiAgentEngine: ObservableObject {
                 if activeCount >= config.maxParallelWorkers {
                     let result = try await group.next()!
                     results[result.0] = result.1
+                    updateSubTask(result.0, in: &plan, status: .completed, result: result.1)
                     activeCount -= 1
                 }
 
+                updateSubTask(subTask.id, in: &plan, status: .running)
                 group.addTask { [self] in
                     let result = try await self.executeSubTask(subTask, service: service, worker: worker)
                     return (subTask.id, result)
@@ -270,10 +275,20 @@ class MultiAgentEngine: ObservableObject {
             // Collect remaining results
             for try await (taskId, result) in group {
                 results[taskId] = result
+                updateSubTask(taskId, in: &plan, status: .completed, result: result)
             }
         }
 
         return results
+    }
+
+    private func updateSubTask(_ id: UUID, in plan: inout TaskPlan, status: SubTaskStatus, result: String? = nil) {
+        guard let index = plan.subTasks.firstIndex(where: { $0.id == id }) else { return }
+        plan.subTasks[index].status = status
+        if let result {
+            plan.subTasks[index].result = result
+        }
+        currentPlan = plan
     }
 
     private static let maxToolCallIterations = 9999

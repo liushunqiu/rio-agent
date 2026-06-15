@@ -214,6 +214,7 @@ struct SubTask: Identifiable {
     var workerId: UUID?
     var workerType: AgentCapability
     var assignedWorker: AgentConfig?
+    var assignmentReason: String?
     var status: SubTaskStatus
     var result: String?
 
@@ -223,6 +224,7 @@ struct SubTask: Identifiable {
         workerId: UUID? = nil,
         workerType: AgentCapability = .general,
         assignedWorker: AgentConfig? = nil,
+        assignmentReason: String? = nil,
         status: SubTaskStatus = .pending,
         result: String? = nil
     ) {
@@ -231,6 +233,7 @@ struct SubTask: Identifiable {
         self.workerId = workerId
         self.workerType = workerType
         self.assignedWorker = assignedWorker
+        self.assignmentReason = assignmentReason
         self.status = status
         self.result = result
     }
