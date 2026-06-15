@@ -6,7 +6,7 @@ struct EnhancedMessageBubble: View {
     let message: Message
     let isToolExecuting: Bool
     let currentToolCallId: String?
-    let allMessages: [Message]
+    let toolResultsById: [String: ToolResult]
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 8) {
@@ -103,13 +103,7 @@ struct EnhancedMessageBubble: View {
     }
 
     private func findToolResult(for toolCallId: String) -> ToolResult? {
-        for msg in allMessages {
-            if let results = msg.toolResults,
-               let result = results.first(where: { $0.toolCallId == toolCallId }) {
-                return result
-            }
-        }
-        return nil
+        toolResultsById[toolCallId]
     }
 
     private func isFileOperationTool(_ name: String) -> Bool {
@@ -127,8 +121,11 @@ struct EnhancedChatView: View {
     let isProcessing: Bool
     let currentToolCallId: String?
 
-    /// 每页最多显示的消息条数
-    private let pageSize = 5
+    /// 单页目标渲染重量。短消息会多放，长输出/工具结果会少放。
+    private let targetPageWeight = 9_000
+
+    /// 防止大量短消息堆在同一页。
+    private let maxMessagesPerPage = 12
 
     /// 当前页码（0-based）
     @State private var currentPage: Int = 0
@@ -143,7 +140,7 @@ struct EnhancedChatView: View {
 
     /// 总页数
     private var totalPages: Int {
-        max(1, Int(ceil(Double(messages.count) / Double(pageSize))))
+        max(1, messagePages.count)
     }
 
     /// 是否在最后一页
@@ -153,10 +150,52 @@ struct EnhancedChatView: View {
 
     /// 当前页显示的消息
     private var pagedMessages: [Message] {
-        let start = currentPage * pageSize
-        let end = min(start + pageSize, messages.count)
-        guard start < messages.count else { return [] }
-        return Array(messages[start..<end])
+        guard !messagePages.isEmpty else { return [] }
+        return messagePages[min(currentPage, messagePages.count - 1)]
+    }
+
+    /// 按渲染成本分页，而不是固定消息条数。
+    private var messagePages: [[Message]] {
+        guard !messages.isEmpty else { return [] }
+
+        var pages: [[Message]] = []
+        var page: [Message] = []
+        var pageWeight = 0
+
+        for message in messages {
+            let weight = renderWeight(for: message)
+            let shouldStartNewPage = !page.isEmpty
+                && (pageWeight + weight > targetPageWeight || page.count >= maxMessagesPerPage)
+
+            if shouldStartNewPage {
+                pages.append(page)
+                page = []
+                pageWeight = 0
+            }
+
+            page.append(message)
+            pageWeight += weight
+        }
+
+        if !page.isEmpty {
+            pages.append(page)
+        }
+
+        return pages
+    }
+
+    /// 工具结果索引，避免每个消息气泡重复扫描全量消息。
+    private var toolResultsById: [String: ToolResult] {
+        var index: [String: ToolResult] = [:]
+        for result in messages.flatMap({ $0.toolResults ?? [] }) {
+            index[result.toolCallId] = result
+        }
+        return index
+    }
+
+    /// 流式文本变化信号，只比较长度，减少大字符串作为 onChange 值的复制成本。
+    private var streamingContentSignal: Int {
+        (messages.last?.content.count ?? 0) + (messages.last?.thinkingContent?.count ?? 0)
     }
 
     // MARK: - Body
@@ -172,7 +211,7 @@ struct EnhancedChatView: View {
                                 message: message,
                                 isToolExecuting: isProcessing && currentToolCallId != nil,
                                 currentToolCallId: currentToolCallId,
-                                allMessages: messages
+                                toolResultsById: toolResultsById
                             )
                             .id(message.id)
                             .transition(.asymmetric(
@@ -184,27 +223,29 @@ struct EnhancedChatView: View {
                     .padding(.top, 18)
                     .padding(.bottom, 24)
                 }
-                .onChange(of: messages.count) { _, newCount in
+                .onChange(of: messages.count) { _, _ in
+                    let latestPage = max(0, totalPages - 1)
+                    if currentPage > latestPage {
+                        currentPage = latestPage
+                    }
+
                     // 新消息到达时，自动跳到最后一页
                     if followLatest || isProcessing {
-                        let newTotal = max(1, Int(ceil(Double(newCount) / Double(pageSize))))
                         withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = newTotal - 1
+                            currentPage = latestPage
                         }
                     }
                 }
-                .onChange(of: messages.last?.content) { _, _ in
-                    if messages.last?.isStreaming == true {
-                        scrollToBottom(proxy: proxy)
-                    }
-                }
-                .onChange(of: messages.last?.thinkingContent) { _, _ in
-                    if messages.last?.isStreaming == true {
+                .onChange(of: streamingContentSignal) { _, _ in
+                    if followLatest && (messages.last?.isStreaming == true || isProcessing) {
+                        currentPage = max(0, totalPages - 1)
                         scrollToBottom(proxy: proxy)
                     }
                 }
                 .onChange(of: currentToolCallId) { _, _ in
-                    scrollToBottom(proxy: proxy)
+                    if shouldAutoScroll {
+                        scrollToBottom(proxy: proxy)
+                    }
                 }
             }
 
@@ -228,10 +269,11 @@ struct EnhancedChatView: View {
                         }
                     },
                     onNextPage: {
+                        let nextPage = min(totalPages - 1, currentPage + 1)
                         withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = min(totalPages - 1, currentPage + 1)
+                            currentPage = nextPage
                         }
-                        followLatest = isOnLastPage
+                        followLatest = nextPage >= totalPages - 1
                     },
                     onLastPage: {
                         followLatest = true
@@ -260,15 +302,54 @@ struct EnhancedChatView: View {
     // MARK: - Helpers
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
+        guard shouldAutoScroll else { return }
         scrollDebounceTimer?.invalidate()
         scrollDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: false) { _ in
             DispatchQueue.main.async {
-                guard let lastMessage = pagedMessages.last else { return }
+                guard shouldAutoScroll, let lastMessage = pagedMessages.last else { return }
                 withAnimation(.easeOut(duration: 0.12)) {
                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                 }
             }
         }
+    }
+
+    private var shouldAutoScroll: Bool {
+        followLatest && isOnLastPage && (messages.last?.isStreaming == true || isProcessing)
+    }
+
+    private func renderWeight(for message: Message) -> Int {
+        var weight = 120
+
+        switch message.role {
+        case .user:
+            weight += message.content.count
+        case .system:
+            weight += message.content.count * 2
+        case .assistant:
+            weight += message.content.count * 2
+        }
+
+        if let thinkingContent = message.thinkingContent {
+            weight += thinkingContent.count
+        }
+
+        if let toolCalls = message.toolCalls {
+            weight += toolCalls.reduce(0) { total, toolCall in
+                let argumentsWeight = toolCall.arguments.values.reduce(0) { partial, value in
+                    partial + String(describing: value.value).count
+                }
+                return total + 600 + toolCall.name.count + argumentsWeight
+            }
+        }
+
+        if let toolResults = message.toolResults {
+            weight += toolResults.reduce(0) { total, result in
+                total + 700 + result.output.count + (result.error?.count ?? 0)
+            }
+        }
+
+        return weight
     }
 }
 
@@ -447,7 +528,7 @@ struct EnhancedMessageBubble_Previews: PreviewProvider {
                 ),
                 isToolExecuting: false,
                 currentToolCallId: nil,
-                allMessages: []
+                toolResultsById: [:]
             )
 
             EnhancedMessageBubble(
@@ -464,7 +545,7 @@ struct EnhancedMessageBubble_Previews: PreviewProvider {
                 ),
                 isToolExecuting: true,
                 currentToolCallId: "2",
-                allMessages: []
+                toolResultsById: [:]
             )
         }
         .padding()
