@@ -7,6 +7,7 @@ class ConversationManager: ObservableObject {
     @Published var currentConversation: Conversation?
 
     private let saveKey = "saved_conversations"
+    private var saveDebounceTask: Task<Void, Never>?
 
     init() {
         loadConversations()
@@ -18,7 +19,7 @@ class ConversationManager: ObservableObject {
         let conversation = Conversation()
         conversations.insert(conversation, at: 0)
         currentConversation = conversation
-        saveConversations()
+        debouncedSave()
         return conversation
     }
 
@@ -31,7 +32,7 @@ class ConversationManager: ObservableObject {
         if currentConversation?.id == conversation.id {
             currentConversation = conversations.first
         }
-        saveConversations()
+        debouncedSave()
     }
 
     func updateCurrentConversation(messages: [Message], workingDirectory: String? = nil) {
@@ -60,10 +61,20 @@ class ConversationManager: ObservableObject {
             conversations.insert(current, at: 0)
         }
         
-        saveConversations()
+        debouncedSave()
     }
 
     // MARK: - Persistence
+
+    /// 防抖保存, 避免流式输出期间频繁写入
+    private func debouncedSave() {
+        saveDebounceTask?.cancel()
+        saveDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s debounce
+            guard !Task.isCancelled else { return }
+            self?.saveConversations()
+        }
+    }
 
     private func saveConversations() {
         do {

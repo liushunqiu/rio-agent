@@ -304,13 +304,37 @@ enum AIServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            return "无效的 API 响应"
+            return "API 返回了无效的响应格式，请检查端点地址是否正确。"
         case .apiError(let statusCode, let message):
-            return "API 错误 (\(statusCode)): \(message)"
+            switch statusCode {
+            case 401:
+                return "API Key 无效或已过期 (401)。请前往设置检查 API Key。"
+            case 403:
+                return "API 访问被拒绝 (403)。请检查 API Key 权限或账户状态。"
+            case 429:
+                return "API 请求频率超限 (429)。请稍后重试，或降低请求频率。"
+            case 500, 502, 503:
+                return "API 服务暂时不可用 (\(statusCode))。请稍后重试。"
+            default:
+                // 提取简洁的错误信息, 避免输出超长的 JSON
+                let shortMessage = extractShortError(message)
+                return "API 错误 (\(statusCode)): \(shortMessage)"
+            }
         case .decodingError:
-            return "响应解码失败"
+            return "API 响应解析失败。可能是模型返回了非预期的格式，请重试。"
         case .timeout:
-            return "请求超时，请检查网络连接或端点地址是否正确"
+            return "请求超时 (120s)。请检查网络连接，或确认端点地址是否可达。"
         }
+    }
+    
+    private func extractShortError(_ message: String) -> String {
+        // 尝试从 JSON 错误中提取简洁信息
+        if let data = message.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = json["error"] as? [String: Any],
+           let msg = error["message"] as? String {
+            return String(msg.prefix(200))
+        }
+        return String(message.prefix(200))
     }
 }

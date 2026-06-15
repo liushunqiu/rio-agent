@@ -273,7 +273,11 @@ struct FilePickerView: View {
     @State private var files: [String] = []
     @State private var isLoading = true
     @State private var searchText = ""
+    @State private var selectedFileIndex: Int? = nil
     @Environment(\.dismiss) private var dismiss
+    
+    private let recentFilesKey = "recent_files_picker"
+    private let maxRecentFiles = 5
     
     var body: some View {
         VStack(spacing: 0) {
@@ -297,19 +301,59 @@ struct FilePickerView: View {
             Divider()
             
             // Search bar
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
                 
-                TextField("搜索文件...", text: $searchText)
+                TextField("搜索文件... (支持模糊匹配)", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
+                    .onChange(of: searchText) { _, _ in
+                        selectedFileIndex = nil
+                    }
+                
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(Theme.bgTertiary)
             
             Divider()
+            
+            // Recent files section (when no search)
+            if searchText.isEmpty && !recentFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Image(systemName: "clock")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text("最近使用")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Theme.bgTertiary.opacity(0.5))
+                    
+                    ForEach(recentFiles, id: \.self) { filePath in
+                        FileRow(filePath: filePath, workingDirectory: workingDirectory) {
+                            recordRecentFile(filePath)
+                            onSelect(filePath)
+                            dismiss()
+                        }
+                    }
+                }
+                
+                Divider()
+            }
             
             // File list
             if isLoading {
@@ -329,33 +373,93 @@ struct FilePickerView: View {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 28))
                         .foregroundColor(.secondary)
-                    Text("未找到文件")
+                    Text(searchText.isEmpty ? "未找到代码文件" : "未匹配到文件")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
                         .padding(.top, 8)
+                    if !searchText.isEmpty {
+                        Text("尝试不同的关键词或检查拼写")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary.opacity(0.6))
+                            .padding(.top, 4)
+                    }
                     Spacer()
                 }
             } else {
-                List(filteredFiles, id: \.self) { filePath in
+                List(Array(filteredFiles.enumerated()), id: \.element) { index, filePath in
                     FileRow(filePath: filePath, workingDirectory: workingDirectory) {
+                        recordRecentFile(filePath)
                         onSelect(filePath)
                         dismiss()
                     }
+                    .background(selectedFileIndex == index ? Color.accentColor.opacity(0.15) : Color.clear)
                 }
                 .listStyle(.plain)
             }
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 540, height: 460)
         .onAppear {
             loadFiles()
         }
+        .onKeyPress(.upArrow) {
+            guard !filteredFiles.isEmpty else { return .ignored }
+            let newIndex = max(0, (selectedFileIndex ?? 0) - 1)
+            selectedFileIndex = newIndex
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            guard !filteredFiles.isEmpty else { return .ignored }
+            let newIndex = min(filteredFiles.count - 1, (selectedFileIndex ?? -1) + 1)
+            selectedFileIndex = newIndex
+            return .handled
+        }
+        .onKeyPress(.return) {
+            if let idx = selectedFileIndex, idx < filteredFiles.count {
+                let filePath = filteredFiles[idx]
+                recordRecentFile(filePath)
+                onSelect(filePath)
+                dismiss()
+                return .handled
+            }
+            return .ignored
+        }
+    }
+    
+    private var recentFiles: [String] {
+        let saved = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
+        // 只显示属于当前工作目录且确实存在的文件
+        return saved.filter { path in
+            guard let wd = workingDirectory else { return false }
+            return path.hasPrefix(wd) && FileManager.default.fileExists(atPath: path)
+        }
+    }
+    
+    private func recordRecentFile(_ path: String) {
+        var saved = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
+        saved.removeAll { $0 == path }
+        saved.insert(path, at: 0)
+        if saved.count > maxRecentFiles {
+            saved = Array(saved.prefix(maxRecentFiles))
+        }
+        UserDefaults.standard.set(saved, forKey: recentFilesKey)
     }
     
     private var filteredFiles: [String] {
         guard !searchText.isEmpty else { return files }
+        let query = searchText.lowercased()
         return files.filter { filePath in
             let fileName = URL(fileURLWithPath: filePath).lastPathComponent.lowercased()
-            return fileName.contains(searchText.lowercased())
+            let relativePath = filePath.lowercased()
+            // 先匹配文件名, 再匹配路径
+            return fileName.contains(query) || relativePath.contains(query)
+        }.sorted { a, b in
+            // 文件名匹配优先于路径匹配
+            let aName = URL(fileURLWithPath: a).lastPathComponent.lowercased()
+            let bName = URL(fileURLWithPath: b).lastPathComponent.lowercased()
+            let aNameMatch = aName.contains(query)
+            let bNameMatch = bName.contains(query)
+            if aNameMatch != bNameMatch { return aNameMatch }
+            return aName < bName
         }
     }
     
@@ -382,18 +486,14 @@ struct FilePickerView: View {
             }
             
             var filePaths: [String] = []
+            let fileExtensions = ["swift", "py", "js", "ts", "jsx", "tsx", "html", "css", "json", 
+                                 "md", "txt", "yml", "yaml", "xml", "plist", "xcconfig", "sh",
+                                 "rb", "java", "kt", "go", "rs", "c", "cpp", "h", "hpp",
+                                 "toml", "env", "cfg", "ini", "vue", "svelte", "astro"]
             
             for case let fileURL as URL in enumerator {
-                // 跳过目录
                 let resourceValues = try? fileURL.resourceValues(forKeys: Set(resourceKeys))
-                if resourceValues?.isDirectory == true {
-                    continue
-                }
-                
-                // 只包含常见代码文件
-                let fileExtensions = ["swift", "py", "js", "ts", "jsx", "tsx", "html", "css", "json", 
-                                     "md", "txt", "yml", "yaml", "xml", "plist", "xcconfig", "sh",
-                                     "rb", "java", "kt", "go", "rs", "c", "cpp", "h", "hpp"]
+                if resourceValues?.isDirectory == true { continue }
                 
                 let fileExtension = fileURL.pathExtension.lowercased()
                 if fileExtensions.contains(fileExtension) {

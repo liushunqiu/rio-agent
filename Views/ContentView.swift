@@ -382,8 +382,10 @@ struct MainContentView: View {
 
             // Error banner
             if let error = agentEngine.error {
-                ErrorBanner(message: error)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                ErrorBanner(message: error) {
+                    agentEngine.error = nil
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             // Input area (only in chat mode)
@@ -829,6 +831,7 @@ struct ModelBadge: View {
 
 struct ErrorBanner: View {
     let message: String
+    var onDismiss: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -839,9 +842,20 @@ struct ErrorBanner: View {
             Text(message)
                 .font(.system(size: 12))
                 .foregroundColor(Theme.statusError)
-                .lineLimit(3)
+                .lineLimit(4)
 
             Spacer()
+
+            if let onDismiss = onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Theme.statusError.opacity(0.7))
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("关闭")
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

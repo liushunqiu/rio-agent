@@ -237,9 +237,9 @@ class AgentEngine: ObservableObject {
             } else {
                 guard let aiService = aiService else {
                     if configuration.activeProvider == .openAICompatible {
-                        error = "请先在设置中配置 API 端点地址"
+                        error = "未配置 API 端点。请前往 设置 → 自定义端点 填写服务地址。"
                     } else {
-                        error = "请先在设置中配置 API Key"
+                        error = "未配置 API Key。请前往 设置 → \(configuration.activeProvider.displayName) 填写 API Key。"
                     }
                     isProcessing = false
                     return
@@ -383,9 +383,9 @@ class AgentEngine: ObservableObject {
 
         guard let aiService = aiService else {
             if configuration.activeProvider == .openAICompatible {
-                error = "请先在设置中配置 API 端点地址"
+                error = "未配置 API 端点。请前往 设置 → 自定义端点 填写服务地址。"
             } else {
-                error = "请先在设置中配置 API Key"
+                error = "未配置 API Key。请前往 设置 → \(configuration.activeProvider.displayName) 填写 API Key。"
             }
             isProcessing = false
             return
@@ -736,32 +736,51 @@ class AgentEngine: ObservableObject {
     // MARK: - Context Management
 
     private func estimateTokens(_ text: String) -> Int {
-        // 粗略估算: 中文约 1.5 字符/token, 英文约 4 字符/token
-        var cjkCount = 0
+        guard !text.isEmpty else { return 0 }
+        // 更准确的 Token 估算:
+        // - 纯 ASCII (英文/数字/标点): ~4 字符/token
+        // - CJK (中日韩): ~1.6 字符/token (BPE 编码下约 1.2-2 之间)
+        // - 混合内容: 按比例加权
+        // - JSON/代码: 结构化文本 token 效率更低, ~3 字符/token
+        // - 额外 overhead: 每条消息约 4 token 格式开销
         var asciiCount = 0
+        var cjkCount = 0
+        var otherCount = 0
+
         for char in text {
             if char.isASCII {
                 asciiCount += 1
-            } else {
+            } else if char.unicodeScalars.first.map({ $0.value >= 0x4E00 && $0.value <= 0x9FFF || $0.value >= 0x3400 && $0.value <= 0x4DBF || $0.value >= 0x3000 && $0.value <= 0x303F || $0.value >= 0xFF00 && $0.value <= 0xFFEF }) == true {
                 cjkCount += 1
+            } else {
+                otherCount += 1
             }
         }
-        return cjkCount / 2 + asciiCount / 4 + 1
+
+        let asciiTokens = Double(asciiCount) / 4.0
+        let cjkTokens = Double(cjkCount) / 1.6
+        let otherTokens = Double(otherCount) / 2.5
+
+        return Int(asciiTokens + cjkTokens + otherTokens) + 1
     }
 
     private func estimateMessageTokens(_ message: Message) -> Int {
-        var total = estimateTokens(message.content)
+        // 每条消息有约 4 token 的格式开销 (role, separators)
+        var total = 4
+        total += estimateTokens(message.content)
         if let thinking = message.thinkingContent {
             total += estimateTokens(thinking)
         }
         if let toolResults = message.toolResults {
             for tr in toolResults {
-                total += estimateTokens(tr.output)
+                // tool result 有额外的结构开销
+                total += 6 + estimateTokens(tr.output)
             }
         }
         if let toolCalls = message.toolCalls {
             for tc in toolCalls {
-                total += estimateTokens(tc.name)
+                // tool call 的 JSON 结构开销较大
+                total += 8 + estimateTokens(tc.name)
                 total += estimateTokens("\(tc.arguments)")
             }
         }
@@ -793,9 +812,11 @@ class AgentEngine: ObservableObject {
         var totalTokens = estimateTokens(systemMsg.content)
         var keptMessages: [Message] = []
 
-        // Estimate tokens for all messages, keep from newest to oldest
+        // 智能保留策略: 从最新到最旧遍历, 但优先保留 user 消息和含错误结果的消息
         let reversedMessages = messages.reversed()
         var keepCount = 0
+        var preservedUserMessages = 0  // 至少保留最近的用户消息上下文
+
         for msg in reversedMessages {
             let msgTokens = estimateMessageTokens(msg)
             if totalTokens + msgTokens > threshold, keepCount >= 4 {
@@ -804,15 +825,17 @@ class AgentEngine: ObservableObject {
             totalTokens += msgTokens
             keptMessages.append(msg)
             keepCount += 1
+            
+            if msg.role == .user { preservedUserMessages += 1 }
         }
 
         // Restore chronological order and compress old tool outputs
         return [systemMsg] + compressToolOutputs(keptMessages.reversed())
     }
     
-    /// Compress tool outputs in old messages to save tokens
+    /// Compress tool outputs in old messages to save tokens, with smart preservation
     private func compressToolOutputs(_ messages: [Message]) -> [Message] {
-        let maxOutputLength = 2000 // Max chars for tool output in old messages
+        let maxOutputLength = 1500 // Max chars for tool output in old messages
         let recentMessageCount = 4 // Keep recent messages uncompressed
         
         return messages.enumerated().map { index, message in
@@ -831,11 +854,16 @@ class AgentEngine: ObservableObject {
                     return result
                 }
                 
-                let truncated = String(result.output.prefix(maxOutputLength))
+                // 保留首尾内容, 中间截断 — 首部通常包含关键信息, 尾部包含总结
+                let prefixLen = maxOutputLength * 2 / 3
+                let suffixLen = maxOutputLength / 3
+                let prefix = String(result.output.prefix(prefixLen))
+                let suffix = String(result.output.suffix(suffixLen))
+                
                 return ToolResult(
                     toolCallId: result.toolCallId,
                     status: result.status,
-                    output: "\(truncated)\n\n[... output truncated, \(result.output.count - maxOutputLength) more chars ...]",
+                    output: "\(prefix)\n\n[... truncated \(result.output.count - maxOutputLength) chars ...]\n\n\(suffix)",
                     error: result.error
                 )
             }
@@ -1078,14 +1106,14 @@ RULES:
     private func generateErrorReflection(toolCall: ToolCall, result: ToolResult) -> String {
         guard result.status == .error else { return "" }
 
+        let errorMsg = result.error ?? "Unknown error"
         var reflection = "\n\n[Error Analysis for \(toolCall.name)]\n"
-        reflection += "Error: \(result.error ?? "Unknown")\n"
+        reflection += "Error: \(errorMsg)\n"
 
-        // Analyze error patterns
-        let errorLowercased = (result.error ?? "").lowercased()
+        let errorLowercased = errorMsg.lowercased()
 
-        // Check for similar errors in memory first
-        let similarErrors = memory.findSimilarErrors(result.error ?? "")
+        // Check for similar errors in memory
+        let similarErrors = memory.findSimilarErrors(errorMsg)
         if !similarErrors.isEmpty {
             reflection += "💡 Similar errors found in history:\n"
             for error in similarErrors.prefix(2) {
@@ -1093,89 +1121,127 @@ RULES:
             }
         }
 
-        // Provide specific suggestions based on error type
-        if errorLowercased.contains("file not found") || errorLowercased.contains("no such file") {
-            reflection += "Likely cause: File path is incorrect or file doesn't exist.\n"
-            reflection += "Suggestion: Use find_files to locate the correct path, or check if the file exists.\n"
-        } else if errorLowercased.contains("permission denied") || errorLowercased.contains("permission") {
-            reflection += "Likely cause: Insufficient permissions to perform this operation.\n"
-            reflection += "Suggestion: This may require user confirmation, or try a different approach.\n"
+        // Provide specific, actionable suggestions based on error type
+        if errorLowercased.contains("file not found") || errorLowercased.contains("no such file") || errorLowercased.contains("no such file or directory") {
+            reflection += "Cause: 文件路径不存在。\n"
+            // 尝试提取路径信息
+            if let path = toolCall.arguments["path"]?.value as? String {
+                let dir = (path as NSString).deletingLastPathComponent
+                reflection += "Action: 先用 find_files 搜索文件名, 或用 list_directory 检查目录 \(dir) 是否存在。\n"
+            } else {
+                reflection += "Action: 用 find_files 搜索文件名, 确认正确路径后再操作。\n"
+            }
+        } else if errorLowercased.contains("permission denied") {
+            reflection += "Cause: 权限不足。\n"
+            if toolCall.name == "execute_command" {
+                reflection += "Action: 此命令可能需要 sudo, 请与用户确认是否需要提权执行。\n"
+            } else {
+                reflection += "Action: 检查文件权限 (ls -la), 可能需要用 execute_command 执行 chmod 修改权限。\n"
+            }
         } else if errorLowercased.contains("timeout") {
-            reflection += "Likely cause: Operation took too long to complete.\n"
-            reflection += "Suggestion: Try a simpler operation, or break the task into smaller steps.\n"
-        } else if errorLowercased.contains("network") || errorLowercased.contains("connection") {
-            reflection += "Likely cause: Network connectivity issue.\n"
-            reflection += "Suggestion: Check if the service is available, or try again later.\n"
-        } else if errorLowercased.contains("syntax error") || errorLowercased.contains("parse error") {
-            reflection += "Likely cause: Invalid syntax in the code or configuration.\n"
-            reflection += "Suggestion: Check the syntax and fix any errors.\n"
-        } else if errorLowercased.contains("memory") || errorLowercased.contains("out of memory") {
-            reflection += "Likely cause: Insufficient memory to complete the operation.\n"
-            reflection += "Suggestion: Try a simpler operation, or free up memory.\n"
-        } else if errorLowercased.contains("disk") || errorLowercased.contains("no space") {
-            reflection += "Likely cause: Insufficient disk space.\n"
-            reflection += "Suggestion: Free up disk space and try again.\n"
-        } else if errorLowercased.contains("invalid") || errorLowercased.contains("validation") {
-            reflection += "Likely cause: Invalid input or data.\n"
-            reflection += "Suggestion: Check the input data and fix any validation errors.\n"
+            reflection += "Cause: 操作超时。\n"
+            if toolCall.name == "execute_command" {
+                reflection += "Action: 命令执行超时。考虑: (1) 简化命令 (2) 添加 --depth 等限制 (3) 将大任务拆小。\n"
+            } else {
+                reflection += "Action: 尝试更简单的操作, 或将任务拆分为更小的步骤。\n"
+            }
+        } else if errorLowercased.contains("econnrefused") || errorLowercased.contains("connection refused") {
+            reflection += "Cause: 连接被拒绝, 目标服务未启动或端口错误。\n"
+            reflection += "Action: 确认服务是否在运行, 检查端口号是否正确。\n"
+        } else if errorLowercased.contains("network") || errorLowercased.contains("dns") || errorLowercased.contains("resolve") {
+            reflection += "Cause: 网络/DNS 问题。\n"
+            reflection += "Action: 检查网络连接, 确认域名是否正确。\n"
+        } else if errorLowercased.contains("already exists") {
+            reflection += "Cause: 目标已存在。\n"
+            reflection += "Action: 如果需要覆盖, 先删除或使用不同的名称。\n"
+        } else if errorLowercased.contains("old_text") && (errorLowercased.contains("not found") || errorLowercased.contains("no match") || errorLowercased.contains("multiple match")) {
+            reflection += "Cause: edit_file 的 old_text 未匹配到文件内容。\n"
+            reflection += "Action: 先用 read_file 读取文件最新内容, 确认 old_text 精确匹配 (包括缩进和空格)。\n"
+        } else if errorLowercased.contains("command not found") || errorLowercased.contains("not found") {
+            reflection += "Cause: 命令未安装或不在 PATH 中。\n"
+            if let cmd = (toolCall.arguments["command"]?.value as? String)?.split(separator: " ").first {
+                reflection += "Action: 检查 \(cmd) 是否已安装 (which \(cmd)), 如未安装则需先安装。\n"
+            }
+        } else if errorLowercased.contains("syntax error") || errorLowercased.contains("unexpected token") || errorLowercased.contains("parse error") {
+            reflection += "Cause: 语法错误, 上一次写入/编辑的代码可能有问题。\n"
+            reflection += "Action: 用 read_file 检查最近修改的文件, 找到并修复语法错误。\n"
+        } else if errorLowercased.contains("module") && errorLowercased.contains("not found") {
+            reflection += "Cause: 依赖模块未安装。\n"
+            reflection += "Action: 运行包管理器安装依赖 (如 npm install / pip install / cargo build)。\n"
         }
 
-        // Check for repeated errors
+        // Check for repeated errors with escalating advice
         let recentSimilarErrors = recentErrors.filter {
             $0.toolName == toolCall.name &&
-            Date().timeIntervalSince($0.timestamp) < 60 // Within last minute
+            Date().timeIntervalSince($0.timestamp) < 120
         }
 
         if recentSimilarErrors.count >= 2 {
-            reflection += "⚠️ WARNING: This tool has failed \(recentSimilarErrors.count) times recently.\n"
-            reflection += "Suggestion: Consider a different approach or ask the user for help.\n"
+            reflection += "\n⚠️ WARNING: \(toolCall.name) 已连续失败 \(recentSimilarErrors.count + 1) 次。\n"
+            reflection += "Action: 停止重试。换一种方法, 或向用户说明情况请求帮助。\n"
+        } else if recentSimilarErrors.count == 1 {
+            reflection += "\n⚠️ Note: 这是同一工具的第二次失败, 请仔细分析原因。\n"
         }
 
-        // Add context-aware suggestions based on tool type
-        reflection += generateToolSpecificSuggestion(toolName: toolCall.name, error: result.error ?? "")
+        // Add tool-specific suggestions
+        reflection += generateToolSpecificSuggestion(toolName: toolCall.name, error: errorMsg, arguments: toolCall.arguments)
 
         return reflection
     }
     
-    /// Generate tool-specific suggestions based on error
-    private func generateToolSpecificSuggestion(toolName: String, error: String) -> String {
+    /// Generate tool-specific suggestions based on error and arguments
+    private func generateToolSpecificSuggestion(toolName: String, error: String, arguments: [String: AnyCodable]) -> String {
         let errorLowercased = error.lowercased()
         
         switch toolName {
         case "read_file":
             if errorLowercased.contains("file not found") || errorLowercased.contains("no such file") {
-                return "\n💡 Tool-specific suggestion: Try using find_files to locate the file first.\n"
+                if let path = arguments["path"]?.value as? String {
+                    let fileName = URL(fileURLWithPath: path).lastPathComponent
+                    return "\n💡 Try: find_files with pattern \"*\(fileName)*\" to locate it.\n"
+                }
+                return "\n💡 Try: find_files to locate the correct path, then read_file again.\n"
+            }
+            if errorLowercased.contains("permission") {
+                return "\n💡 Try: execute_command with 'ls -la <path>' to check permissions.\n"
             }
             
         case "write_file":
-            if errorLowercased.contains("permission denied") {
-                return "\n💡 Tool-specific suggestion: Check if you have write permissions to the directory.\n"
+            if errorLowercased.contains("no such file") || errorLowercased.contains("directory") {
+                return "\n💡 Try: execute_command with 'mkdir -p <parent_dir>' to create the directory first.\n"
             }
-            if errorLowercased.contains("no space") {
-                return "\n💡 Tool-specific suggestion: Free up disk space or try writing to a different location.\n"
+            if errorLowercased.contains("permission") {
+                return "\n💡 Try: execute_command with 'ls -la <parent_dir>' to check permissions.\n"
             }
             
         case "edit_file":
-            if errorLowercased.contains("old_text not found") || errorLowercased.contains("no match") {
-                return "\n💡 Tool-specific suggestion: The text to replace was not found. Use read_file to check the current content.\n"
+            if errorLowercased.contains("not found") || errorLowercased.contains("no match") {
+                return "\n💡 Action: read_file the target, find the exact text (including whitespace), then edit_file again.\n"
+            }
+            if errorLowercased.contains("multiple match") {
+                return "\n💡 Action: Include more surrounding context in old_text to make it unique.\n"
             }
             
         case "execute_command":
-            if errorLowercased.contains("command not found") {
-                return "\n💡 Tool-specific suggestion: Check if the command is installed and in PATH.\n"
+            if errorLowercased.contains("command not found") || errorLowercased.contains("zsh: command not found") {
+                if let cmd = (arguments["command"]?.value as? String)?.split(separator: " ").first {
+                    return "\n💡 Try: which \(cmd) or brew list | grep \(cmd) to check installation.\n"
+                }
             }
-            if errorLowercased.contains("permission denied") {
-                return "\n💡 Tool-specific suggestion: The command may require elevated permissions.\n"
+            if errorLowercased.contains("exit code") || errorLowercased.contains("exit status") {
+                return "\n💡 Check the error output above for details. Common fix: install missing dependencies or fix syntax errors.\n"
             }
             
         case "search_files":
-            if errorLowercased.contains("invalid regex") || errorLowercased.contains("bad pattern") {
-                return "\n💡 Tool-specific suggestion: Check your search pattern for syntax errors.\n"
+            if errorLowercased.contains("regex") || errorLowercased.contains("pattern") {
+                return "\n💡 Tip: Use simple text instead of regex, or verify regex syntax at regex101.com.\n"
             }
             
         case "find_files":
             if errorLowercased.contains("no matches") || errorLowercased.contains("not found") {
-                return "\n💡 Tool-specific suggestion: Try a broader search pattern or check the directory.\n"
+                if let pattern = arguments["pattern"]?.value as? String {
+                    return "\n💡 Try: use broader pattern like '*\(pattern)*' or list_directory to explore the structure.\n"
+                }
             }
             
         default:
