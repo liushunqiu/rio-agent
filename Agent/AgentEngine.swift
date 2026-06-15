@@ -230,7 +230,9 @@ class AgentEngine: ObservableObject {
         }
 
         do {
-            if multiAgentConfig.isEnabled, let multiAgentEngine = multiAgentEngine {
+            if multiAgentConfig.isEnabled,
+               let multiAgentEngine = multiAgentEngine,
+               MultiAgentRouting.shouldUseMultiAgent(for: trimmedInput, analysis: taskAnalysis) {
                 try await processWithMultiAgent(input: input, engine: multiAgentEngine)
             } else {
                 guard let aiService = aiService else {

@@ -1,10 +1,40 @@
 import SwiftUI
 
+enum SettingsTab: CaseIterable {
+    case ai
+    case multiAgent
+    case about
+
+    var title: String {
+        switch self {
+        case .ai: return "AI 配置"
+        case .multiAgent: return "Multi-Agent"
+        case .about: return "关于"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .ai: return "选择默认模型、端点和上下文行为"
+        case .multiAgent: return "配置编排器、子 Agent 和任务拆分策略"
+        case .about: return "应用版本与能力概览"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .ai: return "cpu"
+        case .multiAgent: return "person.3.fill"
+        case .about: return "info.circle"
+        }
+    }
+}
+
 struct SettingsView: View {
     @Binding var configuration: AIConfiguration
     @Binding var multiAgentConfig: MultiAgentConfig
     @Environment(\.dismiss) var dismiss
-    @State private var selectedTab = 0
+    @State private var selectedTab: SettingsTab = .ai
 
     // Local state
     @State private var activeProvider: AIProvider
@@ -94,71 +124,150 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("设置")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundColor(Theme.textPrimary)
-
-                Spacer()
-
-                Button("完成") {
-                    saveConfiguration()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accentPrimary)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-
-            // Tab bar
-            HStack(spacing: 0) {
-                DarkTabButton(title: "AI 配置", icon: "cpu", isSelected: selectedTab == 0) { selectedTab = 0 }
-                DarkTabButton(title: "Multi-Agent", icon: "person.3.fill", isSelected: selectedTab == 1) { selectedTab = 1 }
-                DarkTabButton(title: "关于", icon: "info.circle", isSelected: selectedTab == 2) { selectedTab = 2 }
-            }
-            .padding(.horizontal, 16)
+        HStack(spacing: 0) {
+            settingsSidebar
 
             Rectangle()
                 .fill(Theme.borderSubtle)
-                .frame(height: 1)
-                .padding(.top, 8)
+                .frame(width: 1)
 
-            // Content
-            ScrollView {
-                VStack(spacing: 20) {
-                    switch selectedTab {
-                    case 0:
-                        darkAIConfigSection
-                    case 1:
-                        MultiAgentSettingsView(
-                            config: $multiAgentConfig,
-                            aiConfig: AIConfigInfo(
-                                hasClaudeKey: hasClaudeApiKey,
-                                hasOpenAIKey: hasOpenAIApiKey,
-                                hasCompatibleEndpoint: hasCompatibleEndpoint,
-                                claudeApiKey: claudeApiKey,
-                                openAIApiKey: openAIApiKey,
-                                compatibleApiKey: compatApiKey,
-                                currentClaudeModel: claudeModel,
-                                currentOpenAIModel: openAIModel,
-                                currentCompatibleModel: compatModel
-                            )
-                        )
-                    case 2:
-                        darkAboutView
-                    default:
-                        EmptyView()
+            VStack(spacing: 0) {
+                settingsHeader
+
+                Rectangle()
+                    .fill(Theme.borderSubtle)
+                    .frame(height: 1)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        configurationSummary
+
+                        switch selectedTab {
+                        case .ai:
+                            darkAIConfigSection
+                        case .multiAgent:
+                            MultiAgentSettingsView(config: $multiAgentConfig, aiConfig: currentAIConfigInfo)
+                        case .about:
+                            darkAboutView
+                        }
                     }
+                    .padding(22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(20)
             }
         }
-        .frame(width: 640, height: 600)
+        .frame(width: 880, height: 660)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+    }
+
+    private var currentAIConfigInfo: AIConfigInfo {
+        AIConfigInfo(
+            hasClaudeKey: hasClaudeApiKey,
+            hasOpenAIKey: hasOpenAIApiKey,
+            hasCompatibleEndpoint: hasCompatibleEndpoint,
+            claudeApiKey: claudeApiKey,
+            openAIApiKey: openAIApiKey,
+            compatibleApiKey: compatApiKey,
+            currentClaudeModel: claudeModel,
+            currentOpenAIModel: openAIModel,
+            currentCompatibleModel: compatModel
+        )
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Rio Agent")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .foregroundColor(Theme.textPrimary)
+                Text("模型与协作配置")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 18)
+
+            VStack(spacing: 6) {
+                SettingsSidebarItem(tab: .ai, selectedTab: $selectedTab)
+                SettingsSidebarItem(tab: .multiAgent, selectedTab: $selectedTab)
+                SettingsSidebarItem(tab: .about, selectedTab: $selectedTab)
+            }
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 8) {
+                ProviderHealthRow(name: "Claude", isReady: hasClaudeApiKey)
+                ProviderHealthRow(name: "OpenAI", isReady: hasOpenAIApiKey)
+                ProviderHealthRow(name: "自定义端点", isReady: hasCompatibleEndpoint)
+            }
+            .padding(12)
+            .background(Theme.bgSecondary)
+            .cornerRadius(Theme.radiusMD)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .stroke(Theme.borderSubtle, lineWidth: 1)
+            )
+            .padding(.horizontal, 12)
+            .padding(.bottom, 14)
+        }
+        .frame(width: 210)
+        .background(Theme.bgSecondary.opacity(0.52))
+    }
+
+    private var settingsHeader: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(selectedTab.title)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundColor(Theme.textPrimary)
+                Text(selectedTab.subtitle)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textTertiary)
+            }
+
+            Spacer()
+
+            Button("完成") {
+                saveConfiguration()
+                dismiss()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accentPrimary)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
+    }
+
+    private var configurationSummary: some View {
+        HStack(spacing: 12) {
+            SettingsMetric(
+                title: "当前提供商",
+                value: activeProvider.displayName,
+                icon: activeProvider.icon,
+                tone: isProviderConfigured(activeProvider) ? Theme.statusSuccess : Theme.statusWarning
+            )
+            SettingsMetric(
+                title: "当前模型",
+                value: currentModelName,
+                icon: "cpu",
+                tone: Theme.accentSecondary
+            )
+            SettingsMetric(
+                title: "Multi-Agent",
+                value: multiAgentConfig.isEnabled ? "\(multiAgentConfig.workers.count) 个子 Agent" : "未启用",
+                icon: "person.3.fill",
+                tone: multiAgentConfig.isEnabled ? Theme.statusSuccess : Theme.textTertiary
+            )
+        }
+    }
+
+    private var currentModelName: String {
+        switch activeProvider {
+        case .claude: return claudeModel
+        case .openAI: return openAIModel
+        case .openAICompatible: return compatModel
+        }
     }
 
     // MARK: - AI Config Section
@@ -166,61 +275,53 @@ struct SettingsView: View {
     @ViewBuilder
     private var darkAIConfigSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Provider selector
-            DarkSettingsSection(title: "AI 提供商", icon: "cpu") {
-                HStack(spacing: 10) {
-                    ForEach(AIProvider.allCases, id: \.self) { p in
-                        DarkProviderCard(
-                            title: p.displayName,
-                            icon: p.icon,
-                            isSelected: activeProvider == p,
-                            isConfigured: isProviderConfigured(p)
-                        ) {
-                            activeProvider = p
+            HStack(alignment: .top, spacing: 14) {
+                DarkSettingsSection(title: "默认提供商", icon: "cpu") {
+                    VStack(spacing: 9) {
+                        ForEach(AIProvider.allCases, id: \.self) { p in
+                            ProviderSelectionRow(
+                                provider: p,
+                                model: modelName(for: p),
+                                isSelected: activeProvider == p,
+                                isConfigured: isProviderConfigured(p)
+                            ) {
+                                activeProvider = p
+                            }
                         }
                     }
                 }
-            }
+                .frame(width: 245)
 
-            // Provider-specific config
-            switch activeProvider {
-            case .claude:
-                claudeConfigView
-            case .openAI:
-                openAIConfigView
-            case .openAICompatible:
-                compatibleConfigView
-            }
-
-            // Global settings
-            DarkSettingsSection(title: "全局设置", icon: "slider.horizontal.3") {
                 VStack(spacing: 12) {
+                    switch activeProvider {
+                    case .claude:
+                        claudeConfigView
+                    case .openAI:
+                        openAIConfigView
+                    case .openAICompatible:
+                        compatibleConfigView
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            DarkSettingsSection(title: "全局设置", icon: "slider.horizontal.3") {
+                HStack(spacing: 18) {
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("流式输出")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(Theme.textPrimary)
-                            Text("AI 回复逐字显示，无需等待完整响应")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.textTertiary)
-                        }
+                        SettingsFieldLabel("流式输出", detail: "回复边生成边显示")
                         Spacer()
                         Toggle("", isOn: $enableStreaming)
                             .toggleStyle(.switch)
                             .tint(Theme.accentPrimary)
                     }
+                    .frame(maxWidth: .infinity)
 
-                    Divider().overlay(Theme.borderSubtle)
+                    Rectangle()
+                        .fill(Theme.borderSubtle)
+                        .frame(width: 1, height: 34)
 
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("最大消息数")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(Theme.textPrimary)
-                            Text("安全上限（达到 85% 上下文窗口时自动压缩旧消息）")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.textTertiary)
-                        }
+                        SettingsFieldLabel("上下文保留", detail: "达到窗口阈值时自动压缩")
                         Spacer()
                         Picker("", selection: $maxContextMessages) {
                             Text("20").tag(20)
@@ -231,8 +332,17 @@ struct SettingsView: View {
                         .pickerStyle(.menu)
                         .frame(width: 80)
                     }
+                    .frame(maxWidth: .infinity)
                 }
             }
+        }
+    }
+
+    private func modelName(for provider: AIProvider) -> String {
+        switch provider {
+        case .claude: return claudeModel
+        case .openAI: return openAIModel
+        case .openAICompatible: return compatModel
         }
     }
 
@@ -483,6 +593,184 @@ struct SettingsView: View {
 }
 
 // MARK: - Dark Theme Components
+
+struct SettingsSidebarItem: View {
+    let tab: SettingsTab
+    @Binding var selectedTab: SettingsTab
+
+    private var isSelected: Bool { selectedTab == tab }
+
+    var body: some View {
+        Button {
+            selectedTab = tab
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 20)
+                    .foregroundColor(isSelected ? Theme.textPrimary : Theme.textTertiary)
+
+                Text(tab.title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(isSelected ? Theme.bgTertiary : Color.clear)
+            .cornerRadius(Theme.radiusMD)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .stroke(isSelected ? Theme.borderDefault : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+    }
+}
+
+struct SettingsMetric: View {
+    let title: String
+    let value: String
+    let icon: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: Theme.radiusSM)
+                    .fill(tone.opacity(0.12))
+                    .frame(width: 34, height: 34)
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(tone)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Theme.textTertiary)
+                Text(value.isEmpty ? "未设置" : value)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundColor(Theme.textPrimary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 58)
+        .background(Theme.bgSecondary)
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.borderSubtle, lineWidth: 1)
+        )
+    }
+}
+
+struct ProviderHealthRow: View {
+    let name: String
+    let isReady: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(isReady ? Theme.statusSuccess : Theme.textTertiary)
+                .frame(width: 7, height: 7)
+
+            Text(name)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.textSecondary)
+
+            Spacer()
+
+            Text(isReady ? "可用" : "待配置")
+                .font(.system(size: 10))
+                .foregroundColor(isReady ? Theme.statusSuccess : Theme.textTertiary)
+        }
+    }
+}
+
+struct ProviderSelectionRow: View {
+    let provider: AIProvider
+    let model: String
+    let isSelected: Bool
+    let isConfigured: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: Theme.radiusSM)
+                        .fill(isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.bgTertiary)
+                        .frame(width: 34, height: 34)
+                    Image(systemName: provider.icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(provider.displayName)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.textPrimary)
+                        Circle()
+                            .fill(isConfigured ? Theme.statusSuccess : Theme.statusWarning)
+                            .frame(width: 6, height: 6)
+                    }
+                    Text(model.isEmpty ? "未设置模型" : model)
+                        .font(.system(size: 10, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundColor(Theme.textTertiary)
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(Theme.accentPrimary)
+                }
+            }
+            .padding(9)
+            .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(0.72))
+            .cornerRadius(Theme.radiusMD)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .stroke(isSelected ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct SettingsFieldLabel: View {
+    let title: String
+    let detail: String?
+
+    init(_ title: String, detail: String? = nil) {
+        self.title = title
+        self.detail = detail
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Theme.textPrimary)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+            }
+        }
+    }
+}
 
 struct DarkTabButton: View {
     let title: String

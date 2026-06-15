@@ -1,6 +1,60 @@
 import Foundation
 import Combine
 
+enum MultiAgentRouting {
+    static func shouldUseMultiAgent(for input: String, analysis: TaskPlanner.TaskAnalysis) -> Bool {
+        let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+        guard !isConversationalInput(normalized) else { return false }
+
+        switch analysis.complexity {
+        case .simple:
+            return false
+        case .moderate, .complex, .veryComplex:
+            return true
+        }
+    }
+
+    static func isConversationalInput(_ input: String) -> Bool {
+        let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = normalized.lowercased()
+        let trimmedPunctuation = lowercased.trimmingCharacters(in: CharacterSet(charactersIn: "？?！!。.,， "))
+
+        let exactMatches: Set<String> = [
+            "你是",
+            "你是谁",
+            "你是?",
+            "你是谁?",
+            "who are you",
+            "hi",
+            "hello",
+            "hey",
+            "你好",
+            "您好",
+            "早上好",
+            "下午好",
+            "晚上好"
+        ]
+        if exactMatches.contains(trimmedPunctuation) {
+            return true
+        }
+
+        let shortIdentityQuestions = [
+            "你是",
+            "你是谁",
+            "你叫什么",
+            "who are you",
+            "what are you"
+        ]
+        if normalized.count <= 12,
+           shortIdentityQuestions.contains(where: { lowercased.contains($0) }) {
+            return true
+        }
+
+        return false
+    }
+}
+
 @MainActor
 class MultiAgentEngine: ObservableObject {
     @Published var currentPlan: TaskPlan?
@@ -188,13 +242,13 @@ class MultiAgentEngine: ObservableObject {
         return parseSubTasks(from: content)
     }
 
-    private func parseSubTasks(from response: String) -> [SubTask] {
+    func parseSubTasks(from response: String) -> [SubTask] {
         // Try to parse JSON response
         guard let data = response.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let subTasksArray = json["sub_tasks"] as? [[String: Any]] else {
-            // If parsing fails, create a single sub-task with the original response
-            return [SubTask(description: response, assignedWorker: fallbackWorker(for: .general))]
+            // Treat malformed split output as "no split"; the orchestrator will answer directly.
+            return []
         }
 
         return subTasksArray.compactMap { taskDict in

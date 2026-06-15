@@ -60,33 +60,38 @@ struct MultiAgentSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if !canEnable {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(Theme.statusWarning)
-                        .font(.system(size: 13))
-                    Text("请先在 AI 配置页面配置 Claude/OpenAI API Key，或配置自定义端点")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textSecondary)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity)
-                .background(Theme.statusWarning.opacity(0.08))
-                .cornerRadius(Theme.radiusMD)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMD)
-                        .stroke(Theme.statusWarning.opacity(0.2), lineWidth: 1)
+            HStack(spacing: 12) {
+                MultiAgentMetric(
+                    title: "可用提供商",
+                    value: "\(aiConfig.availableProviders.count)",
+                    detail: availableProviderText,
+                    icon: "server.rack",
+                    tone: canEnable ? Theme.statusSuccess : Theme.statusWarning
+                )
+                MultiAgentMetric(
+                    title: "工作模式",
+                    value: isEnabled && canEnable ? "协作" : "单 Agent",
+                    detail: isEnabled && canEnable ? "编排器会分派子任务" : "主会话直接执行",
+                    icon: "person.3.fill",
+                    tone: isEnabled && canEnable ? Theme.accentPrimary : Theme.textTertiary
+                )
+                MultiAgentMetric(
+                    title: "并行上限",
+                    value: "\(maxParallel)",
+                    detail: "\(workers.filter(\.isEnabled).count) 个启用的子 Agent",
+                    icon: "arrow.triangle.branch",
+                    tone: Theme.accentSecondary
                 )
             }
 
-            SettingsSection(title: "Multi-Agent 模式", icon: "person.3.fill") {
-                VStack(alignment: .leading, spacing: 10) {
+            SettingsSection(title: "协作入口", icon: "switch.2") {
+                VStack(alignment: .leading, spacing: 12) {
                     Toggle(isOn: $isEnabled) {
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text("启用 Multi-Agent")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(Theme.textPrimary)
-                            Text("将复杂任务拆分给多个 Agent 并行处理")
+                            Text(canEnable ? "复杂任务会先交给主 Agent 规划，再分派给子 Agent 并行处理" : "需要先在 AI 配置里启用至少一个提供商")
                                 .font(.system(size: 11))
                                 .foregroundColor(Theme.textTertiary)
                         }
@@ -96,14 +101,12 @@ struct MultiAgentSettingsView: View {
                     .disabled(!canEnable)
                     .onChange(of: isEnabled) { _, _ in syncToConfig() }
 
-                    if isEnabled {
-                        HStack(spacing: 4) {
-                            Image(systemName: "info.circle")
-                                .font(.system(size: 10))
-                            Text("主 Agent 使用强模型，子 Agent 使用经济模型")
-                                .font(.system(size: 10))
-                        }
-                        .foregroundColor(Theme.textTertiary)
+                    ProviderDependencyStrip(aiConfig: aiConfig)
+
+                    if !canEnable {
+                        InlineWarning(
+                            text: "请先配置 Claude/OpenAI API Key，或填写自定义 OpenAI 兼容端点。"
+                        )
                     }
                 }
             }
@@ -131,19 +134,17 @@ struct MultiAgentSettingsView: View {
                 )
 
                 SettingsSection(title: "任务拆分策略", icon: "scissors") {
-                    Picker("", selection: $taskStrategy) {
+                    HStack(spacing: 10) {
                         ForEach(TaskSplitStrategy.allCases, id: \.self) { strategy in
-                            VStack(alignment: .leading) {
-                                Text(strategy.displayName)
-                                Text(strategy.description)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                            StrategyButton(
+                                strategy: strategy,
+                                isSelected: taskStrategy == strategy
+                            ) {
+                                taskStrategy = strategy
+                                syncToConfig()
                             }
-                            .tag(strategy)
                         }
                     }
-                    .pickerStyle(.radioGroup)
-                    .onChange(of: taskStrategy) { _, _ in syncToConfig() }
                 }
             }
         }
@@ -163,6 +164,143 @@ struct MultiAgentSettingsView: View {
             }
         }
     }
+
+    private var availableProviderText: String {
+        let names = aiConfig.availableProviders.map(\.displayName)
+        return names.isEmpty ? "没有可用模型来源" : names.joined(separator: " / ")
+    }
+}
+
+struct MultiAgentMetric: View {
+    let title: String
+    let value: String
+    let detail: String
+    let icon: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: Theme.radiusSM)
+                    .fill(tone.opacity(0.12))
+                    .frame(width: 34, height: 34)
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(tone)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Theme.textTertiary)
+                Text(value)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(Theme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 10))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundColor(Theme.textTertiary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 74)
+        .background(Theme.bgSecondary)
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.borderSubtle, lineWidth: 1)
+        )
+    }
+}
+
+struct ProviderDependencyStrip: View {
+    let aiConfig: AIConfigInfo
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(AIProvider.allCases, id: \.self) { provider in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(aiConfig.availableProviders.contains(provider) ? Theme.statusSuccess : Theme.textTertiary)
+                        .frame(width: 6, height: 6)
+                    Text(provider.displayName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Theme.textSecondary)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Theme.bgInput)
+                .cornerRadius(Theme.radiusSM)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusSM)
+                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                )
+            }
+            Spacer()
+        }
+    }
+}
+
+struct InlineWarning: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.statusWarning)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundColor(Theme.textSecondary)
+            Spacer()
+        }
+        .padding(10)
+        .background(Theme.statusWarning.opacity(0.08))
+        .cornerRadius(Theme.radiusSM)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .stroke(Theme.statusWarning.opacity(0.2), lineWidth: 1)
+        )
+    }
+}
+
+struct StrategyButton: View {
+    let strategy: TaskSplitStrategy
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15))
+                    .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(strategy.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text(strategy.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(0.7))
+            .cornerRadius(Theme.radiusMD)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .stroke(isSelected ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 // MARK: - Orchestrator Section
@@ -175,18 +313,23 @@ struct OrchestratorSection: View {
     let onChange: () -> Void
 
     var body: some View {
-        SettingsSection(title: "主 Agent (Orchestrator)", icon: "brain.head.profile") {
+        SettingsSection(title: "编排器", icon: "brain.head.profile") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 16))
-                        .foregroundColor(Theme.statusWarning)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: Theme.radiusSM)
+                            .fill(Theme.statusWarning.opacity(0.12))
+                            .frame(width: 34, height: 34)
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(Theme.statusWarning)
+                    }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("主 Agent")
+                        Text("主 Agent 负责规划和汇总")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(Theme.textPrimary)
-                        Text("负责任务拆分、汇总结果（建议使用强模型）")
+                        Text("建议使用更强的推理模型；子 Agent 可以使用更经济的模型")
                             .font(.system(size: 11))
                             .foregroundColor(Theme.textTertiary)
                     }
@@ -363,12 +506,17 @@ struct WorkersSection: View {
     let onChange: () -> Void
 
     var body: some View {
-        SettingsSection(title: "子 Agents (Workers)", icon: "person.2.fill") {
+        SettingsSection(title: "子 Agent 池", icon: "person.2.fill") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("最大并行数")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textSecondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("并行执行上限")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.textPrimary)
+                        Text("控制同时启动的子 Agent 数量")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textTertiary)
+                    }
 
                     Picker("", selection: $maxParallel) {
                         ForEach(1...5, id: \.self) { count in
@@ -382,7 +530,7 @@ struct WorkersSection: View {
                     Spacer()
 
                     Button(action: onAdd) {
-                        Label("添加", systemImage: "plus.circle.fill")
+                        Label("添加子 Agent", systemImage: "plus.circle.fill")
                             .font(.system(size: 12))
                     }
                     .buttonStyle(.bordered)
@@ -392,19 +540,26 @@ struct WorkersSection: View {
                 if workers.isEmpty {
                     HStack {
                         Spacer()
-                        Text("暂无子 Agent")
-                            .font(.system(size: 11))
-                            .foregroundColor(Theme.textTertiary)
+                        VStack(spacing: 8) {
+                            Image(systemName: "person.crop.circle.badge.plus")
+                                .font(.system(size: 24))
+                                .foregroundColor(Theme.textTertiary)
+                            Text("暂无子 Agent")
+                                .font(.system(size: 12))
+                                .foregroundColor(Theme.textTertiary)
+                        }
                         Spacer()
                     }
-                    .padding(.vertical, 16)
+                    .padding(.vertical, 22)
                 } else {
-                    ForEach(workers) { worker in
-                        DarkWorkerRow(
-                            worker: worker,
-                            onEdit: { onEdit(worker) },
-                            onDelete: { onDelete(worker) }
-                        )
+                    LazyVStack(spacing: 8) {
+                        ForEach(workers) { worker in
+                            DarkWorkerRow(
+                                worker: worker,
+                                onEdit: { onEdit(worker) },
+                                onDelete: { onDelete(worker) }
+                            )
+                        }
                     }
                 }
             }
