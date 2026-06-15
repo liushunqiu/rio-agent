@@ -21,7 +21,7 @@ class FileWriteTool: Tool {
     }
 
     func addTrustedPath(_ path: String) {
-        trustedPaths.insert(path)
+        trustedPaths.insert(PathSecurity.normalizedPath(path))
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
@@ -33,16 +33,12 @@ class FileWriteTool: Tool {
         }
 
         // Check if path is within working directory — auto-allow
-        let isWithinWorkDir: Bool = {
-            guard let workDir = ToolRegistry.shared.workingDirectory else { return false }
-            let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-            let resolvedWorkDir = URL(fileURLWithPath: workDir).resolvingSymlinksInPath().path
-            return resolvedPath.hasPrefix(resolvedWorkDir)
-        }()
+        let normalizedPath = PathSecurity.normalizedPath(path)
+        let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
 
         if isWithinWorkDir {
             // 工作目录内写入自动执行，无需确认
-        } else if trustedPaths.contains(path) {
+        } else if trustedPaths.contains(normalizedPath) {
             // Already trusted, skip confirmation
         } else if let confirm = confirmationCallback {
             let title = "⚠️ 跨目录写入确认"
@@ -54,10 +50,12 @@ class FileWriteTool: Tool {
             case .approved:
                 break
             case .trustedForSession:
-                addTrustedPath(path)
+                addTrustedPath(normalizedPath)
             case .denied:
                 return ToolResult.cancelled(toolCallId: "write_file", reason: "用户取消写入")
             }
+        } else {
+            return ToolResult.error(toolCallId: "write_file", error: "写入工作目录外文件需要用户确认")
         }
 
         do {

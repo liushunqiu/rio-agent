@@ -17,16 +17,17 @@ class FindFilesTool: Tool {
         let searchPath = (arguments["path"] as? String) ?? ToolRegistry.shared.workingDirectory ?? "."
 
         // 将文件搜索操作移到后台线程，避免阻塞主线程/UI
-        return try await Task.detached(priority: .userInitiated) {
-            // Build find command
-            // Convert glob-like pattern to find -name syntax
-            let escapedPattern = pattern.replacingOccurrences(of: "'", with: "'\\''")
-            let command = "find '\(searchPath)' -name '\(escapedPattern)' -not -path '*/.git/*' -not -path '*/.build/*' -not -path '*/node_modules/*' 2>/dev/null | head -500"
-
+        return await Task.detached(priority: .userInitiated) {
             let process = Process()
             let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command]
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/find")
+            process.arguments = [
+                searchPath,
+                "-name", pattern,
+                "-not", "-path", "*/.git/*",
+                "-not", "-path", "*/.build/*",
+                "-not", "-path", "*/node_modules/*"
+            ]
             process.standardOutput = pipe
             process.standardError = Pipe()
 
@@ -43,8 +44,13 @@ class FindFilesTool: Tool {
                 }
 
                 let files = output.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                let header = "Found \(files.count) file(s) matching '\(pattern)':\n\n"
-                return ToolResult.success(toolCallId: "find_files", output: header + files.joined(separator: "\n"))
+                let limitedFiles = Array(files.prefix(500))
+                var result = "Found \(limitedFiles.count) file(s) matching '\(pattern)':\n\n"
+                result += limitedFiles.joined(separator: "\n")
+                if files.count > limitedFiles.count {
+                    result += "\n\n... (\(files.count - limitedFiles.count) more files truncated)"
+                }
+                return ToolResult.success(toolCallId: "find_files", output: result)
             } catch {
                 return ToolResult.error(toolCallId: "find_files", error: "Failed to find files: \(error.localizedDescription)")
             }

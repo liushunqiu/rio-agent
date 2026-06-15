@@ -175,7 +175,7 @@ class ClaudeService: AIService {
             // Build content array
             var contentBlocks: [[String: Any]] = []
 
-            if !message.content.isEmpty && message.toolCalls == nil && message.toolResults == nil {
+            if !message.content.isEmpty {
                 contentBlocks.append(["type": "text", "text": message.content])
             }
 

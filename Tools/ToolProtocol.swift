@@ -72,10 +72,7 @@ struct CommandClassifier {
         // 只读文件操作
         "ls", "ll", "la", "tree", "file", "stat", "du", "df",
         "cat", "head", "tail", "less", "more", "wc", "sort", "uniq",
-        
-        // 文本处理（在管道中常用，通常是安全的）
-        "sed", "awk", "tr", "cut", "paste", "join", "column",
-        "xargs", "tee", "diff", "comm", "jq",
+        "diff", "comm", "jq",
         
         // 信息查询
         "echo", "printf", "date", "cal", "env", "printenv", "which", "whereis", "type",
@@ -93,21 +90,7 @@ struct CommandClassifier {
         "npm --version", "cargo --version", "go version", "java -version",
         
         // 系统信息
-        "uname", "hostname", "whoami", "id",
-        
-        // 开发工具（通常安全）
-        "cd", "mkdir", "touch", "cp", "mv", "ln",
-        "swift build", "swift run", "swift test",
-        "npm install", "npm run", "npm test", "npm start",
-        "yarn", "yarn install", "yarn build",
-        "cargo build", "cargo run", "cargo test",
-        "go build", "go run", "go test",
-        "make", "cmake",
-        "pip install", "pip3 install",
-        "brew install", "brew update",
-        "git add", "git commit", "git push", "git pull", "git fetch",
-        "git checkout", "git switch", "git merge", "git rebase",
-        "git clone", "git init",
+        "uname", "hostname", "whoami", "id"
     ]
 
     private static let dangerousPatterns: [String] = [
@@ -144,6 +127,9 @@ struct CommandClassifier {
         
         // 管道到解释器（可能执行恶意代码）
         "| sh", "| bash", "| zsh", "| python", "| node",
+
+        // 常见会修改文件的选项
+        "sed -i", "perl -i", "tee "
     ]
 
     static func classify(_ command: String) -> CommandRiskLevel {
@@ -169,14 +155,13 @@ struct CommandClassifier {
             let parts = trimmed.split(separator: " ")
             if parts.count >= 2 {
                 let subcommand = String(parts[1])
-                let safeGitSubcommands = [
-                    "status", "log", "diff", "show", "branch", "tag",
-                    "remote", "stash", "blame", "shortlog",
-                    "add", "commit", "push", "pull", "fetch",
-                    "checkout", "switch", "merge", "rebase",
-                    "clone", "init"
-                ]
+                let safeGitSubcommands = ["status", "log", "diff", "show", "blame", "shortlog"]
                 if safeGitSubcommands.contains(subcommand) {
+                    return .safe
+                }
+                if subcommand == "stash",
+                   parts.count >= 3,
+                   String(parts[2]).lowercased() == "list" {
                     return .safe
                 }
             }

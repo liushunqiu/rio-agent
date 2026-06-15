@@ -2,7 +2,7 @@ import Foundation
 
 class FileReadTool: Tool {
     let name = "read_file"
-    let description = "读取文件内容。只读操作，无需用户确认。当用户想要查看、检查文件内容时应优先使用此工具，而非执行 shell 命令。自动返回行数和完整内容。适用于文本文件（如源代码、配置文件、文档等）。"
+    let description = "读取文件内容。工作目录内的读取自动执行；读取工作目录外的文件需要用户确认。当用户想要查看、检查文件内容时应优先使用此工具，而非执行 shell 命令。自动返回行数和完整内容。适用于文本文件（如源代码、配置文件、文档等）。"
 
     let parameters: [String: ToolParameter] = [
         "path": ToolParameter(type: "string", description: "文件绝对路径（必须提供完整绝对路径，请勿使用相对路径）。当用户提及相对路径时，应拼接工作目录构成绝对路径。", required: true),
@@ -15,6 +15,16 @@ class FileReadTool: Tool {
     private static let maxOutputChars = 50_000
     /// Default maximum lines to return
     private static let defaultMaxLines = 500
+    private var confirmationCallback: ConfirmationCallback?
+    private var trustedPaths: Set<String> = []
+
+    func setConfirmationCallback(_ callback: @escaping ConfirmationCallback) {
+        self.confirmationCallback = callback
+    }
+
+    func addTrustedPath(_ path: String) {
+        trustedPaths.insert(PathSecurity.normalizedPath(path))
+    }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
         guard let path = arguments["path"] as? String else {
@@ -24,6 +34,30 @@ class FileReadTool: Tool {
         let encoding: String.Encoding = .utf8
         let maxLines = (arguments["max_lines"] as? Int) ?? Self.defaultMaxLines
         let offset = (arguments["offset"] as? Int) ?? 0
+        let normalizedPath = PathSecurity.normalizedPath(path)
+        let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
+
+        if isWithinWorkDir {
+            // 工作目录内读取自动执行
+        } else if trustedPaths.contains(normalizedPath) {
+            // 已信任路径跳过确认
+        } else if let confirm = confirmationCallback {
+            let result = await confirm(
+                "读取文件确认",
+                "即将读取工作目录外的文件:\n\(path)\n\n是否继续？"
+            )
+
+            switch result {
+            case .approved:
+                break
+            case .trustedForSession:
+                addTrustedPath(path)
+            case .denied:
+                return ToolResult.cancelled(toolCallId: "read_file", reason: "用户取消读取")
+            }
+        } else {
+            return ToolResult.error(toolCallId: "read_file", error: "读取工作目录外文件需要用户确认")
+        }
 
         do {
             // 将文件读取操作移到后台线程，避免阻塞主线程/UI

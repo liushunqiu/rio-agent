@@ -67,6 +67,8 @@ class ApplyPatchTool: Tool {
             case .denied:
                 return ToolResult.cancelled(toolCallId: name, reason: "User cancelled the patch")
             }
+        } else if needsConfirmation {
+            return ToolResult.error(toolCallId: name, error: "Applying patches outside the working directory requires confirmation")
         }
 
         // Apply each operation
@@ -297,9 +299,6 @@ class ApplyPatchTool: Tool {
     // MARK: - Helpers
 
     private func isWithinWorkingDirectory(_ path: String) -> Bool {
-        guard let workDir = ToolRegistry.shared.workingDirectory else { return false }
-        let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-        let resolvedWorkDir = URL(fileURLWithPath: workDir).resolvingSymlinksInPath().path
-        return resolvedPath.hasPrefix(resolvedWorkDir)
+        PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
     }
 }

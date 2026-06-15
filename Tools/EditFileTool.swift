@@ -18,7 +18,7 @@ class EditFileTool: Tool {
     }
 
     func addTrustedPath(_ path: String) {
-        trustedPaths.insert(path)
+        trustedPaths.insert(PathSecurity.normalizedPath(path))
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
@@ -60,16 +60,12 @@ class EditFileTool: Tool {
         }
 
         // Confirmation check for cross-directory writes
-        let isWithinWorkDir: Bool = {
-            guard let workDir = ToolRegistry.shared.workingDirectory else { return false }
-            let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-            let resolvedWorkDir = URL(fileURLWithPath: workDir).resolvingSymlinksInPath().path
-            return resolvedPath.hasPrefix(resolvedWorkDir)
-        }()
+        let normalizedPath = PathSecurity.normalizedPath(path)
+        let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
 
         if isWithinWorkDir {
             // Auto-approve
-        } else if trustedPaths.contains(path) {
+        } else if trustedPaths.contains(normalizedPath) {
             // Already trusted
         } else if let confirm = confirmationCallback {
             let preview = "OLD:\n\(String(oldText.prefix(200)))\(oldText.count > 200 ? "..." : "")\n\nNEW:\n\(String(newText.prefix(200)))\(newText.count > 200 ? "..." : "")"
@@ -82,10 +78,12 @@ class EditFileTool: Tool {
             case .approved:
                 break
             case .trustedForSession:
-                addTrustedPath(path)
+                addTrustedPath(normalizedPath)
             case .denied:
                 return ToolResult.cancelled(toolCallId: name, reason: "User cancelled the edit")
             }
+        } else {
+            return ToolResult.error(toolCallId: name, error: "Editing files outside the working directory requires confirmation")
         }
 
         // Perform the replacement

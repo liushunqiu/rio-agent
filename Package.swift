@@ -28,7 +28,9 @@ let package = Package(
                 "AGENT.md",
                 ".gitignore",
                 "Tests",
-                "Resources"
+                "Resources",
+                "project.yml",
+                "Rio Agent.app"
             ],
             sources: [
                 "App",

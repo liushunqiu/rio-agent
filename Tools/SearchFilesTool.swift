@@ -19,20 +19,16 @@ class SearchFilesTool: Tool {
         let filePattern = arguments["file_pattern"] as? String
 
         // 将搜索操作移到后台线程，避免阻塞主线程/UI
-        return try await Task.detached(priority: .userInitiated) {
-            // Build grep command
-            var command = "grep -rn"
-            if let fp = filePattern {
-                let escaped = fp.replacingOccurrences(of: "'", with: "'\\''")
-                command += " --include='\(escaped)'"
-            }
-            let escapedPattern = pattern.replacingOccurrences(of: "'", with: "'\\''")
-            command += " -- '\(escapedPattern)' '\(searchPath)' 2>/dev/null || true"
-
+        return await Task.detached(priority: .userInitiated) {
             let process = Process()
             let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command]
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
+            var grepArguments = ["-rn"]
+            if let filePattern = filePattern {
+                grepArguments.append("--include=\(filePattern)")
+            }
+            grepArguments += ["--", pattern, searchPath]
+            process.arguments = grepArguments
             process.standardOutput = pipe
             process.standardError = Pipe()
 

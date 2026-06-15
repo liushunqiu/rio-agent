@@ -88,6 +88,9 @@ class ToolRegistry {
         if let shellTool = tools["execute_command"] as? ShellTool {
             shellTool.setConfirmationCallback(callback)
         }
+        if let fileReadTool = tools["read_file"] as? FileReadTool {
+            fileReadTool.setConfirmationCallback(callback)
+        }
         if let fileWriteTool = tools["write_file"] as? FileWriteTool {
             fileWriteTool.setConfirmationCallback(callback)
         }

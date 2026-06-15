@@ -22,6 +22,11 @@ struct ContentView: View {
                 },
                 onDelete: { conversation in
                     conversationManager.deleteConversation(conversation)
+                    if let current = conversationManager.currentConversation {
+                        agentEngine.loadConversation(current)
+                    } else {
+                        agentEngine.clearConversation()
+                    }
                 },
                 onNewConversation: {
                     let newConversation = conversationManager.createNewConversation()
@@ -873,4 +878,3 @@ struct VisualEffectView: NSViewRepresentable {
 }
 
 // MARK: - Helper Functions
-

@@ -114,12 +114,12 @@ class RefactoringAdvisor {
                 // 函数结束
                 if braceCount <= 0 && functionLength > 1 {
                     let maxLength = 50
-                    if functionLength > maxLength {
+                    if functionLength > maxLength, let currentFunction = currentFunction {
                         smells.append(CodeSmell(
                             type: .longFunction,
                             filePath: filePath,
-                            lineNumber: currentFunction!.startLine,
-                            description: "函数 '\(currentFunction!.name)' 有 \(functionLength) 行，超过建议的 \(maxLength) 行",
+                            lineNumber: currentFunction.startLine,
+                            description: "函数 '\(currentFunction.name)' 有 \(functionLength) 行，超过建议的 \(maxLength) 行",
                             severity: functionLength > 100 ? .high : .medium,
                             suggestion: "考虑将此函数拆分为更小的子函数"
                         ))
@@ -136,7 +136,9 @@ class RefactoringAdvisor {
     
     private static func detectMagicNumbers(in lines: [String], filePath: String) -> [CodeSmell] {
         var smells: [CodeSmell] = []
-        let magicNumberPattern = try! NSRegularExpression(pattern: "\\b\\d{2,}\\b")
+        guard let magicNumberPattern = try? NSRegularExpression(pattern: "\\b\\d{2,}\\b") else {
+            return smells
+        }
         
         for (index, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)

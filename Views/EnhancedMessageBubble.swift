@@ -64,7 +64,7 @@ struct EnhancedMessageBubble: View {
             }
             
             // Streaming indicator
-            if message.isStreaming && message.content.isEmpty && (message.thinkingContent == nil || message.thinkingContent!.isEmpty) {
+            if message.isStreaming && message.content.isEmpty && (message.thinkingContent?.isEmpty ?? true) {
                 HStack(spacing: 8) {
                     StreamingDots()
                     Text("思考中...")

@@ -12,13 +12,11 @@ class ListDirectoryTool: Tool {
         let dirPath = (arguments["path"] as? String) ?? ToolRegistry.shared.workingDirectory ?? "."
 
         // 将目录列表操作移到后台线程，避免阻塞主线程/UI
-        return try await Task.detached(priority: .userInitiated) {
-            let command = "ls -la '\(dirPath)' 2>/dev/null"
-
+        return await Task.detached(priority: .userInitiated) {
             let process = Process()
             let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command]
+            process.executableURL = URL(fileURLWithPath: "/bin/ls")
+            process.arguments = ["-la", dirPath]
             process.standardOutput = pipe
             process.standardError = Pipe()
 

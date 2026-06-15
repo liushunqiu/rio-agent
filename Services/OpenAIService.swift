@@ -214,12 +214,15 @@ class OpenAIService: AIService {
                     } else {
                         content = tr.output
                     }
-                    var resultMsg: [String: Any] = [
+                    let resultMsg: [String: Any] = [
                         "role": "tool",
                         "tool_call_id": tr.toolCallId,
                         "content": content
                     ]
                     apiMessages.append(resultMsg)
+                }
+                if !message.content.isEmpty {
+                    apiMessages.append(apiMessage)
                 }
             } else {
                 apiMessages.append(apiMessage)

@@ -58,6 +58,8 @@ class ShellTool: Tool {
                 case .denied:
                     return ToolResult.cancelled(toolCallId: "shell", reason: "用户取消执行")
                 }
+            } else {
+                return ToolResult.error(toolCallId: "shell", error: "执行此命令需要用户确认")
             }
 
         case .dangerous:
@@ -74,6 +76,8 @@ class ShellTool: Tool {
                 case .denied:
                     return ToolResult.cancelled(toolCallId: "shell", reason: "用户取消执行")
                 }
+            } else {
+                return ToolResult.error(toolCallId: "shell", error: "执行危险命令需要用户确认")
             }
         }
 
@@ -86,57 +90,38 @@ class ShellTool: Tool {
     private static let maxOutputChars = 30_000
 
     private func runCommand(_ command: String, workingDirectory: String?) async throws -> ToolResult {
-        // 将整个命令执行移到后台线程，避免阻塞主线程/UI
-        return await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            let pipe = Pipe()
-            let errorPipe = Pipe()
-            
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command]
-            process.standardOutput = pipe
-            process.standardError = errorPipe
-            
-            if let workDir = workingDirectory {
-                process.currentDirectoryURL = URL(fileURLWithPath: workDir)
+        do {
+            let result = try await ProcessRunner.shared.run(
+                command: command,
+                workingDirectory: workingDirectory,
+                timeout: AppConstants.commandTimeout
+            )
+
+            var output = result.output
+            var truncated = false
+            if output.count > Self.maxOutputChars {
+                let endIndex = output.index(output.startIndex, offsetBy: Self.maxOutputChars)
+                output = String(output[..<endIndex])
+                truncated = true
             }
-            
-            do {
-                try process.run()
-                
-                // 使用异步方式读取输出，避免阻塞
-                let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
-                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                
-                process.waitUntilExit()
-                
-                var output = String(data: outputData, encoding: .utf8) ?? ""
-                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-                
-                // Truncate large outputs to prevent token overflow
-                var truncated = false
-                if output.count > Self.maxOutputChars {
-                    let endIndex = output.index(output.startIndex, offsetBy: Self.maxOutputChars)
-                    output = String(output[..<endIndex])
-                    truncated = true
+
+            if result.isSuccess {
+                if truncated {
+                    output += "\n\n⚠️ 输出被截断（超过 \(Self.maxOutputChars / 1000)k 字符）。如需完整输出，请通过管道写入文件后读取。"
                 }
-                
-                if process.terminationStatus == 0 {
-                    if truncated {
-                        output += "\n\n⚠️ 输出被截断（超过 \(Self.maxOutputChars / 1000)k 字符）。如需完整输出，请通过管道写入文件后读取。"
-                    }
-                    return ToolResult.success(toolCallId: "shell", output: output)
-                } else {
-                    var errorResult = errorOutput.isEmpty ? "命令执行失败 (退出码: \(process.terminationStatus))" : errorOutput
-                    if errorResult.count > Self.maxOutputChars {
-                        let endIndex = errorResult.index(errorResult.startIndex, offsetBy: Self.maxOutputChars)
-                        errorResult = String(errorResult[..<endIndex]) + "\n⚠️ 错误输出被截断"
-                    }
-                    return ToolResult.error(toolCallId: "shell", error: errorResult)
-                }
-            } catch {
-                return ToolResult.error(toolCallId: "shell", error: "无法执行命令: \(error.localizedDescription)")
+                return ToolResult.success(toolCallId: "shell", output: output)
             }
-        }.value
+
+            var errorResult = result.error.isEmpty ? "命令执行失败 (退出码: \(result.exitCode))" : result.error
+            if errorResult.count > Self.maxOutputChars {
+                let endIndex = errorResult.index(errorResult.startIndex, offsetBy: Self.maxOutputChars)
+                errorResult = String(errorResult[..<endIndex]) + "\n⚠️ 错误输出被截断"
+            }
+            return ToolResult.error(toolCallId: "shell", error: errorResult)
+        } catch ProcessError.timeout {
+            return ToolResult.error(toolCallId: "shell", error: ProcessError.timeout.localizedDescription)
+        } catch {
+            return ToolResult.error(toolCallId: "shell", error: "无法执行命令: \(error.localizedDescription)")
+        }
     }
 }
