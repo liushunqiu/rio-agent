@@ -31,7 +31,10 @@ class FileReadTool: Tool {
             throw ToolError.missingParameter("path")
         }
 
-        let encoding: String.Encoding = .utf8
+        let encodingName = (arguments["encoding"] as? String) ?? "utf-8"
+        guard let encoding = Self.encoding(named: encodingName) else {
+            return ToolResult.error(toolCallId: "read_file", error: "Unsupported encoding: \(encodingName)")
+        }
         let maxLines = (arguments["max_lines"] as? Int) ?? Self.defaultMaxLines
         let offset = (arguments["offset"] as? Int) ?? 0
         guard maxLines >= 0 else {
@@ -73,7 +76,7 @@ class FileReadTool: Tool {
                 try String(contentsOfFile: path, encoding: encoding)
             }.value
 
-            let allLines = rawContent.components(separatedBy: .newlines)
+            let allLines = rawContent.isEmpty ? [] : rawContent.components(separatedBy: .newlines)
             totalLines = allLines.count
 
             let startLine = min(offset, totalLines)
@@ -90,9 +93,9 @@ class FileReadTool: Tool {
                 truncated = true
             }
 
-            let displayedLines = content.components(separatedBy: .newlines).count
+            let displayedLines = selectedLines.count
             var header = "文件: \(path)\n总行数: \(totalLines)"
-            if offset > 0 || (maxLines > 0 && offset + displayedLines < totalLines) {
+            if displayedLines > 0 && (offset > 0 || (maxLines > 0 && offset + displayedLines < totalLines)) {
                 header += "\n显示: 第 \(offset + 1)-\(offset + displayedLines) 行"
             }
             header += "\n---\n"
@@ -107,6 +110,25 @@ class FileReadTool: Tool {
             return ToolResult.success(toolCallId: "read_file", output: header + output + footer)
         } catch {
             return ToolResult.error(toolCallId: "read_file", error: "无法读取文件: \(error.localizedDescription)")
+        }
+    }
+
+    private static func encoding(named name: String) -> String.Encoding? {
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "utf-8", "utf8":
+            return .utf8
+        case "utf-16", "utf16":
+            return .utf16
+        case "utf-16le", "utf16le":
+            return .utf16LittleEndian
+        case "utf-16be", "utf16be":
+            return .utf16BigEndian
+        case "ascii", "us-ascii":
+            return .ascii
+        case "latin1", "iso-8859-1", "iso latin 1":
+            return .isoLatin1
+        default:
+            return nil
         }
     }
 }

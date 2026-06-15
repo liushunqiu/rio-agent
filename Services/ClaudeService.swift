@@ -41,7 +41,13 @@ class ClaudeService: AIService {
         let body = buildRequestBody(messages: messages, tools: tools, model: model, stream: false, maxTokens: maxTokens)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw AIServiceError.timeout
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AIServiceError.invalidResponse
@@ -80,7 +86,13 @@ class ClaudeService: AIService {
         var fullContent = ""
         var toolCalls: [ToolCall] = []
 
-        let (bytes, response) = try await session.bytes(for: request)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw AIServiceError.timeout
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AIServiceError.invalidResponse

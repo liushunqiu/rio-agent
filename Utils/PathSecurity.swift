@@ -2,7 +2,9 @@ import Foundation
 
 enum PathSecurity {
     static func normalizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path)
+        let expandedPath = (path as NSString).expandingTildeInPath
+
+        return URL(fileURLWithPath: expandedPath)
             .standardizedFileURL
             .resolvingSymlinksInPath()
             .path

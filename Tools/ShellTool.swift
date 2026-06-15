@@ -47,8 +47,11 @@ class ShellTool: Tool {
             throw ToolError.missingParameter("command")
         }
 
+        // Use argument working_directory, fall back to ToolRegistry's workingDirectory
+        let workDir = (arguments["working_directory"] as? String) ?? ToolRegistry.shared.workingDirectory
+
         // Check risk level
-        let riskLevel = CommandClassifier.classify(command)
+        let riskLevel = CommandClassifier.classify(command, workingDirectory: workDir)
 
         switch riskLevel {
         case .safe:
@@ -99,8 +102,6 @@ class ShellTool: Tool {
             }
         }
 
-        // Use argument working_directory, fall back to ToolRegistry's workingDirectory
-        let workDir = (arguments["working_directory"] as? String) ?? ToolRegistry.shared.workingDirectory
         return try await runCommand(command, workingDirectory: workDir)
     }
 

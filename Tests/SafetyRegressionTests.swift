@@ -21,6 +21,18 @@ final class SafetyRegressionTests: XCTestCase {
         )
     }
 
+    func testPathSecurityExpandsTildePaths() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+        XCTAssertEqual(PathSecurity.normalizedPath("~/Documents"), "\(home)/Documents")
+        XCTAssertTrue(
+            PathSecurity.isWithinDirectory(
+                "~/Documents/example.txt",
+                workingDirectory: "\(home)/Documents"
+            )
+        )
+    }
+
     func testCommandClassifierTreatsGitPushAsNonSafe() {
         XCTAssertNotEqual(CommandClassifier.classify("git push origin main"), .safe)
     }
@@ -31,6 +43,54 @@ final class SafetyRegressionTests: XCTestCase {
 
     func testCommandClassifierTreatsReadOnlyGitStatusAsSafe() {
         XCTAssertEqual(CommandClassifier.classify("git status --short"), .safe)
+    }
+
+    func testCommandClassifierTreatsRedirectionAsNonSafe() {
+        XCTAssertNotEqual(CommandClassifier.classify("echo hello > output.txt"), .safe)
+        XCTAssertNotEqual(CommandClassifier.classify("git status --short 2> errors.log"), .safe)
+    }
+
+    func testCommandClassifierAllowsSafeRedirectionInsideWorkingDirectory() {
+        XCTAssertEqual(
+            CommandClassifier.classify(
+                "echo hello > output.txt",
+                workingDirectory: "/Users/test/project"
+            ),
+            .safe
+        )
+        XCTAssertEqual(
+            CommandClassifier.classify(
+                "git status --short 2> logs/errors.log",
+                workingDirectory: "/Users/test/project"
+            ),
+            .safe
+        )
+    }
+
+    func testCommandClassifierRejectsUnsafeRedirectionTargets() {
+        XCTAssertNotEqual(
+            CommandClassifier.classify(
+                "echo hello > /Users/test/other/output.txt",
+                workingDirectory: "/Users/test/project"
+            ),
+            .safe
+        )
+        XCTAssertNotEqual(
+            CommandClassifier.classify(
+                "echo hello > $OUTPUT_FILE",
+                workingDirectory: "/Users/test/project"
+            ),
+            .safe
+        )
+    }
+
+    func testCommandClassifierSplitsShellControlOperatorsBeforeSafeMatch() {
+        XCTAssertNotEqual(CommandClassifier.classify("echo hello; touch created.txt"), .safe)
+        XCTAssertEqual(CommandClassifier.classify("pwd && git status --short"), .safe)
+    }
+
+    func testCommandClassifierTreatsPipeToInterpreterAsDangerous() {
+        XCTAssertEqual(CommandClassifier.classify("cat script.sh|sh"), .dangerous)
     }
 
     func testFileReadRejectsNegativePaginationArguments() async throws {
@@ -49,6 +109,72 @@ final class SafetyRegressionTests: XCTestCase {
         ])
         XCTAssertEqual(negativeMaxLines.status, .error)
         XCTAssertTrue(negativeMaxLines.error?.contains("max_lines") == true)
+    }
+
+    func testFileReadHonorsEncodingArgument() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let tempFile = tempDir.appendingPathComponent("latin1.txt")
+        try withTemporaryWorkingDirectory(tempDir.path) {
+            try "café".write(to: tempFile, atomically: true, encoding: .isoLatin1)
+        }
+
+        let tool = FileReadTool()
+        let result = try await withTemporaryWorkingDirectory(tempDir.path) {
+            try await tool.execute(arguments: [
+                "path": tempFile.path,
+                "encoding": "latin1"
+            ])
+        }
+
+        XCTAssertEqual(result.status, .success)
+        XCTAssertTrue(result.output.contains("café"))
+    }
+
+    func testFileReadReportsEmptyFilesAsZeroLines() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let tempFile = tempDir.appendingPathComponent("empty.txt")
+        try Data().write(to: tempFile)
+
+        let tool = FileReadTool()
+        let result = try await withTemporaryWorkingDirectory(tempDir.path) {
+            try await tool.execute(arguments: ["path": tempFile.path])
+        }
+
+        XCTAssertEqual(result.status, .success)
+        XCTAssertTrue(result.output.contains("总行数: 0"))
+    }
+
+    private func makeTemporaryWorkingDirectory() throws -> URL {
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rio-agent-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempFile, withIntermediateDirectories: true)
+        return tempFile
+    }
+
+    private func withTemporaryWorkingDirectory<T>(_ path: String, operation: () throws -> T) rethrows -> T {
+        let previousWorkingDirectory = ToolRegistry.shared.workingDirectory
+        ToolRegistry.shared.workingDirectory = path
+        defer {
+            ToolRegistry.shared.workingDirectory = previousWorkingDirectory
+        }
+        return try operation()
+    }
+
+    private func withTemporaryWorkingDirectory<T>(_ path: String, operation: () async throws -> T) async rethrows -> T {
+        let previousWorkingDirectory = ToolRegistry.shared.workingDirectory
+        ToolRegistry.shared.workingDirectory = path
+        defer {
+            ToolRegistry.shared.workingDirectory = previousWorkingDirectory
+        }
+        return try await operation()
     }
 
     func testApplyPatchValidationFailureDoesNotPartiallyModifyFiles() async throws {
