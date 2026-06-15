@@ -488,6 +488,7 @@ class AgentEngine: ObservableObject {
             let messageId = streamingMessage.id
 
             var thinkingStartTime: Date?
+            var thinkingEndTime: Date?
             var hasThinkingContent = false
             // Buffer to coalesce rapid streaming chunks into fewer UI updates
             // 使用更大的缓冲区和更长的间隔来减少UI更新频率
@@ -511,6 +512,9 @@ class AgentEngine: ObservableObject {
                             if !thinking.isEmpty {
                                 let current = self.messages[streamingIndex].thinkingContent ?? ""
                                 self.messages[streamingIndex].thinkingContent = current + thinking
+                                if let start = thinkingStartTime, let end = thinkingEndTime {
+                                    self.messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
+                                }
                             }
                         }
                     },
@@ -519,6 +523,7 @@ class AgentEngine: ObservableObject {
                             hasThinkingContent = true
                             thinkingStartTime = Date()
                         }
+                        thinkingEndTime = Date()
                         buffer.appendThinking(chunk)
                         await buffer.flushIfNeeded { content, thinking in
                             guard let self = self, streamingIndex < self.messages.count else { return }
@@ -528,8 +533,8 @@ class AgentEngine: ObservableObject {
                             if !thinking.isEmpty {
                                 let current = self.messages[streamingIndex].thinkingContent ?? ""
                                 self.messages[streamingIndex].thinkingContent = current + thinking
-                                if let start = thinkingStartTime {
-                                    self.messages[streamingIndex].thinkingDuration = Date().timeIntervalSince(start)
+                                if let start = thinkingStartTime, let end = thinkingEndTime {
+                                    self.messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
                                 }
                             }
                         }
@@ -556,8 +561,8 @@ class AgentEngine: ObservableObject {
 
             guard streamingIndex < messages.count else { break }
 
-            if hasThinkingContent, let start = thinkingStartTime {
-                messages[streamingIndex].thinkingDuration = Date().timeIntervalSince(start)
+            if hasThinkingContent, let start = thinkingStartTime, let end = thinkingEndTime {
+                messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
             }
 
             let hasReasoning = hasThinkingContent && (messages[streamingIndex].thinkingContent?.isEmpty == false)
