@@ -34,6 +34,12 @@ class FileReadTool: Tool {
         let encoding: String.Encoding = .utf8
         let maxLines = (arguments["max_lines"] as? Int) ?? Self.defaultMaxLines
         let offset = (arguments["offset"] as? Int) ?? 0
+        guard maxLines >= 0 else {
+            return ToolResult.error(toolCallId: "read_file", error: "max_lines must be greater than or equal to 0")
+        }
+        guard offset >= 0 else {
+            return ToolResult.error(toolCallId: "read_file", error: "offset must be greater than or equal to 0")
+        }
         let normalizedPath = PathSecurity.normalizedPath(path)
         let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
 

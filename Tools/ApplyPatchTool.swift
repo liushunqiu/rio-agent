@@ -71,20 +71,31 @@ class ApplyPatchTool: Tool {
             return ToolResult.error(toolCallId: name, error: "Applying patches outside the working directory requires confirmation")
         }
 
-        // Apply each operation
+        let preparedOperations: [PreparedPatchOperation]
+        do {
+            preparedOperations = try prepareOperations(operations)
+        } catch {
+            return ToolResult.error(toolCallId: name, error: "Patch validation failed: \(error.localizedDescription)")
+        }
+
+        let originalStates = snapshotOriginalStates(for: preparedOperations)
+
+        // Apply each operation after all validation has passed.
         var results: [String] = []
         var hasError = false
 
-        for op in operations {
-            let result = try await applyOperation(op)
+        for op in preparedOperations {
+            let result = try await applyPreparedOperation(op)
             results.append(result)
             if result.hasPrefix("ERROR") {
                 hasError = true
+                break
             }
         }
 
         let output = results.joined(separator: "\n")
         if hasError {
+            restoreOriginalStates(originalStates)
             return ToolResult.error(toolCallId: name, error: "Patch partially failed:\n\(output)")
         }
 
@@ -105,9 +116,24 @@ class ApplyPatchTool: Tool {
         let content: String // For add: file content; for update: raw SEARCH/REPLACE blocks; for delete: empty
     }
 
+    private struct PreparedPatchOperation {
+        let action: PatchAction
+        let path: String
+        let content: String
+        let replacementCount: Int
+    }
+
     private struct SearchReplaceBlock {
         let searchText: String
         let replaceText: String
+    }
+
+    private struct PatchValidationError: LocalizedError {
+        let message: String
+
+        var errorDescription: String? {
+            message
+        }
     }
 
     // MARK: - Parser
@@ -172,6 +198,125 @@ class ApplyPatchTool: Tool {
             return try await applyUpdate(path: op.path, rawBlocks: op.content)
         case .delete:
             return try await applyDelete(path: op.path)
+        }
+    }
+
+    private func prepareOperations(_ operations: [PatchOperation]) throws -> [PreparedPatchOperation] {
+        var prepared: [PreparedPatchOperation] = []
+        var plannedContents: [String: String?] = [:]
+
+        for op in operations {
+            switch op.action {
+            case .add:
+                if plannedContents.keys.contains(op.path) {
+                    if plannedContents[op.path] != nil {
+                        throw PatchValidationError(message: "File already exists in patch plan, use Update instead: \(op.path)")
+                    }
+                } else if FileManager.default.fileExists(atPath: op.path) {
+                    throw PatchValidationError(message: "File already exists, use Update instead: \(op.path)")
+                }
+                plannedContents[op.path] = op.content
+                prepared.append(PreparedPatchOperation(action: .add, path: op.path, content: op.content, replacementCount: 0))
+
+            case .update:
+                let currentContent: String
+                if let planned = plannedContents[op.path] {
+                    guard let planned else {
+                        throw PatchValidationError(message: "Cannot update a file after deleting it in the same patch: \(op.path)")
+                    }
+                    currentContent = planned
+                } else {
+                    guard FileManager.default.fileExists(atPath: op.path) else {
+                        throw PatchValidationError(message: "File not found: \(op.path)")
+                    }
+                    do {
+                        currentContent = try String(contentsOfFile: op.path, encoding: .utf8)
+                    } catch {
+                        throw PatchValidationError(message: "Cannot read \(op.path): \(error.localizedDescription)")
+                    }
+                }
+
+                let blocks = parseSearchReplaceBlocks(op.content)
+                guard !blocks.isEmpty else {
+                    throw PatchValidationError(message: "No valid SEARCH/REPLACE blocks found for \(op.path)")
+                }
+
+                var updatedContent = currentContent
+                var appliedCount = 0
+                for block in blocks {
+                    let components = updatedContent.components(separatedBy: block.searchText)
+                    let matchCount = components.count - 1
+
+                    if matchCount == 0 {
+                        throw PatchValidationError(message: "SEARCH text not found in \(op.path). Text: \(String(block.searchText.prefix(100)))...")
+                    }
+
+                    if matchCount > 1 {
+                        throw PatchValidationError(message: "SEARCH text found \(matchCount) times in \(op.path), must be unique. Text: \(String(block.searchText.prefix(100)))...")
+                    }
+
+                    updatedContent = updatedContent.replacingOccurrences(of: block.searchText, with: block.replaceText)
+                    appliedCount += 1
+                }
+
+                plannedContents[op.path] = updatedContent
+                prepared.append(PreparedPatchOperation(action: .update, path: op.path, content: updatedContent, replacementCount: appliedCount))
+
+            case .delete:
+                if let planned = plannedContents[op.path] {
+                    guard planned != nil else {
+                        throw PatchValidationError(message: "File already deleted in patch plan: \(op.path)")
+                    }
+                } else if !FileManager.default.fileExists(atPath: op.path) {
+                    throw PatchValidationError(message: "File not found: \(op.path)")
+                }
+                plannedContents[op.path] = nil
+                prepared.append(PreparedPatchOperation(action: .delete, path: op.path, content: "", replacementCount: 0))
+            }
+        }
+
+        return prepared
+    }
+
+    private func applyPreparedOperation(_ op: PreparedPatchOperation) async throws -> String {
+        switch op.action {
+        case .add:
+            return try await applyAdd(path: op.path, content: op.content)
+        case .update:
+            return try await writePreparedUpdate(path: op.path, content: op.content, replacementCount: op.replacementCount)
+        case .delete:
+            return try await applyDelete(path: op.path)
+        }
+    }
+
+    private func writePreparedUpdate(path: String, content: String, replacementCount: Int) async throws -> String {
+        return await Task.detached(priority: .userInitiated) {
+            do {
+                try content.write(toFile: path, atomically: true, encoding: .utf8)
+                return "UPDATED: \(path) (\(replacementCount) replacement(s))"
+            } catch {
+                return "ERROR: Failed to write \(path): \(error.localizedDescription)"
+            }
+        }.value
+    }
+
+    private func snapshotOriginalStates(for operations: [PreparedPatchOperation]) -> [String: Data?] {
+        var states: [String: Data?] = [:]
+        for path in Set(operations.map(\.path)) {
+            states[path] = FileManager.default.contents(atPath: path)
+        }
+        return states
+    }
+
+    private func restoreOriginalStates(_ states: [String: Data?]) {
+        for (path, data) in states {
+            if let data {
+                let dir = (path as NSString).deletingLastPathComponent
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            } else if FileManager.default.fileExists(atPath: path) {
+                try? FileManager.default.removeItem(atPath: path)
+            }
         }
     }
 

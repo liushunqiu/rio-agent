@@ -79,99 +79,12 @@ enum AIProvider: String, Codable, CaseIterable {
 
     /// 获取模型对应的推荐 max_tokens 值
     static func defaultMaxTokens(for model: String) -> Int {
-        let lowercased = model.lowercased()
-
-        // Claude 系列
-        if lowercased.contains("claude-sonnet-4") || lowercased.contains("claude-4") || lowercased.contains("claude-3.5") {
-            return 8192
-        }
-        if lowercased.contains("claude-opus") {
-            return 4096
-        }
-        if lowercased.contains("claude-3-haiku") || lowercased.contains("claude-3-5-haiku") {
-            return 4096
-        }
-
-        // OpenAI 系列
-        if lowercased.contains("gpt-4o") || lowercased.contains("gpt-4.1") {
-            return 16384
-        }
-        if lowercased.contains("o1") || lowercased.contains("o3") {
-            return 16384
-        }
-        if lowercased.contains("gpt-4-turbo") || lowercased.contains("gpt-4-1106") || lowercased.contains("gpt-4-0125") {
-            return 4096
-        }
-        if lowercased.contains("gpt-4") {
-            return 8192
-        }
-        if lowercased.contains("gpt-3.5") {
-            return 4096
-        }
-
-        // 支持百万上下文的大窗口模型
-        if lowercased.contains("mimo") || lowercased.contains("glm-4-9b") || lowercased.contains("mini-max") || lowercased.contains("minimax") {
-            return 16384
-        }
-
-        // DeepSeek
-        if lowercased.contains("deepseek") {
-            return 8192
-        }
-
-        // Qwen
-        if lowercased.contains("qwen") || lowercased.contains("通义") {
-            return 8192
-        }
-
-        // Yi
-        if lowercased.contains("yi-") {
-            return 4096
-        }
-
-        // Gemini
-        if lowercased.contains("gemini") {
-            return 8192
-        }
-
-        return 4096
+        ModelCapabilities.capabilities(for: model).maxOutputTokens
     }
 
     /// 获取模型的上下文窗口大小（token 数），用于自动压缩
     static func contextWindow(for model: String) -> Int {
-        let lowercased = model.lowercased()
-
-        // Claude
-        if lowercased.contains("claude") { return 200000 }
-
-        // OpenAI
-        if lowercased.contains("gpt-4.1") { return 1047000 }
-        if lowercased.contains("gpt-4o") || lowercased.contains("o1") || lowercased.contains("o3") { return 128000 }
-        if lowercased.contains("gpt-4-turbo") { return 128000 }
-        if lowercased.contains("gpt-4") { return 8192 }
-        if lowercased.contains("gpt-3.5") { return 16384 }
-
-        // 百万上下文模型
-        if lowercased.contains("mimo") || lowercased.contains("glm-4-9b") || lowercased.contains("mini-max") || lowercased.contains("minimax") { return 1_000_000 }
-
-        // DeepSeek
-        if lowercased.contains("deepseek") { return 65536 }
-        if lowercased.contains("deepseek-v3") || lowercased.contains("deepseek-r1") { return 65536 }
-
-        // Qwen
-        if lowercased.contains("qwen2.5-72b") || lowercased.contains("qwen-max") { return 131072 }
-        if lowercased.contains("qwen") || lowercased.contains("通义") { return 32768 }
-
-        // Yi
-        if lowercased.contains("yi-") { return 200000 }
-
-        // Gemini
-        if lowercased.contains("gemini-2.0") || lowercased.contains("gemini-2.5") { return 1_048_576 }
-        if lowercased.contains("gemini-1.5") { return 1_048_576 }
-        if lowercased.contains("gemini") { return 32768 }
-
-        // 默认保守值
-        return 8192
+        ModelCapabilities.capabilities(for: model).contextWindow
     }
 }
 

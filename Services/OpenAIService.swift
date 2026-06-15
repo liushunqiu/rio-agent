@@ -30,7 +30,9 @@ class OpenAIService: AIService {
         model: String,
         maxTokens: Int = AppConstants.maxTokens
     ) async throws -> AIResponse {
-        let url = URL(string: "\(baseURL)/v1/chat/completions")!
+        guard let url = URL(string: "\(baseURL)/v1/chat/completions") else {
+            throw AIServiceError.invalidBaseURL(baseURL)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -71,7 +73,9 @@ class OpenAIService: AIService {
         onChunk: @escaping (String) async -> Void,
         onThinkingChunk: @escaping (String) async -> Void
     ) async throws -> AIResponse {
-        let url = URL(string: "\(baseURL)/v1/chat/completions")!
+        guard let url = URL(string: "\(baseURL)/v1/chat/completions") else {
+            throw AIServiceError.invalidBaseURL(baseURL)
+        }
         RioLogger.service.apiRequest(provider: "OpenAI", model: model, messageCount: messages.count)
 
         var request = URLRequest(url: url)

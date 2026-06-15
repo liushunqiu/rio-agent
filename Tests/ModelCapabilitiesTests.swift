@@ -163,6 +163,13 @@ final class ModelCapabilitiesTests: XCTestCase {
         XCTAssertEqual(caps.contextWindow, 8192)
         XCTAssertEqual(caps.maxOutputTokens, 4096)
     }
+
+    func testAIProviderUsesModelCapabilitiesForTokenLimits() {
+        let caps = ModelCapabilities.capabilities(for: "gpt-4.1")
+
+        XCTAssertEqual(AIProvider.contextWindow(for: "gpt-4.1"), caps.contextWindow)
+        XCTAssertEqual(AIProvider.defaultMaxTokens(for: "gpt-4.1"), caps.maxOutputTokens)
+    }
     
     // MARK: - Feature Support Tests
     

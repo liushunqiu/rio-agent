@@ -29,7 +29,9 @@ class ClaudeService: AIService {
         model: String,
         maxTokens: Int = AppConstants.maxTokens
     ) async throws -> AIResponse {
-        let url = URL(string: "\(baseURL)/v1/messages")!
+        guard let url = URL(string: "\(baseURL)/v1/messages") else {
+            throw AIServiceError.invalidBaseURL(baseURL)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -63,7 +65,9 @@ class ClaudeService: AIService {
         onChunk: @escaping (String) async -> Void,
         onThinkingChunk: @escaping (String) async -> Void
     ) async throws -> AIResponse {
-        let url = URL(string: "\(baseURL)/v1/messages")!
+        guard let url = URL(string: "\(baseURL)/v1/messages") else {
+            throw AIServiceError.invalidBaseURL(baseURL)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -297,6 +301,7 @@ class ClaudeService: AIService {
 
 enum AIServiceError: LocalizedError {
     case invalidResponse
+    case invalidBaseURL(String)
     case apiError(statusCode: Int, message: String)
     case decodingError
     case timeout
@@ -305,6 +310,8 @@ enum AIServiceError: LocalizedError {
         switch self {
         case .invalidResponse:
             return "API 返回了无效的响应格式，请检查端点地址是否正确。"
+        case .invalidBaseURL(let url):
+            return "API 端点地址无效: \(url)"
         case .apiError(let statusCode, let message):
             switch statusCode {
             case 401:
