@@ -18,17 +18,28 @@ struct MultiAgentSettingsView: View {
         self._config = config
         self.aiConfig = aiConfig
         let initial = config.wrappedValue
-        let hasAnyKey = aiConfig.hasClaudeKey || aiConfig.hasOpenAIKey
+        let canUseMultiAgent = aiConfig.hasAnyProvider
 
-        self._isEnabled = State(initialValue: initial.isEnabled && hasAnyKey)
+        self._isEnabled = State(initialValue: initial.isEnabled && canUseMultiAgent)
         let validProvider = aiConfig.availableProviders.contains(initial.orchestrator.provider)
             ? initial.orchestrator.provider
             : aiConfig.availableProviders.first ?? .claude
 
         self._orchestratorProvider = State(initialValue: validProvider)
-        self._orchestratorModel = State(initialValue: initial.orchestrator.model)
+        let initialOrchestratorModel = initial.orchestrator.provider == validProvider
+            ? initial.orchestrator.model
+            : aiConfig.currentModel(for: validProvider)
+        self._orchestratorModel = State(initialValue: initialOrchestratorModel)
         self._orchestratorPrompt = State(initialValue: initial.orchestrator.systemPrompt)
-        self._workers = State(initialValue: initial.workers)
+        self._workers = State(initialValue: initial.workers.map { worker in
+            guard aiConfig.availableProviders.contains(worker.provider) else {
+                var updated = worker
+                updated.provider = validProvider
+                updated.model = aiConfig.currentModel(for: validProvider)
+                return updated
+            }
+            return worker
+        })
         self._maxParallel = State(initialValue: initial.maxParallelWorkers)
         self._taskStrategy = State(initialValue: initial.taskSplitStrategy)
     }
@@ -44,7 +55,7 @@ struct MultiAgentSettingsView: View {
     }
 
     private var canEnable: Bool {
-        aiConfig.hasClaudeKey || aiConfig.hasOpenAIKey
+        aiConfig.hasAnyProvider
     }
 
     var body: some View {
@@ -54,7 +65,7 @@ struct MultiAgentSettingsView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(Theme.statusWarning)
                         .font(.system(size: 13))
-                    Text("请先在 AI 配置页面配置至少一个 API Key")
+                    Text("请先在 AI 配置页面配置 Claude/OpenAI API Key，或配置自定义端点")
                         .font(.system(size: 12))
                         .foregroundColor(Theme.textSecondary)
                 }
@@ -163,23 +174,6 @@ struct OrchestratorSection: View {
     let aiConfig: AIConfigInfo
     let onChange: () -> Void
 
-    private var availableModels: [(String, String, String)] {
-        switch provider {
-        case .claude:
-            return [
-                ("claude-opus-4-20250514", "Claude Opus 4", "star.fill"),
-                ("claude-sonnet-4-20250514", "Claude Sonnet 4", "bolt.fill"),
-                ("claude-3-5-haiku-20241022", "Claude Haiku 3.5", "hare.fill")
-            ]
-        case .openAI, .openAICompatible:
-            return [
-                ("gpt-4o", "GPT-4o", "star.fill"),
-                ("gpt-4-turbo", "GPT-4 Turbo", "brain.head.profile"),
-                ("gpt-4o-mini", "GPT-4o Mini", "bolt.fill")
-            ]
-        }
-    }
-
     var body: some View {
         SettingsSection(title: "主 Agent (Orchestrator)", icon: "brain.head.profile") {
             VStack(alignment: .leading, spacing: 12) {
@@ -213,7 +207,7 @@ struct OrchestratorSection: View {
                                     isSelected: provider == p
                                 ) {
                                     provider = p
-                                    model = p == .claude ? "claude-sonnet-4-20250514" : "gpt-4o"
+                                    model = aiConfig.currentModel(for: p)
                                     onChange()
                                 }
                             }
@@ -221,18 +215,13 @@ struct OrchestratorSection: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("模型")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Theme.textTertiary)
-                    Picker("", selection: $model) {
-                        ForEach(availableModels, id: \.0) { modelId, modelName, icon in
-                            Label(modelName, systemImage: icon).tag(modelId)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: model) { _, _ in onChange() }
-                }
+                AgentModelSelector(
+                    title: "模型",
+                    provider: provider,
+                    model: $model,
+                    aiConfig: aiConfig,
+                    onChange: onChange
+                )
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("系统提示词")
@@ -251,6 +240,82 @@ struct OrchestratorSection: View {
             }
         }
     }
+}
+
+// MARK: - Model Selector
+
+struct AgentModelSelector: View {
+    let title: String
+    let provider: AIProvider
+    @Binding var model: String
+    let aiConfig: AIConfigInfo
+    let onChange: () -> Void
+
+    private var suggestedModels: [ModelChoice] {
+        var choices: [ModelChoice] = []
+        let current = aiConfig.currentModel(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !current.isEmpty {
+            choices.append(ModelChoice(id: current, label: "当前配置: \(current)"))
+        }
+
+        if provider != .openAICompatible {
+            for info in ModelInfo.availableModels(for: provider) where !choices.contains(where: { $0.id == info.modelId }) {
+                choices.append(ModelChoice(id: info.modelId, label: info.displayName))
+            }
+        }
+
+        return choices
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+
+            HStack(spacing: 8) {
+                if !suggestedModels.isEmpty {
+                    Picker("", selection: Binding(
+                        get: { suggestedModels.contains(where: { $0.id == model }) ? model : "" },
+                        set: { selected in
+                            guard !selected.isEmpty else { return }
+                            model = selected
+                            onChange()
+                        }
+                    )) {
+                        if !suggestedModels.contains(where: { $0.id == model }) {
+                            Text("自定义").tag("")
+                        }
+                        ForEach(suggestedModels) { choice in
+                            Text(choice.label).tag(choice.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 180)
+                }
+
+                TextField("输入模型 ID", text: $model)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(Theme.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Theme.bgInput)
+                    .cornerRadius(Theme.radiusMD)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusMD)
+                            .stroke(Theme.borderSubtle, lineWidth: 1)
+                    )
+                    .onChange(of: model) { _, _ in onChange() }
+            }
+        }
+    }
+}
+
+private struct ModelChoice: Identifiable {
+    let id: String
+    let label: String
 }
 
 // MARK: - Provider Chip
@@ -370,6 +435,8 @@ struct DarkWorkerRow: View {
                 HStack(spacing: 4) {
                     Text(worker.provider.displayName)
                     Text("·")
+                    Text(worker.capability.displayName)
+                    Text("·")
                     Text(modelShortName(worker.model))
                 }
                 .font(.system(size: 10, design: .monospaced))
@@ -436,6 +503,7 @@ struct AddWorkerSheet: View {
     @State private var name = ""
     @State private var provider: AIProvider
     @State private var model: String
+    @State private var capability: AgentCapability = .general
     @State private var systemPrompt = ""
 
     init(aiConfig: AIConfigInfo, onAdd: @escaping (AgentConfig) -> Void) {
@@ -443,16 +511,7 @@ struct AddWorkerSheet: View {
         self.onAdd = onAdd
         let defaultProvider = aiConfig.availableProviders.first ?? .claude
         self._provider = State(initialValue: defaultProvider)
-        self._model = State(initialValue: defaultProvider == .claude ? "claude-3-5-haiku-20241022" : "gpt-4o-mini")
-    }
-
-    private var availableModels: [(String, String)] {
-        switch provider {
-        case .claude:
-            return [("claude-3-5-haiku-20241022", "Claude Haiku 3.5 (推荐)"), ("claude-sonnet-4-20250514", "Claude Sonnet 4")]
-        case .openAI, .openAICompatible:
-            return [("gpt-4o-mini", "GPT-4o Mini (推荐)"), ("gpt-4o", "GPT-4o")]
-        }
+        self._model = State(initialValue: aiConfig.currentModel(for: defaultProvider))
     }
 
     var body: some View {
@@ -489,7 +548,7 @@ struct AddWorkerSheet: View {
                             ForEach(aiConfig.availableProviders, id: \.self) { p in
                                 DarkProviderChip(name: p.displayName, isSelected: provider == p) {
                                     provider = p
-                                    model = p == .claude ? "claude-3-5-haiku-20241022" : "gpt-4o-mini"
+                                    model = aiConfig.currentModel(for: p)
                                 }
                             }
                         }
@@ -497,14 +556,22 @@ struct AddWorkerSheet: View {
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("模型 (建议使用经济模型)").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
-                    Picker("", selection: $model) {
-                        ForEach(availableModels, id: \.0) { modelId, modelName in
-                            Text(modelName).tag(modelId)
+                    Text("能力").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
+                    Picker("", selection: $capability) {
+                        ForEach(AgentCapability.allCases, id: \.self) { capability in
+                            Text("\(capability.displayName) - \(capability.description)").tag(capability)
                         }
                     }
                     .pickerStyle(.menu)
                 }
+
+                AgentModelSelector(
+                    title: "模型",
+                    provider: provider,
+                    model: $model,
+                    aiConfig: aiConfig,
+                    onChange: {}
+                )
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("系统提示词").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
@@ -528,6 +595,7 @@ struct AddWorkerSheet: View {
                     let worker = AgentConfig(
                         name: name.isEmpty ? "子 Agent" : name,
                         role: .worker,
+                        capability: capability,
                         provider: provider,
                         model: model,
                         systemPrompt: systemPrompt
@@ -558,25 +626,21 @@ struct EditWorkerSheet: View {
     @State private var name: String
     @State private var provider: AIProvider
     @State private var model: String
+    @State private var capability: AgentCapability
     @State private var systemPrompt: String
 
     init(worker: AgentConfig, aiConfig: AIConfigInfo, onSave: @escaping (AgentConfig) -> Void) {
         self.worker = worker
         self.aiConfig = aiConfig
         self.onSave = onSave
+        let validProvider = aiConfig.availableProviders.contains(worker.provider)
+            ? worker.provider
+            : aiConfig.availableProviders.first ?? .claude
         self._name = State(initialValue: worker.name)
-        self._provider = State(initialValue: worker.provider)
-        self._model = State(initialValue: worker.model)
+        self._provider = State(initialValue: validProvider)
+        self._model = State(initialValue: worker.provider == validProvider ? worker.model : aiConfig.currentModel(for: validProvider))
+        self._capability = State(initialValue: worker.capability)
         self._systemPrompt = State(initialValue: worker.systemPrompt)
-    }
-
-    private var availableModels: [(String, String)] {
-        switch provider {
-        case .claude:
-            return [("claude-3-5-haiku-20241022", "Claude Haiku 3.5"), ("claude-sonnet-4-20250514", "Claude Sonnet 4")]
-        case .openAI, .openAICompatible:
-            return [("gpt-4o-mini", "GPT-4o Mini"), ("gpt-4o", "GPT-4o")]
-        }
     }
 
     var body: some View {
@@ -613,7 +677,7 @@ struct EditWorkerSheet: View {
                             ForEach(aiConfig.availableProviders, id: \.self) { p in
                                 DarkProviderChip(name: p.displayName, isSelected: provider == p) {
                                     provider = p
-                                    model = p == .claude ? "claude-3-5-haiku-20241022" : "gpt-4o-mini"
+                                    model = aiConfig.currentModel(for: p)
                                 }
                             }
                         }
@@ -621,14 +685,22 @@ struct EditWorkerSheet: View {
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("模型").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
-                    Picker("", selection: $model) {
-                        ForEach(availableModels, id: \.0) { modelId, modelName in
-                            Text(modelName).tag(modelId)
+                    Text("能力").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
+                    Picker("", selection: $capability) {
+                        ForEach(AgentCapability.allCases, id: \.self) { capability in
+                            Text("\(capability.displayName) - \(capability.description)").tag(capability)
                         }
                     }
                     .pickerStyle(.menu)
                 }
+
+                AgentModelSelector(
+                    title: "模型",
+                    provider: provider,
+                    model: $model,
+                    aiConfig: aiConfig,
+                    onChange: {}
+                )
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("系统提示词").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
@@ -653,6 +725,7 @@ struct EditWorkerSheet: View {
                     updated.name = name
                     updated.provider = provider
                     updated.model = model
+                    updated.capability = capability
                     updated.systemPrompt = systemPrompt
                     onSave(updated)
                     dismiss()

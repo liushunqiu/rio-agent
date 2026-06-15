@@ -84,9 +84,7 @@ class AgentEngine: ObservableObject {
                 urls[.openAI] = configuration.openAIConfig.baseURL
             }
             if !configuration.compatibleConfig.baseURL.isEmpty {
-                if let compatKey = configuration.getAPIKey(for: .openAICompatible), !compatKey.isEmpty {
-                    keys[.openAICompatible] = compatKey
-                }
+                keys[.openAICompatible] = configuration.getAPIKey(for: .openAICompatible) ?? ""
                 urls[.openAICompatible] = configuration.compatibleConfig.baseURL
             }
             engine.configureAPIKeys(keys, baseUrls: urls)

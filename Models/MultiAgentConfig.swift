@@ -21,21 +21,65 @@ enum AgentRole: String, Codable, CaseIterable {
     }
 }
 
+// MARK: - Agent Capability
+
+enum AgentCapability: String, Codable, CaseIterable {
+    case search
+    case code
+    case file
+    case general
+    case custom
+
+    var displayName: String {
+        switch self {
+        case .search: return "搜索"
+        case .code: return "代码"
+        case .file: return "文件"
+        case .general: return "通用"
+        case .custom: return "自定义"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .search: return "信息检索、资料整理、外部上下文收集"
+        case .code: return "代码阅读、实现、调试、重构建议"
+        case .file: return "文件读写、目录整理、批量文本处理"
+        case .general: return "综合分析、写作、规划和普通问答"
+        case .custom: return "按该 Agent 的系统提示词执行特定任务"
+        }
+    }
+
+    var workerType: String {
+        rawValue
+    }
+
+    init(workerType: String) {
+        self = AgentCapability(rawValue: workerType) ?? .general
+    }
+}
+
 // MARK: - Agent Configuration
 
 struct AgentConfig: Identifiable, Codable {
     let id: UUID
     var name: String
     var role: AgentRole
+    var capability: AgentCapability
     var provider: AIProvider
     var model: String
     var systemPrompt: String
     var isEnabled: Bool
 
+    enum CodingKeys: String, CodingKey {
+        case id, name, role, capability, provider, model, systemPrompt, isEnabled
+    }
+
     init(
         id: UUID = UUID(),
         name: String,
         role: AgentRole,
+        capability: AgentCapability? = nil,
         provider: AIProvider,
         model: String,
         systemPrompt: String = "",
@@ -44,10 +88,32 @@ struct AgentConfig: Identifiable, Codable {
         self.id = id
         self.name = name
         self.role = role
+        self.capability = capability ?? (role == .orchestrator ? .general : .custom)
         self.provider = provider
         self.model = model
         self.systemPrompt = systemPrompt
         self.isEnabled = isEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        role = try container.decode(AgentRole.self, forKey: .role)
+        capability = try container.decodeIfPresent(AgentCapability.self, forKey: .capability)
+            ?? AgentConfig.inferCapability(name: name, role: role)
+        provider = try container.decode(AIProvider.self, forKey: .provider)
+        model = try container.decode(String.self, forKey: .model)
+        systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt) ?? ""
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+    }
+
+    private static func inferCapability(name: String, role: AgentRole) -> AgentCapability {
+        guard role == .worker else { return .general }
+        if name.contains("搜索") { return .search }
+        if name.contains("代码") { return .code }
+        if name.contains("文件") { return .file }
+        return .general
     }
 }
 
@@ -73,6 +139,7 @@ struct MultiAgentConfig: Codable {
         self.orchestrator = orchestrator ?? AgentConfig(
             name: "主 Agent",
             role: .orchestrator,
+            capability: .general,
             provider: .claude,
             model: "claude-sonnet-4-20250514",
             systemPrompt: "你是一个任务协调者。你的职责是：\n1. 理解用户的任务需求\n2. 将复杂任务拆分为多个子任务\n3. 分配子任务给工作 Agent\n4. 汇总所有结果，给出最终答案"
@@ -93,6 +160,7 @@ struct MultiAgentConfig: Codable {
             AgentConfig(
                 name: "搜索 Agent",
                 role: .worker,
+                capability: .search,
                 provider: .claude,
                 model: "claude-3-5-haiku-20241022",
                 systemPrompt: "你是一个搜索助手。负责查找和整理信息。"
@@ -100,6 +168,7 @@ struct MultiAgentConfig: Codable {
             AgentConfig(
                 name: "代码 Agent",
                 role: .worker,
+                capability: .code,
                 provider: .claude,
                 model: "claude-3-5-haiku-20241022",
                 systemPrompt: "你是一个代码助手。负责代码分析和实现。"
@@ -107,6 +176,7 @@ struct MultiAgentConfig: Codable {
             AgentConfig(
                 name: "文件 Agent",
                 role: .worker,
+                capability: .file,
                 provider: .claude,
                 model: "claude-3-5-haiku-20241022",
                 systemPrompt: "你是一个文件助手。负责文件读写操作。"
@@ -141,6 +211,8 @@ enum TaskSplitStrategy: String, Codable, CaseIterable {
 struct SubTask: Identifiable {
     let id: UUID
     var description: String
+    var workerId: UUID?
+    var workerType: AgentCapability
     var assignedWorker: AgentConfig?
     var status: SubTaskStatus
     var result: String?
@@ -148,12 +220,16 @@ struct SubTask: Identifiable {
     init(
         id: UUID = UUID(),
         description: String,
+        workerId: UUID? = nil,
+        workerType: AgentCapability = .general,
         assignedWorker: AgentConfig? = nil,
         status: SubTaskStatus = .pending,
         result: String? = nil
     ) {
         self.id = id
         self.description = description
+        self.workerId = workerId
+        self.workerType = workerType
         self.assignedWorker = assignedWorker
         self.status = status
         self.result = result

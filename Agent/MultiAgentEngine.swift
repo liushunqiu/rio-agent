@@ -28,7 +28,8 @@ class MultiAgentEngine: ObservableObject {
 
     private func setupServices() {
         // Setup orchestrator service
-        if let apiKey = apiKeyStore[config.orchestrator.provider], !apiKey.isEmpty {
+        if canCreateService(for: config.orchestrator.provider) {
+            let apiKey = apiKeyStore[config.orchestrator.provider] ?? ""
             let baseURL = baseURLStore[config.orchestrator.provider] ?? ""
             services[config.orchestrator.id] = AIServiceFactory.createService(
                 provider: config.orchestrator.provider,
@@ -39,7 +40,8 @@ class MultiAgentEngine: ObservableObject {
 
         // Setup worker services
         for worker in config.workers {
-            if let apiKey = apiKeyStore[worker.provider], !apiKey.isEmpty {
+            if canCreateService(for: worker.provider) {
+                let apiKey = apiKeyStore[worker.provider] ?? ""
                 let baseURL = baseURLStore[worker.provider] ?? ""
                 services[worker.id] = AIServiceFactory.createService(
                     provider: worker.provider,
@@ -47,6 +49,15 @@ class MultiAgentEngine: ObservableObject {
                     baseURL: baseURL
                 )
             }
+        }
+    }
+
+    private func canCreateService(for provider: AIProvider) -> Bool {
+        switch provider {
+        case .openAICompatible:
+            return !(baseURLStore[provider] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .claude, .openAI:
+            return !(apiKeyStore[provider] ?? "").isEmpty
         }
     }
 
@@ -76,6 +87,14 @@ class MultiAgentEngine: ObservableObject {
 
             let subTasks = try await splitTask(task)
             plan.subTasks = subTasks
+
+            if subTasks.isEmpty {
+                let finalResult = try await synthesizeResults(originalTask: task, subResults: [:])
+                plan.status = .completed
+                currentPlan = plan
+                isProcessing = false
+                return finalResult
+            }
 
             // Step 2: Execute sub-tasks in parallel
             plan.status = .executing
@@ -118,15 +137,35 @@ class MultiAgentEngine: ObservableObject {
             throw MultiAgentError.serviceNotAvailable(config.orchestrator.name)
         }
 
+        let availableWorkers = config.workers.filter { $0.isEnabled }
+        let workerCatalog = availableWorkers.map { worker in
+            """
+            - worker_id: \(worker.id.uuidString)
+              name: \(worker.name)
+              capability: \(worker.capability.workerType)
+              capability_description: \(worker.capability.description)
+              model: \(worker.model)
+              system_prompt: \(worker.systemPrompt.isEmpty ? "无" : worker.systemPrompt)
+            """
+        }.joined(separator: "\n")
+
         let splitPrompt = """
-        你是一个任务分析专家。请分析以下用户任务，并将其拆分为可并行执行的子任务。
+        你是一个任务协调专家。请分析以下用户任务，并将其拆分为可并行执行的子任务，然后从可用子 Agent 中选择最合适的执行者。
 
         用户任务: \(task)
+
+        可用子 Agent:
+        \(workerCatalog.isEmpty ? "无可用子 Agent" : workerCatalog)
 
         请以 JSON 格式返回子任务列表，格式如下:
         {
             "sub_tasks": [
-                {"description": "子任务描述", "worker_type": "search/code/file/general"}
+                {
+                    "description": "子任务描述",
+                    "worker_id": "从可用子 Agent 中选择的 UUID",
+                    "worker_type": "search/code/file/general/custom",
+                    "reason": "选择该子 Agent 的简短原因"
+                }
             ]
         }
 
@@ -134,7 +173,9 @@ class MultiAgentEngine: ObservableObject {
         1. 每个子任务应该是独立可执行的
         2. 子任务之间不应有依赖关系
         3. 如果任务简单不需要拆分，返回空数组
-        4. worker_type 可选: search(搜索), code(代码), file(文件), general(通用)
+        4. 优先使用 worker_id 精确指定执行者
+        5. worker_type 必须匹配所选子 Agent 的 capability
+        6. 不要选择不存在的 worker_id
         """
 
         let messages = [Message.system(splitPrompt), Message.user(task)]
@@ -153,30 +194,48 @@ class MultiAgentEngine: ObservableObject {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let subTasksArray = json["sub_tasks"] as? [[String: Any]] else {
             // If parsing fails, create a single sub-task with the original response
-            return [SubTask(description: response, assignedWorker: config.workers.first)]
+            return [SubTask(description: response, assignedWorker: fallbackWorker(for: .general))]
         }
 
         return subTasksArray.compactMap { taskDict in
             guard let description = taskDict["description"] as? String else { return nil }
 
-            let workerType = taskDict["worker_type"] as? String ?? "general"
-            let worker = selectWorker(for: workerType)
+            let workerId = (taskDict["worker_id"] as? String).flatMap(UUID.init(uuidString:))
+            let workerType = AgentCapability(workerType: taskDict["worker_type"] as? String ?? "general")
+            let worker = selectWorker(id: workerId, capability: workerType)
 
-            return SubTask(description: description, assignedWorker: worker)
+            return SubTask(
+                description: description,
+                workerId: workerId,
+                workerType: workerType,
+                assignedWorker: worker
+            )
         }
     }
 
-    private func selectWorker(for type: String) -> AgentConfig? {
-        switch type {
-        case "search":
-            return config.workers.first { $0.name.contains("搜索") } ?? config.workers.first
-        case "code":
-            return config.workers.first { $0.name.contains("代码") } ?? config.workers.first
-        case "file":
-            return config.workers.first { $0.name.contains("文件") } ?? config.workers.first
-        default:
-            return config.workers.first
+    private func selectWorker(id: UUID?, capability: AgentCapability) -> AgentConfig? {
+        let enabledWorkers = config.workers.filter { $0.isEnabled }
+
+        if let id, let exactMatch = enabledWorkers.first(where: { $0.id == id }) {
+            return exactMatch
         }
+
+        if let capabilityMatch = enabledWorkers.first(where: { $0.capability == capability }) {
+            return capabilityMatch
+        }
+
+        return fallbackWorker(for: capability)
+    }
+
+    private func fallbackWorker(for capability: AgentCapability) -> AgentConfig? {
+        let enabledWorkers = config.workers.filter { $0.isEnabled }
+
+        if capability != .general,
+           let generalWorker = enabledWorkers.first(where: { $0.capability == .general }) {
+            return generalWorker
+        }
+
+        return enabledWorkers.first
     }
 
     // MARK: - Parallel Execution
@@ -290,16 +349,25 @@ class MultiAgentEngine: ObservableObject {
             "=== 子任务 \(index + 1) 结果 ===\n\(result)"
         }.joined(separator: "\n\n")
 
-        let synthesizePrompt = """
-        你是一个任务协调者。请根据以下信息，给出最终的完整回答。
+        let synthesizePrompt: String
+        if subResults.isEmpty {
+            synthesizePrompt = """
+            你是一个任务协调者。你判断该任务不需要拆分给子 Agent。请直接回答用户的原始任务。
 
-        原始用户任务: \(originalTask)
+            原始用户任务: \(originalTask)
+            """
+        } else {
+            synthesizePrompt = """
+            你是一个任务协调者。请根据以下信息，给出最终的完整回答。
 
-        子任务执行结果:
-        \(resultsText)
+            原始用户任务: \(originalTask)
 
-        请综合所有信息，给出一个完整、准确、有条理的最终回答。
-        """
+            子任务执行结果:
+            \(resultsText)
+
+            请综合所有信息，给出一个完整、准确、有条理的最终回答。
+            """
+        }
 
         let messages = [
             Message.system(config.orchestrator.systemPrompt),

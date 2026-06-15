@@ -48,6 +48,9 @@ struct SettingsView: View {
 
     private var hasClaudeApiKey: Bool { !claudeApiKey.isEmpty }
     private var hasOpenAIApiKey: Bool { !openAIApiKey.isEmpty }
+    private var hasCompatibleEndpoint: Bool {
+        !compatBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private func saveConfiguration() {
         // Save API keys to Keychain first
@@ -135,10 +138,13 @@ struct SettingsView: View {
                             aiConfig: AIConfigInfo(
                                 hasClaudeKey: hasClaudeApiKey,
                                 hasOpenAIKey: hasOpenAIApiKey,
+                                hasCompatibleEndpoint: hasCompatibleEndpoint,
                                 claudeApiKey: claudeApiKey,
                                 openAIApiKey: openAIApiKey,
+                                compatibleApiKey: compatApiKey,
                                 currentClaudeModel: claudeModel,
-                                currentOpenAIModel: openAIModel
+                                currentOpenAIModel: openAIModel,
+                                currentCompatibleModel: compatModel
                             )
                         )
                     case 2:
@@ -679,29 +685,39 @@ struct ProviderCard: View {
 struct AIConfigInfo {
     let hasClaudeKey: Bool
     let hasOpenAIKey: Bool
+    let hasCompatibleEndpoint: Bool
     let claudeApiKey: String
     let openAIApiKey: String
+    let compatibleApiKey: String
     let currentClaudeModel: String
     let currentOpenAIModel: String
+    let currentCompatibleModel: String
 
     var availableProviders: [AIProvider] {
         var providers: [AIProvider] = []
         if hasClaudeKey { providers.append(.claude) }
         if hasOpenAIKey { providers.append(.openAI) }
+        if hasCompatibleEndpoint { providers.append(.openAICompatible) }
         return providers
+    }
+
+    var hasAnyProvider: Bool {
+        !availableProviders.isEmpty
     }
 
     func apiKey(for provider: AIProvider) -> String {
         switch provider {
         case .claude: return claudeApiKey
-        case .openAI, .openAICompatible: return openAIApiKey
+        case .openAI: return openAIApiKey
+        case .openAICompatible: return compatibleApiKey
         }
     }
 
     func currentModel(for provider: AIProvider) -> String {
         switch provider {
         case .claude: return currentClaudeModel
-        case .openAI, .openAICompatible: return currentOpenAIModel
+        case .openAI: return currentOpenAIModel
+        case .openAICompatible: return currentCompatibleModel
         }
     }
 }
