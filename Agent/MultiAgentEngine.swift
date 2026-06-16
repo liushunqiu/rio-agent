@@ -12,8 +12,7 @@ class MultiAgentEngine: ObservableObject {
     private let toolRegistry: ToolRegistry
     private var services: [UUID: AIService] = [:]
     private var config: MultiAgentConfig
-    private var apiKeyStore: [AIProvider: String] = [:]
-    private var baseURLStore: [AIProvider: String] = [:]
+    private var configSetStore: [ConfigSet] = []
     private let criticService: CriticService?
 
     /// Cached project context injected into every Worker
@@ -26,42 +25,43 @@ class MultiAgentEngine: ObservableObject {
         setupServices()
     }
 
-    // MARK: - Service Setup (unchanged)
+    // MARK: - Service Setup
 
-    func configureAPIKeys(_ keys: [AIProvider: String], baseUrls: [AIProvider: String] = [:]) {
-        apiKeyStore = keys
-        baseURLStore = baseUrls
+    func configureConfigSets(_ configSets: [ConfigSet]) {
+        configSetStore = configSets
         setupServices()
     }
 
     private func setupServices() {
         services.removeAll()
 
-        if canCreateService(for: config.orchestrator.provider) {
-            let apiKey = apiKeyStore[config.orchestrator.provider] ?? ""
-            let baseURL = baseURLStore[config.orchestrator.provider] ?? ""
-            services[config.orchestrator.id] = AIServiceFactory.createService(
-                provider: config.orchestrator.provider, apiKey: apiKey, baseURL: baseURL
-            )
+        if let service = createService(for: config.orchestrator) {
+            services[config.orchestrator.id] = service
         }
         for worker in config.workers {
-            if canCreateService(for: worker.provider) {
-                let apiKey = apiKeyStore[worker.provider] ?? ""
-                let baseURL = baseURLStore[worker.provider] ?? ""
-                services[worker.id] = AIServiceFactory.createService(
-                    provider: worker.provider, apiKey: apiKey, baseURL: baseURL
-                )
+            if let service = createService(for: worker) {
+                services[worker.id] = service
             }
         }
     }
 
-    private func canCreateService(for provider: AIProvider) -> Bool {
+    private func createService(for agent: AgentConfig) -> AIService? {
+        guard let configSet = agent.resolvedConfigSet(from: configSetStore) else {
+            return nil
+        }
+
+        let provider = configSet.provider
+        let apiKey = configSet.loadAPIKey()
+        let baseURL = configSet.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+
         switch provider {
         case .openAICompatible:
-            return !(baseURLStore[provider] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            guard !baseURL.isEmpty else { return nil }
         case .claude, .openAI:
-            return !(apiKeyStore[provider] ?? "").isEmpty
+            guard !apiKey.isEmpty else { return nil }
         }
+
+        return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
     }
 
     func updateConfig(_ newConfig: MultiAgentConfig) {
@@ -71,6 +71,34 @@ class MultiAgentEngine: ObservableObject {
 
     var currentConfig: MultiAgentConfig {
         config
+    }
+
+    func cancelProcessing() {
+        isProcessing = false
+        error = nil
+
+        guard var plan = currentPlan else { return }
+        plan.status = .failed
+        for index in plan.subTasks.indices where plan.subTasks[index].status == .pending || plan.subTasks[index].status == .running {
+            plan.subTasks[index].status = .failed
+            plan.subTasks[index].result = "已取消"
+            plan.subTasks[index].verificationStatus = .needsRetry
+        }
+        currentPlan = plan
+    }
+
+    func executionBatches(for wave: [SubTask]) -> [[SubTask]] {
+        let batchSize = max(config.maxParallelWorkers, 1)
+        guard !wave.isEmpty else { return [] }
+
+        var batches: [[SubTask]] = []
+        var start = 0
+        while start < wave.count {
+            let end = min(start + batchSize, wave.count)
+            batches.append(Array(wave[start..<end]))
+            start = end
+        }
+        return batches
     }
 
     // MARK: - Main Processing Pipeline
@@ -83,6 +111,8 @@ class MultiAgentEngine: ObservableObject {
         currentPlan = plan
 
         do {
+            try Task.checkCancellation()
+
             // ── Layer 2: Planner — Orchestrator generates DAG ──
             plan.status = .planning
             currentPlan = plan
@@ -94,6 +124,7 @@ class MultiAgentEngine: ObservableObject {
             plan.subTasks = subTasks
 
             if subTasks.isEmpty {
+                try Task.checkCancellation()
                 let finalResult = try await synthesizeResults(originalTask: task, results: [:])
                 plan.status = .completed
                 currentPlan = plan
@@ -108,6 +139,7 @@ class MultiAgentEngine: ObservableObject {
             let results = try await executeSubTasksDAG(plan: &plan)
 
             // ── Layer 4: Critic & Verification ──
+            try Task.checkCancellation()
             plan.status = .verifying
             currentPlan = plan
 
@@ -122,6 +154,7 @@ class MultiAgentEngine: ObservableObject {
             currentPlan = plan
 
             // ── Synthesis — Orchestrator produces final answer ──
+            try Task.checkCancellation()
             plan.status = .synthesizing
             currentPlan = plan
 
@@ -133,6 +166,9 @@ class MultiAgentEngine: ObservableObject {
 
             return finalResult
 
+        } catch is CancellationError {
+            cancelProcessing()
+            return "任务已取消"
         } catch {
             plan.status = .failed
             currentPlan = plan
@@ -309,6 +345,8 @@ class MultiAgentEngine: ObservableObject {
         var completedIds: Set<UUID> = []
 
         while completedIds.count < plan.subTasks.count {
+            try Task.checkCancellation()
+
             let wave = getNextWave(plan: plan, completedIds: completedIds)
 
             if wave.isEmpty {
@@ -324,48 +362,53 @@ class MultiAgentEngine: ObservableObject {
                 break
             }
 
-            // Execute the current wave in parallel
-            try await withThrowingTaskGroup(of: (UUID, ExecutionResult).self) { group in
-                for subTask in wave {
-                    guard let worker = subTask.assignedWorker,
-                          let service = services[worker.id] else {
-                        updateSubTask(subTask.id, in: &plan, status: .failed, result: "服务不可用或未配置")
-                        completedIds.insert(subTask.id)
-                        allResults[subTask.id] = ExecutionResult(
-                            subTaskId: subTask.id, output: "", errors: ["服务不可用"],
-                            retryCount: 0, verificationStatus: .needsRetry
+            // Execute the current wave in limited parallel batches
+            for batch in executionBatches(for: wave) {
+                try Task.checkCancellation()
+
+                try await withThrowingTaskGroup(of: (UUID, ExecutionResult).self) { group in
+                    for subTask in batch {
+                        guard let worker = subTask.assignedWorker,
+                              let service = services[worker.id] else {
+                            updateSubTask(subTask.id, in: &plan, status: .failed, result: "服务不可用或未配置")
+                            completedIds.insert(subTask.id)
+                            allResults[subTask.id] = ExecutionResult(
+                                subTaskId: subTask.id, output: "", errors: ["服务不可用"],
+                                retryCount: 0, verificationStatus: .needsRetry
+                            )
+                            continue
+                        }
+
+                        updateSubTask(subTask.id, in: &plan, status: .running)
+
+                        // Build context with results from completed dependency tasks
+                        let dependencyResults = subTask.dependencies.compactMap { allResults[$0] }
+                        let context = buildWorkerContext(
+                            for: subTask, dependencyResults: dependencyResults
                         )
-                        continue
+
+                        group.addTask { [self] in
+                            try Task.checkCancellation()
+                            let result = try await self.executeSingleSubTask(
+                                subTask: subTask, service: service, worker: worker, context: context
+                            )
+                            return (subTask.id, result)
+                        }
                     }
 
-                    updateSubTask(subTask.id, in: &plan, status: .running)
+                    for try await (taskId, result) in group {
+                        allResults[taskId] = result
+                        completedIds.insert(taskId)
 
-                    // Build context with results from completed dependency tasks
-                    let dependencyResults = subTask.dependencies.compactMap { allResults[$0] }
-                    let context = buildWorkerContext(
-                        for: subTask, dependencyResults: dependencyResults
-                    )
+                        let status: SubTaskStatus = result.hasErrors ? .failed : .completed
+                        updateSubTask(taskId, in: &plan, status: status, result: result.output)
 
-                    group.addTask { [self] in
-                        let result = try await self.executeSingleSubTask(
-                            subTask: subTask, service: service, worker: worker, context: context
-                        )
-                        return (subTask.id, result)
+                        if let idx = plan.subTasks.firstIndex(where: { $0.id == taskId }) {
+                            plan.subTasks[idx].retryCount = result.retryCount
+                            plan.subTasks[idx].verificationStatus = result.verificationStatus
+                        }
+                        currentPlan = plan
                     }
-                }
-
-                for try await (taskId, result) in group {
-                    allResults[taskId] = result
-                    completedIds.insert(taskId)
-
-                    let status: SubTaskStatus = result.hasErrors ? .failed : .completed
-                    updateSubTask(taskId, in: &plan, status: status, result: result.output)
-
-                    if let idx = plan.subTasks.firstIndex(where: { $0.id == taskId }) {
-                        plan.subTasks[idx].retryCount = result.retryCount
-                        plan.subTasks[idx].verificationStatus = result.verificationStatus
-                    }
-                    currentPlan = plan
                 }
             }
         }
@@ -418,6 +461,8 @@ class MultiAgentEngine: ObservableObject {
         var totalRetries = 0
 
         for attempt in 0...(config.enableCritic ? config.maxRetries : 0) {
+            try Task.checkCancellation()
+
             let executionResult = try await runWorkerToolLoop(
                 subTask: currentSubTask, service: service, worker: worker, context: context
             )
@@ -513,6 +558,7 @@ class MultiAgentEngine: ObservableObject {
         var iterationCount = 0
 
         while iterationCount < Self.maxToolCallIterations {
+            try Task.checkCancellation()
             iterationCount += 1
 
             let response = try await service.sendMessage(
@@ -531,6 +577,7 @@ class MultiAgentEngine: ObservableObject {
 
                 var toolResults: [ToolResult] = []
                 for toolCall in toolCalls {
+                    try Task.checkCancellation()
                     let result = try await toolRegistry.executeTool(
                         name: toolCall.name, arguments: toolCall.arguments.mapValues { $0.value }
                     )
@@ -576,6 +623,8 @@ class MultiAgentEngine: ObservableObject {
     // MARK: - Result Synthesis (enhanced with execution metadata)
 
     private func synthesizeResults(originalTask: String, results: [UUID: ExecutionResult]) async throws -> String {
+        try Task.checkCancellation()
+
         guard let orchestratorService = services[config.orchestrator.id] else {
             throw MultiAgentError.serviceNotAvailable(config.orchestrator.name)
         }

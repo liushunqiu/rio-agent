@@ -908,6 +908,15 @@ struct AIConfigInfo {
     func configSets(for provider: AIProvider) -> [ConfigSet] {
         return allConfigSets.filter { $0.provider == provider }
     }
+
+    func configSet(for id: UUID?) -> ConfigSet? {
+        guard let id else { return nil }
+        return allConfigSets.first { $0.id == id }
+    }
+
+    func primaryConfigSet(for provider: AIProvider) -> ConfigSet? {
+        configSets(for: provider).first
+    }
     
     // 新增：获取指定提供商的所有可用模型
     func availableModels(for provider: AIProvider) -> [String] {

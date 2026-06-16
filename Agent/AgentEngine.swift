@@ -13,6 +13,11 @@ class AgentEngine: ObservableObject {
         let isActive: Bool
     }
 
+    private struct PendingExecutionStrategyConfirmation {
+        let input: String
+        let analysis: TaskPlanner.TaskAnalysis
+    }
+
     @Published var messages: [Message] = []
     @Published var isProcessing = false
     @Published var error: String?
@@ -24,6 +29,7 @@ class AgentEngine: ObservableObject {
         return currentToolExecution?.id
     }
     var pendingInitConfirmation = false
+    private var pendingExecutionStrategyConfirmation: PendingExecutionStrategyConfirmation?
     @Published var workingDirectory: String? {
         didSet {
             ToolRegistry.shared.workingDirectory = workingDirectory
@@ -128,17 +134,8 @@ class AgentEngine: ObservableObject {
 
     private func setupMultiAgentEngine() {
         let engine = MultiAgentEngine(config: multiAgentConfig, toolRegistry: toolRegistry, criticService: criticService)
-        var keys: [AIProvider: String] = [:]
-        var urls: [AIProvider: String] = [:]
         let configManager = ConfigSetManager.shared
-        for configSet in configManager.configSets {
-            let key = configSet.loadAPIKey()
-            if !key.isEmpty {
-                keys[configSet.provider] = key
-                urls[configSet.provider] = configSet.baseURL
-            }
-        }
-        engine.configureAPIKeys(keys, baseUrls: urls)
+        engine.configureConfigSets(configManager.configSets)
         multiAgentEngine = engine
     }
 
@@ -369,6 +366,25 @@ class AgentEngine: ObservableObject {
             return
         }
 
+        if let pendingExecutionStrategyConfirmation {
+            self.pendingExecutionStrategyConfirmation = nil
+            let userMessage = Message.user(input)
+            messages.append(userMessage)
+
+            let confirmWords = ["是", "yes", "y", "确认", "ok", "好", "继续", "continue"]
+            let useMultiAgent = confirmWords.contains { trimmedInput.lowercased().hasPrefix($0) }
+            let modeMessage = Message.system(useMultiAgent ? "已确认使用 Multi-Agent 模式。" : "已切换为单 Agent 模式。")
+            messages.append(modeMessage)
+
+            await executePreparedTask(
+                input: pendingExecutionStrategyConfirmation.input,
+                taskAnalysis: pendingExecutionStrategyConfirmation.analysis,
+                useDAG: useMultiAgent,
+                appendUserMessage: false
+            )
+            return
+        }
+
         // MARK: - Router interception (本地路由模型前置拦截)
         var routerSkip = false
         if multiAgentConfig.router.enabled {
@@ -442,24 +458,51 @@ class AgentEngine: ObservableObject {
             clearActivePlan()
         }
 
+        let useDAG = shouldUseMultiAgent(for: taskAnalysis)
+        if useDAG, multiAgentConfig.taskSplitStrategy == .manual {
+            let userMessage = Message.user(input)
+            messages.append(userMessage)
+            onUserMessageAdded?()
+            messages.append(
+                Message.system("检测到该任务适合 Multi-Agent 协作。回复「是」或「yes」继续使用 Multi-Agent；回复其他内容则改用单 Agent。")
+            )
+            pendingExecutionStrategyConfirmation = PendingExecutionStrategyConfirmation(
+                input: input,
+                analysis: taskAnalysis
+            )
+            return
+        }
+
+        await executePreparedTask(
+            input: input,
+            taskAnalysis: taskAnalysis,
+            useDAG: useDAG,
+            appendUserMessage: true
+        )
+    }
+
+    private func executePreparedTask(
+        input: String,
+        taskAnalysis: TaskPlanner.TaskAnalysis,
+        useDAG: Bool,
+        appendUserMessage: Bool
+    ) async {
         isProcessing = true
         isCancelled = false
         error = nil
         currentTaskPlan = nil
 
-        let userMessage = Message.user(input)
-        messages.append(userMessage)
-        onUserMessageAdded?()
+        if appendUserMessage {
+            let userMessage = Message.user(input)
+            messages.append(userMessage)
+            onUserMessageAdded?()
+        }
 
         toolRegistry.setupConfirmationCallbacks { [weak self] title, message in
             return await self?.showConfirmation(title: title, message: message) ?? .denied
         }
 
         do {
-            // Unified pipeline: Planner complexity decides execution strategy
-            // 降低 Multi-Agent 触发阈值：moderate 及以上都可以使用 Multi-Agent
-            let useDAG = taskAnalysis.complexity == .moderate || taskAnalysis.complexity == .complex || taskAnalysis.complexity == .veryComplex
-
             if useDAG {
                 RioLogger.agent.info("🚀 任务复杂度达到 \(taskAnalysis.complexity, privacy: .public)，启用 Multi-Agent 模式")
                 if let multiAgentEngine = multiAgentEngine {
@@ -505,12 +548,19 @@ class AgentEngine: ObservableObject {
         isProcessing = false
     }
 
+    private func shouldUseMultiAgent(for taskAnalysis: TaskPlanner.TaskAnalysis) -> Bool {
+        taskAnalysis.complexity == .moderate
+            || taskAnalysis.complexity == .complex
+            || taskAnalysis.complexity == .veryComplex
+    }
+
     /// Stop the current processing (cancel ongoing API calls and tool executions)
     func stopProcessing() {
         guard isProcessing else { return }
         isCancelled = true
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
+        multiAgentEngine?.cancelProcessing()
         isProcessing = false
         currentToolExecution = nil
 
@@ -992,6 +1042,7 @@ class AgentEngine: ObservableObject {
         currentToolExecution = nil
         currentTaskPlan = nil
         pendingInitConfirmation = false
+        pendingExecutionStrategyConfirmation = nil
         resetUsageTracking()
         memory.clearSession()
         clearActivePlan()
@@ -1030,6 +1081,7 @@ class AgentEngine: ObservableObject {
         currentTaskPlan = nil
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
+        pendingExecutionStrategyConfirmation = nil
         resetUsageTracking()
     }
 

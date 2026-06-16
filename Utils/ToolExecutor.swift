@@ -78,7 +78,7 @@ class ToolExecutor {
     func getRecentErrorAnalysis() -> String? {
         guard let lastError = recentErrors.last else { return nil }
 
-        var analysis = "Recent error in \(lastError.toolName): \(lastError.error)\n"
+        let analysis = "Recent error in \(lastError.toolName): \(lastError.error)\n"
 
         // 注意：由于 actor 隔离，我们无法同步访问 memory.findSimilarErrors
         // 这部分功能需要在 MainActor 上下文中异步调用

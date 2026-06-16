@@ -104,85 +104,6 @@ enum AIProvider: String, Codable, CaseIterable {
     }
 }
 
-// MARK: - Provider Configuration
-
-struct ProviderConfig: Codable, Hashable {
-    // apiKey is NOT encoded - stored in Keychain instead
-    var apiKey: String
-    var baseURL: String
-    var planningModel: String
-    var executionModel: String
-    var isStreaming: Bool
-    var maxTokens: Int
-
-    enum CodingKeys: String, CodingKey {
-        case baseURL, model, planningModel, executionModel, isStreaming, maxTokens
-        // apiKey is excluded from encoding/decoding
-    }
-
-    init(
-        apiKey: String = "",
-        baseURL: String = "",
-        model: String = "",
-        isStreaming: Bool = true,
-        maxTokens: Int = 0
-    ) {
-        self.apiKey = apiKey
-        self.baseURL = baseURL
-        self.executionModel = model
-        self.planningModel = model
-        self.isStreaming = isStreaming
-        self.maxTokens = maxTokens
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        apiKey = "" // API keys are loaded from Keychain separately
-        baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
-        let legacyModel = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
-        executionModel = try container.decodeIfPresent(String.self, forKey: .executionModel) ?? legacyModel
-        planningModel = executionModel // Always unified
-        isStreaming = try container.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? true
-        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 0
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(baseURL, forKey: .baseURL)
-        try container.encode(planningModel, forKey: .planningModel)
-        try container.encode(executionModel, forKey: .executionModel)
-        try container.encode(isStreaming, forKey: .isStreaming)
-        try container.encode(maxTokens, forKey: .maxTokens)
-        // apiKey is NOT encoded
-    }
-
-    var effectiveMaxTokens: Int {
-        if maxTokens > 0 { return maxTokens }
-        return AIProvider.defaultMaxTokens(for: executionModel)
-    }
-
-    var model: String {
-        get { executionModel }
-        set {
-            executionModel = newValue
-            planningModel = newValue
-        }
-    }
-
-    var isConfigured: Bool {
-        !apiKey.isEmpty
-    }
-
-    var effectiveBaseURL: String {
-        baseURL.isEmpty ? defaultBaseURL : baseURL
-    }
-
-    var defaultBaseURL: String {
-        // Subclasses will override via provider
-        ""
-    }
-}
-
 struct AIConfiguration: Codable {
     var planningConfigSetId: UUID?
     var executionConfigSetId: UUID?
@@ -214,8 +135,8 @@ struct AIConfiguration: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         planningConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .planningConfigSetId)
         executionConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .executionConfigSetId)
-        maxContextMessages = try container.decode(Int.self, forKey: .maxContextMessages)
-        enableStreaming = try container.decode(Bool.self, forKey: .enableStreaming)
+        maxContextMessages = try container.decodeIfPresent(Int.self, forKey: .maxContextMessages) ?? 999
+        enableStreaming = try container.decodeIfPresent(Bool.self, forKey: .enableStreaming) ?? true
     }
 
     func encode(to encoder: Encoder) throws {

@@ -4,8 +4,7 @@ struct MultiAgentSettingsView: View {
     @Binding var config: MultiAgentConfig
     let aiConfig: AIConfigInfo
 
-    @State private var orchestratorProvider: AIProvider
-    @State private var orchestratorModel: String
+    @State private var orchestratorConfigSetId: UUID?
     @State private var orchestratorPrompt: String
     @State private var workers: [AgentConfig]
     @State private var maxParallel: Int
@@ -34,28 +33,18 @@ struct MultiAgentSettingsView: View {
         self._config = config
         self.aiConfig = aiConfig
         let initial = config.wrappedValue
-        let validProvider = aiConfig.availableProviders.contains(initial.orchestrator.provider)
-            ? initial.orchestrator.provider
-            : aiConfig.availableProviders.first ?? .claude
+        let fallbackConfigSet = initial.orchestrator.resolvedConfigSet(from: aiConfig.allConfigSets)
+            ?? aiConfig.primaryConfigSet(for: initial.orchestrator.provider)
+            ?? aiConfig.allConfigSets.first
 
-        self._orchestratorProvider = State(initialValue: validProvider)
-        let initialOrchestratorModel = initial.orchestrator.provider == validProvider
-            ? initial.orchestrator.model
-            : aiConfig.currentModel(for: validProvider)
-        self._orchestratorModel = State(initialValue: initialOrchestratorModel)
+        self._orchestratorConfigSetId = State(initialValue: fallbackConfigSet?.id)
         self._orchestratorPrompt = State(initialValue: initial.orchestrator.systemPrompt)
         self._workers = State(initialValue: initial.workers.map { worker in
-            guard aiConfig.availableProviders.contains(worker.provider) else {
-                var updated = worker
-                updated.provider = validProvider
-                updated.model = aiConfig.currentModel(for: validProvider)
-                return updated
-            }
-            // Provider is valid, but ensure model matches the provider
             var updated = worker
-            if updated.model.isEmpty {
-                updated.model = aiConfig.currentModel(for: worker.provider)
-            }
+            let resolvedConfigSet = worker.resolvedConfigSet(from: aiConfig.allConfigSets)
+                ?? aiConfig.primaryConfigSet(for: worker.provider)
+                ?? aiConfig.allConfigSets.first
+            updated.applyConfigSet(resolvedConfigSet)
             return updated
         })
         self._maxParallel = State(initialValue: initial.maxParallelWorkers)
@@ -79,9 +68,12 @@ struct MultiAgentSettingsView: View {
     }
 
     private func syncToConfig() {
-        config.orchestrator.provider = orchestratorProvider
-        config.orchestrator.model = orchestratorModel
-        config.orchestrator.systemPrompt = orchestratorPrompt
+        var orchestrator = config.orchestrator
+        let resolvedOrchestratorConfigSet = aiConfig.configSet(for: orchestratorConfigSetId)
+            ?? aiConfig.allConfigSets.first
+        orchestrator.applyConfigSet(resolvedOrchestratorConfigSet)
+        orchestrator.systemPrompt = orchestratorPrompt
+        config.orchestrator = orchestrator
         config.workers = workers
         config.maxParallelWorkers = maxParallel
         config.taskSplitStrategy = taskStrategy
@@ -151,8 +143,7 @@ struct MultiAgentSettingsView: View {
 
             if canEnable {
                 OrchestratorSection(
-                    provider: $orchestratorProvider,
-                    model: $orchestratorModel,
+                    configSetId: $orchestratorConfigSetId,
                     prompt: $orchestratorPrompt,
                     aiConfig: aiConfig,
                     onChange: syncToConfig
@@ -687,8 +678,7 @@ struct StrategyButton: View {
 // MARK: - Orchestrator Section
 
 struct OrchestratorSection: View {
-    @Binding var provider: AIProvider
-    @Binding var model: String
+    @Binding var configSetId: UUID?
     @Binding var prompt: String
     let aiConfig: AIConfigInfo
     let onChange: () -> Void
@@ -719,30 +709,9 @@ struct OrchestratorSection: View {
 
                 Divider().overlay(Theme.borderSubtle)
 
-                if aiConfig.availableProviders.count > 1 {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("提供商")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Theme.textTertiary)
-                        HStack(spacing: 8) {
-                            ForEach(aiConfig.availableProviders, id: \.self) { p in
-                                DarkProviderChip(
-                                    name: p.displayName,
-                                    isSelected: provider == p
-                                ) {
-                                    provider = p
-                                    model = aiConfig.currentModel(for: p)
-                                    onChange()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                AgentModelSelector(
-                    title: "模型",
-                    provider: provider,
-                    model: $model,
+                AgentConfigSetSelector(
+                    title: "模型端点",
+                    configSetId: $configSetId,
                     aiConfig: aiConfig,
                     onChange: onChange
                 )
@@ -760,6 +729,90 @@ struct OrchestratorSection: View {
                         .background(Theme.bgInput)
                         .cornerRadius(Theme.radiusMD)
                         .onChange(of: prompt) { _, _ in onChange() }
+                }
+            }
+        }
+    }
+}
+
+struct AgentConfigSetSelector: View {
+    let title: String
+    @Binding var configSetId: UUID?
+    let aiConfig: AIConfigInfo
+    let onChange: () -> Void
+
+    private var configSets: [ConfigSet] {
+        aiConfig.allConfigSets
+    }
+
+    private var selectedConfigSet: ConfigSet? {
+        aiConfig.configSet(for: configSetId)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+
+            if configSets.isEmpty {
+                InlineWarning(text: "请先在 AI 配置里添加至少一个可用配置集。")
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(configSets) { configSet in
+                        Button {
+                            configSetId = configSet.id
+                            onChange()
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: configSetId == configSet.id ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(configSetId == configSet.id ? Theme.accentPrimary : Theme.textTertiary)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 6) {
+                                        Text(configSet.name)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundColor(Theme.textPrimary)
+                                        Text(configSet.provider.displayName)
+                                            .font(.system(size: 10))
+                                            .foregroundColor(Theme.textTertiary)
+                                    }
+
+                                    Text(configSet.model)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(Theme.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(configSetId == configSet.id ? Theme.bgTertiary : Theme.bgInput)
+                            .cornerRadius(Theme.radiusSM)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                    .stroke(configSetId == configSet.id ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if let selectedConfigSet {
+                HStack(spacing: 6) {
+                    Image(systemName: "link")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.accentSecondary)
+                    Text("当前绑定: \(selectedConfigSet.provider.displayName) · \(selectedConfigSet.model)")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
         }
@@ -1053,17 +1106,14 @@ struct AddWorkerSheet: View {
     let onAdd: (AgentConfig) -> Void
 
     @State private var name = ""
-    @State private var provider: AIProvider
-    @State private var model: String
+    @State private var configSetId: UUID?
     @State private var capability: AgentCapability = .general
     @State private var systemPrompt = ""
 
     init(aiConfig: AIConfigInfo, onAdd: @escaping (AgentConfig) -> Void) {
         self.aiConfig = aiConfig
         self.onAdd = onAdd
-        let defaultProvider = aiConfig.availableProviders.first ?? .claude
-        self._provider = State(initialValue: defaultProvider)
-        self._model = State(initialValue: aiConfig.currentModel(for: defaultProvider))
+        self._configSetId = State(initialValue: aiConfig.allConfigSets.first?.id)
     }
 
     var body: some View {
@@ -1093,20 +1143,6 @@ struct AddWorkerSheet: View {
                         .cornerRadius(Theme.radiusMD)
                 }
 
-                if aiConfig.availableProviders.count > 1 {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("提供商").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
-                        HStack(spacing: 8) {
-                            ForEach(aiConfig.availableProviders, id: \.self) { p in
-                                DarkProviderChip(name: p.displayName, isSelected: provider == p) {
-                                    provider = p
-                                    model = aiConfig.currentModel(for: p)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 VStack(alignment: .leading, spacing: 6) {
                     Text("能力").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
                     Picker("", selection: $capability) {
@@ -1117,10 +1153,9 @@ struct AddWorkerSheet: View {
                     .pickerStyle(.menu)
                 }
 
-                AgentModelSelector(
-                    title: "模型",
-                    provider: provider,
-                    model: $model,
+                AgentConfigSetSelector(
+                    title: "模型端点",
+                    configSetId: $configSetId,
                     aiConfig: aiConfig,
                     onChange: {}
                 )
@@ -1144,12 +1179,14 @@ struct AddWorkerSheet: View {
             HStack {
                 Spacer()
                 Button("添加") {
+                    let selectedConfigSet = aiConfig.configSet(for: configSetId) ?? aiConfig.allConfigSets.first
                     let worker = AgentConfig(
                         name: name.isEmpty ? "子 Agent" : name,
                         role: .worker,
                         capability: capability,
-                        provider: provider,
-                        model: model,
+                        configSetId: selectedConfigSet?.id,
+                        provider: selectedConfigSet?.provider ?? .claude,
+                        model: selectedConfigSet?.model ?? "",
                         systemPrompt: systemPrompt
                     )
                     onAdd(worker)
@@ -1157,7 +1194,7 @@ struct AddWorkerSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accentPrimary)
-                .disabled(name.isEmpty)
+                .disabled(name.isEmpty || (configSetId == nil && aiConfig.allConfigSets.isEmpty))
             }
             .padding(16)
         }
@@ -1176,8 +1213,7 @@ struct EditWorkerSheet: View {
     let onSave: (AgentConfig) -> Void
 
     @State private var name: String
-    @State private var provider: AIProvider
-    @State private var model: String
+    @State private var configSetId: UUID?
     @State private var capability: AgentCapability
     @State private var systemPrompt: String
 
@@ -1185,12 +1221,9 @@ struct EditWorkerSheet: View {
         self.worker = worker
         self.aiConfig = aiConfig
         self.onSave = onSave
-        let validProvider = aiConfig.availableProviders.contains(worker.provider)
-            ? worker.provider
-            : aiConfig.availableProviders.first ?? .claude
         self._name = State(initialValue: worker.name)
-        self._provider = State(initialValue: validProvider)
-        self._model = State(initialValue: worker.provider == validProvider ? worker.model : aiConfig.currentModel(for: validProvider))
+        let resolvedConfigSet = worker.resolvedConfigSet(from: aiConfig.allConfigSets) ?? aiConfig.allConfigSets.first
+        self._configSetId = State(initialValue: resolvedConfigSet?.id)
         self._capability = State(initialValue: worker.capability)
         self._systemPrompt = State(initialValue: worker.systemPrompt)
     }
@@ -1222,20 +1255,6 @@ struct EditWorkerSheet: View {
                         .cornerRadius(Theme.radiusMD)
                 }
 
-                if aiConfig.availableProviders.count > 1 {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("提供商").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
-                        HStack(spacing: 8) {
-                            ForEach(aiConfig.availableProviders, id: \.self) { p in
-                                DarkProviderChip(name: p.displayName, isSelected: provider == p) {
-                                    provider = p
-                                    model = aiConfig.currentModel(for: p)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 VStack(alignment: .leading, spacing: 6) {
                     Text("能力").font(.system(size: 12, weight: .medium)).foregroundColor(Theme.textSecondary)
                     Picker("", selection: $capability) {
@@ -1246,10 +1265,9 @@ struct EditWorkerSheet: View {
                     .pickerStyle(.menu)
                 }
 
-                AgentModelSelector(
-                    title: "模型",
-                    provider: provider,
-                    model: $model,
+                AgentConfigSetSelector(
+                    title: "模型端点",
+                    configSetId: $configSetId,
                     aiConfig: aiConfig,
                     onChange: {}
                 )
@@ -1275,8 +1293,7 @@ struct EditWorkerSheet: View {
                 Button("保存") {
                     var updated = worker
                     updated.name = name
-                    updated.provider = provider
-                    updated.model = model
+                    updated.applyConfigSet(aiConfig.configSet(for: configSetId) ?? aiConfig.allConfigSets.first)
                     updated.capability = capability
                     updated.systemPrompt = systemPrompt
                     onSave(updated)

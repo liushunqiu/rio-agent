@@ -66,13 +66,14 @@ struct AgentConfig: Identifiable, Codable {
     var name: String
     var role: AgentRole
     var capability: AgentCapability
+    var configSetId: UUID?
     var provider: AIProvider
     var model: String
     var systemPrompt: String
     var isEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, role, capability, provider, model, systemPrompt, isEnabled
+        case id, name, role, capability, configSetId, provider, model, systemPrompt, isEnabled
     }
 
     init(
@@ -80,6 +81,7 @@ struct AgentConfig: Identifiable, Codable {
         name: String,
         role: AgentRole,
         capability: AgentCapability? = nil,
+        configSetId: UUID? = nil,
         provider: AIProvider,
         model: String,
         systemPrompt: String = "",
@@ -89,6 +91,7 @@ struct AgentConfig: Identifiable, Codable {
         self.name = name
         self.role = role
         self.capability = capability ?? (role == .orchestrator ? .general : .custom)
+        self.configSetId = configSetId
         self.provider = provider
         self.model = model
         self.systemPrompt = systemPrompt
@@ -102,6 +105,7 @@ struct AgentConfig: Identifiable, Codable {
         role = try container.decode(AgentRole.self, forKey: .role)
         capability = try container.decodeIfPresent(AgentCapability.self, forKey: .capability)
             ?? AgentConfig.inferCapability(name: name, role: role)
+        configSetId = try container.decodeIfPresent(UUID.self, forKey: .configSetId)
         provider = try container.decode(AIProvider.self, forKey: .provider)
         model = try container.decode(String.self, forKey: .model)
         systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt) ?? ""
@@ -114,6 +118,35 @@ struct AgentConfig: Identifiable, Codable {
         if name.contains("代码") { return .code }
         if name.contains("文件") { return .file }
         return .general
+    }
+
+    func resolvedConfigSet(from configSets: [ConfigSet]) -> ConfigSet? {
+        if let configSetId,
+           let exactConfig = configSets.first(where: { $0.id == configSetId }) {
+            return exactConfig
+        }
+
+        let providerSets = configSets.filter { $0.provider == provider }
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedModel.isEmpty,
+           let modelMatch = providerSets.first(where: {
+               $0.model.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedModel
+           }) {
+            return modelMatch
+        }
+
+        return providerSets.first
+    }
+
+    mutating func applyConfigSet(_ configSet: ConfigSet?) {
+        guard let configSet else {
+            configSetId = nil
+            return
+        }
+
+        configSetId = configSet.id
+        provider = configSet.provider
+        model = configSet.model
     }
 }
 

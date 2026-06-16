@@ -66,4 +66,21 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(contextMessages.count, 3)
         XCTAssertEqual(contextMessages.dropFirst().map(\.content), ["third", "fourth"])
     }
+
+    func testManualTaskSplitStrategyPromptsBeforeStartingMultiAgent() async {
+        let engine = AgentEngine()
+        var config = engine.multiAgentConfig
+        config.taskSplitStrategy = .manual
+        engine.updateMultiAgentConfig(config)
+
+        await engine.processUserInput("请分析这个项目并修改多个文件后再测试")
+
+        XCTAssertFalse(engine.isProcessing)
+        XCTAssertTrue(engine.messages.contains {
+            $0.role == .system && $0.content.contains("适合 Multi-Agent 协作")
+        })
+        XCTAssertTrue(engine.messages.contains {
+            $0.role == .user && $0.content == "请分析这个项目并修改多个文件后再测试"
+        })
+    }
 }

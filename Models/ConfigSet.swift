@@ -24,7 +24,12 @@ struct ConfigSet: Identifiable, Codable {
     }
     
     var isConfigured: Bool {
-        !loadAPIKey().isEmpty
+        switch provider {
+        case .openAICompatible:
+            return !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .claude, .openAI:
+            return !loadAPIKey().isEmpty
+        }
     }
     
     // MARK: - API Key (Keychain)
