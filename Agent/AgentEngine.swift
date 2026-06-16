@@ -25,7 +25,8 @@ class AgentEngine: ObservableObject {
     private let toolRegistry = ToolRegistry.shared
     let memory = AgentMemory()
     let multiFileCoordinator = MultiFileCoordinator()
-    private var aiService: AIService?
+    private var planningService: AIService?
+    private var executionService: AIService?
     var configuration: AIConfiguration
     var multiAgentConfig: MultiAgentConfig
     private var multiAgentEngine: MultiAgentEngine?
@@ -48,25 +49,26 @@ class AgentEngine: ObservableObject {
     }
 
     private func setupAIService() {
-        let baseURL = configuration.baseURL
+        planningService = createService(for: configuration.planningProvider)
+        executionService = createService(for: configuration.executionProvider)
+    }
 
-        // 自定义端点（OpenAI Compatible）允许空 API Key（如 Ollama 等本地服务）
-        if configuration.activeProvider == .openAICompatible {
-            guard !baseURL.isEmpty else { return }
-            let apiKey = configuration.apiKey ?? ""
-            aiService = AIServiceFactory.createService(
-                provider: configuration.activeProvider,
-                apiKey: apiKey,
-                baseURL: baseURL
-            )
-        } else {
-            guard let apiKey = configuration.apiKey else { return }
-            aiService = AIServiceFactory.createService(
-                provider: configuration.activeProvider,
-                apiKey: apiKey,
-                baseURL: baseURL
-            )
+    private func createService(for provider: AIProvider) -> AIService? {
+        let baseURL = configuration.baseURL(for: provider)
+        if provider == .openAICompatible {
+            guard !baseURL.isEmpty else { return nil }
+            let apiKey = configuration.apiKey(for: provider, configSetId: configuration.executionConfigSetId) ?? ""
+            return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
         }
+        guard let apiKey = configuration.apiKey(for: provider, configSetId: configuration.executionConfigSetId) else { return nil }
+        return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
+    }
+
+    private func missingServiceMessage(role: String, provider: AIProvider) -> String {
+        if provider == .openAICompatible {
+            return "\(role)未配置 API 端点。请前往 设置 → AI 配置 → 自定义端点填写服务地址。"
+        }
+        return "\(role)未配置 API Key。请前往 设置 → AI 配置 → \(provider.displayName) 填写 API Key。"
     }
 
     private func setupMultiAgentEngine() {
@@ -75,17 +77,23 @@ class AgentEngine: ObservableObject {
             // Pass API keys for multi-agent services
             var keys: [AIProvider: String] = [:]
             var urls: [AIProvider: String] = [:]
-            if let claudeKey = configuration.getAPIKey(for: .claude), !claudeKey.isEmpty {
-                keys[.claude] = claudeKey
-                urls[.claude] = configuration.claudeConfig.baseURL
-            }
-            if let openAIKey = configuration.getAPIKey(for: .openAI), !openAIKey.isEmpty {
-                keys[.openAI] = openAIKey
-                urls[.openAI] = configuration.openAIConfig.baseURL
-            }
-            if !configuration.compatibleConfig.baseURL.isEmpty {
-                keys[.openAICompatible] = configuration.getAPIKey(for: .openAICompatible) ?? ""
-                urls[.openAICompatible] = configuration.compatibleConfig.baseURL
+            let configManager = ConfigSetManager.shared
+            for configSet in configManager.configSets {
+                if let claudeKey = configManager.loadConfigSetAPIKey(configSetId: configSet.id, provider: .claude),
+                   !claudeKey.isEmpty {
+                    keys[.claude] = claudeKey
+                    urls[.claude] = configSet.claudeConfig.baseURL
+                }
+                if let openAIKey = configManager.loadConfigSetAPIKey(configSetId: configSet.id, provider: .openAI),
+                   !openAIKey.isEmpty {
+                    keys[.openAI] = openAIKey
+                    urls[.openAI] = configSet.openAIConfig.baseURL
+                }
+                if !configSet.customConfig.baseURL.isEmpty {
+                    let customKey = configManager.loadConfigSetAPIKey(configSetId: configSet.id, provider: .openAICompatible) ?? ""
+                    keys[.openAICompatible] = customKey
+                    urls[.openAICompatible] = configSet.customConfig.baseURL
+                }
             }
             engine.configureAPIKeys(keys, baseUrls: urls)
             multiAgentEngine = engine
@@ -115,7 +123,7 @@ class AgentEngine: ObservableObject {
         do {
             let data = try JSONEncoder().encode(configuration)
             UserDefaults.standard.set(data, forKey: configurationKey)
-            RioLogger.config.info("💾 配置已保存 - 提供商: \(self.configuration.activeProvider.displayName, privacy: .public), 模型: \(self.configuration.model, privacy: .public)")
+            RioLogger.config.info("💾 配置已保存 - 规划: \(self.configuration.planningProvider.displayName, privacy: .public)/\(self.configuration.planningModel, privacy: .public), 执行: \(self.configuration.executionProvider.displayName, privacy: .public)/\(self.configuration.executionModel, privacy: .public)")
         } catch {
             RioLogger.config.error("⚠️ 保存配置失败: \(error.localizedDescription, privacy: .public)")
         }
@@ -129,7 +137,7 @@ class AgentEngine: ObservableObject {
         do {
             configuration = try JSONDecoder().decode(AIConfiguration.self, from: data)
             setupAIService()
-            RioLogger.config.info("📂 已加载配置 - 提供商: \(self.configuration.activeProvider.displayName, privacy: .public), 模型: \(self.configuration.model, privacy: .public)")
+            RioLogger.config.info("📂 已加载配置 - 规划: \(self.configuration.planningProvider.displayName, privacy: .public)/\(self.configuration.planningModel, privacy: .public), 执行: \(self.configuration.executionProvider.displayName, privacy: .public)/\(self.configuration.executionModel, privacy: .public)")
         } catch {
             RioLogger.config.error("⚠️ 加载配置失败: \(error.localizedDescription, privacy: .public)")
         }
@@ -188,7 +196,7 @@ class AgentEngine: ObservableObject {
         }
         
         // Analyze task complexity and generate plan if needed
-        let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: aiService, model: configuration.model)
+        let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: planningService, model: configuration.planningModel)
 
         // For complex tasks, generate a plan and inform the user
         if taskAnalysis.complexity != .simple {
@@ -235,20 +243,16 @@ class AgentEngine: ObservableObject {
                MultiAgentRouting.shouldUseMultiAgent(for: trimmedInput, analysis: taskAnalysis) {
                 try await processWithMultiAgent(input: input, engine: multiAgentEngine)
             } else {
-                guard let aiService = aiService else {
-                    if configuration.activeProvider == .openAICompatible {
-                        error = "未配置 API 端点。请前往 设置 → 自定义端点 填写服务地址。"
-                    } else {
-                        error = "未配置 API Key。请前往 设置 → \(configuration.activeProvider.displayName) 填写 API Key。"
-                    }
+                guard let executionService else {
+                    error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
                     isProcessing = false
                     return
                 }
 
                 if configuration.isStreaming {
-                    try await processConversationLoopStreaming(aiService: aiService)
+                    try await processConversationLoopStreaming(aiService: executionService)
                 } else {
-                    try await processConversationLoop(aiService: aiService)
+                    try await processConversationLoop(aiService: executionService)
                 }
             }
         } catch {
@@ -381,21 +385,17 @@ class AgentEngine: ObservableObject {
         isProcessing = true
         error = nil
 
-        guard let aiService = aiService else {
-            if configuration.activeProvider == .openAICompatible {
-                error = "未配置 API 端点。请前往 设置 → 自定义端点 填写服务地址。"
-            } else {
-                error = "未配置 API Key。请前往 设置 → \(configuration.activeProvider.displayName) 填写 API Key。"
-            }
+        guard let executionService else {
+            error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
             isProcessing = false
             return
         }
 
         do {
             if configuration.isStreaming {
-                try await processConversationLoopStreaming(aiService: aiService)
+                try await processConversationLoopStreaming(aiService: executionService)
             } else {
-                try await processConversationLoop(aiService: aiService)
+                try await processConversationLoop(aiService: executionService)
             }
         } catch {
             self.error = error.localizedDescription
@@ -466,7 +466,7 @@ class AgentEngine: ObservableObject {
     // MARK: - Streaming Single Agent Processing
 
     private func processConversationLoopStreaming(aiService: AIService) async throws {
-        let model = configuration.model
+        let model = configuration.executionModel
         let toolDefinitions = toolRegistry.getToolDefinitions()
         var iterationCount = 0
         var consecutiveErrors = 0
@@ -503,7 +503,7 @@ class AgentEngine: ObservableObject {
                     contextMessages,
                     tools: toolDefinitions,
                     model: model,
-                    maxTokens: configuration.maxTokens,
+                    maxTokens: configuration.executionConfig.effectiveMaxTokens,
                     onChunk: { [weak self] chunk in
                         buffer.appendContent(chunk)
                         await buffer.flushIfNeeded { content, thinking in
@@ -647,7 +647,7 @@ class AgentEngine: ObservableObject {
     // MARK: - Non-streaming Single Agent Processing
 
     private func processConversationLoop(aiService: AIService) async throws {
-        let model = configuration.model
+        let model = configuration.executionModel
         let toolDefinitions = toolRegistry.getToolDefinitions()
         var iterationCount = 0
         var consecutiveErrors = 0
@@ -670,7 +670,7 @@ class AgentEngine: ObservableObject {
                 contextMessages,
                 tools: toolDefinitions,
                 model: model,
-                maxTokens: configuration.maxTokens
+                maxTokens: configuration.executionConfig.effectiveMaxTokens
             )
 
             // Track actual token usage from API response
@@ -811,7 +811,7 @@ class AgentEngine: ObservableObject {
     private func getContextMessages() -> [Message] {
         let systemMsg = buildSystemMessage()
         
-        let contextWindow = AIProvider.contextWindow(for: configuration.model)
+        let contextWindow = AIProvider.contextWindow(for: configuration.executionModel)
         let threshold = Int(Double(contextWindow) * 0.85)
 
         var totalTokens = estimateTokens(systemMsg.content)
@@ -1310,7 +1310,7 @@ RULES:
     
     /// Perform AI-powered conversation compaction
     private func performCompaction(keepRecent: Int, showNotification: Bool) async {
-        guard let aiService = aiService else {
+        guard let planningService else {
             // Fallback to simple compaction if no AI service
             performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
             return
@@ -1364,10 +1364,10 @@ RULES:
         
         do {
             let summaryMessages = [Message.system(summaryPrompt)]
-            let response = try await aiService.sendMessage(
+            let response = try await planningService.sendMessage(
                 summaryMessages,
                 tools: [],
-                model: configuration.model,
+                model: configuration.planningModel,
                 maxTokens: 1000
             )
             
@@ -1466,7 +1466,8 @@ RULES:
         if let dir = workingDirectory {
             md += "工作目录: \(dir)\n"
         }
-        md += "模型: \(configuration.model)\n\n---\n\n"
+        md += "规划模型: \(configuration.planningModel)\n"
+        md += "执行模型: \(configuration.executionModel)\n\n---\n\n"
 
         for message in messages {
             switch message.role {

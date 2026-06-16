@@ -84,10 +84,10 @@ struct ContentView: View {
             // Context panel (right sidebar)
             ContextPanel(
                 messageCount: agentEngine.messages.count,
-                modelName: agentEngine.configuration.model,
-                providerName: agentEngine.configuration.activeProvider.displayName,
+                modelName: agentEngine.configuration.executionModel,
+                providerName: agentEngine.configuration.executionProvider.displayName,
                 estimatedTokens: agentEngine.getTotalTokensUsed(),
-                contextWindow: AIProvider.contextWindow(for: agentEngine.configuration.model),
+                contextWindow: AIProvider.contextWindow(for: agentEngine.configuration.executionModel),
                 recentFiles: agentEngine.memory.session.recentFiles
             )
             .frame(width: 260)
@@ -388,7 +388,7 @@ struct MainContentView: View {
             TopBar(
                 showingSettings: $showingSettings,
                 isMultiAgentEnabled: agentEngine.multiAgentConfig.isEnabled,
-                currentProvider: agentEngine.configuration.activeProvider
+                currentProvider: agentEngine.configuration.executionProvider
             )
 
             // Multi-Agent task plan
@@ -432,8 +432,8 @@ struct MainContentView: View {
                     isProcessing: agentEngine.isProcessing,
                     isFocused: $isInputFocused,
                     workingDirectory: $agentEngine.workingDirectory,
-                    modelName: agentEngine.configuration.model,
-                    providerName: agentEngine.configuration.activeProvider.displayName,
+                    modelName: agentEngine.configuration.executionModel,
+                    providerName: agentEngine.configuration.executionProvider.displayName,
                     onSubmit: onSubmit,
                     onStop: {
                         agentEngine.stopProcessing()

@@ -130,6 +130,23 @@ enum KeychainManager {
         try delete(forKey: key)
     }
     
+    // MARK: - String Key Methods (for Config Sets)
+    
+    /// Save an API key with a custom string key
+    static func saveAPIKey(_ apiKey: String, for key: String) throws {
+        try save(apiKey, forKey: key)
+    }
+    
+    /// Load an API key with a custom string key
+    static func loadAPIKey(for key: String) -> String? {
+        return load(forKey: key)
+    }
+    
+    /// Delete an API key with a custom string key
+    static func deleteAPIKey(for key: String) throws {
+        try delete(forKey: key)
+    }
+    
     /// Migrate API keys from UserDefaults to Keychain
     /// Returns the number of keys migrated
     @discardableResult

@@ -2,12 +2,14 @@ import SwiftUI
 
 enum SettingsTab: CaseIterable {
     case ai
+    case configSets
     case multiAgent
     case about
 
     var title: String {
         switch self {
         case .ai: return "AI 配置"
+        case .configSets: return "配置集"
         case .multiAgent: return "Multi-Agent"
         case .about: return "关于"
         }
@@ -16,6 +18,7 @@ enum SettingsTab: CaseIterable {
     var subtitle: String {
         switch self {
         case .ai: return "选择默认模型、端点和上下文行为"
+        case .configSets: return "管理 AI 提供商配置"
         case .multiAgent: return "配置编排器、子 Agent 和任务拆分策略"
         case .about: return "应用版本与能力概览"
         }
@@ -24,6 +27,7 @@ enum SettingsTab: CaseIterable {
     var icon: String {
         switch self {
         case .ai: return "cpu"
+        case .configSets: return "folder.fill"
         case .multiAgent: return "person.3.fill"
         case .about: return "info.circle"
         }
@@ -35,21 +39,13 @@ struct SettingsView: View {
     @Binding var multiAgentConfig: MultiAgentConfig
     @Environment(\.dismiss) var dismiss
     @State private var selectedTab: SettingsTab = .ai
+    @StateObject private var configSetManager = ConfigSetManager()
 
     // Local state
-    @State private var activeProvider: AIProvider
-    @State private var claudeApiKey: String
-    @State private var claudeBaseURL: String
-    @State private var claudeModel: String
-    @State private var claudeStreaming: Bool
-    @State private var openAIApiKey: String
-    @State private var openAIBaseURL: String
-    @State private var openAIModel: String
-    @State private var openAIStreaming: Bool
-    @State private var compatApiKey: String
-    @State private var compatBaseURL: String
-    @State private var compatModel: String
-    @State private var compatStreaming: Bool
+    @State private var planningProvider: AIProvider
+    @State private var executionProvider: AIProvider
+    @State private var planningConfigSetId: UUID?
+    @State private var executionConfigSetId: UUID?
     @State private var enableStreaming: Bool
     @State private var maxContextMessages: Int
 
@@ -57,67 +53,27 @@ struct SettingsView: View {
         self._configuration = configuration
         self._multiAgentConfig = multiAgentConfig ?? .constant(MultiAgentConfig())
         let cfg = configuration.wrappedValue
-        self._activeProvider = State(initialValue: cfg.activeProvider)
-        self._claudeBaseURL = State(initialValue: cfg.claudeConfig.baseURL)
-        self._claudeModel = State(initialValue: cfg.claudeConfig.model)
-        self._claudeStreaming = State(initialValue: cfg.claudeConfig.isStreaming)
-        self._openAIBaseURL = State(initialValue: cfg.openAIConfig.baseURL)
-        self._openAIModel = State(initialValue: cfg.openAIConfig.model)
-        self._openAIStreaming = State(initialValue: cfg.openAIConfig.isStreaming)
-        self._compatBaseURL = State(initialValue: cfg.compatibleConfig.baseURL)
-        self._compatModel = State(initialValue: cfg.compatibleConfig.model)
-        self._compatStreaming = State(initialValue: cfg.compatibleConfig.isStreaming)
+        self._planningProvider = State(initialValue: cfg.planningProvider)
+        self._executionProvider = State(initialValue: cfg.executionProvider)
+        self._planningConfigSetId = State(initialValue: cfg.planningConfigSetId)
+        self._executionConfigSetId = State(initialValue: cfg.executionConfigSetId)
         self._enableStreaming = State(initialValue: cfg.enableStreaming)
         self._maxContextMessages = State(initialValue: cfg.maxContextMessages)
-        
-        // Load API keys from Keychain
-        self._claudeApiKey = State(initialValue: cfg.getAPIKey(for: .claude) ?? "")
-        self._openAIApiKey = State(initialValue: cfg.getAPIKey(for: .openAI) ?? "")
-        self._compatApiKey = State(initialValue: cfg.getAPIKey(for: .openAICompatible) ?? "")
-    }
-
-    private var hasClaudeApiKey: Bool { !claudeApiKey.isEmpty }
-    private var hasOpenAIApiKey: Bool { !openAIApiKey.isEmpty }
-    private var hasCompatibleEndpoint: Bool {
-        !compatBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func saveConfiguration() {
-        // Save API keys to Keychain first
-        if !claudeApiKey.isEmpty {
-            try? KeychainManager.saveAPIKey(claudeApiKey, for: .claude)
-        } else {
-            try? KeychainManager.deleteAPIKey(for: .claude)
-        }
-        
-        if !openAIApiKey.isEmpty {
-            try? KeychainManager.saveAPIKey(openAIApiKey, for: .openAI)
-        } else {
-            try? KeychainManager.deleteAPIKey(for: .openAI)
-        }
-        
-        if !compatApiKey.isEmpty {
-            try? KeychainManager.saveAPIKey(compatApiKey, for: .openAICompatible)
-        } else {
-            try? KeychainManager.deleteAPIKey(for: .openAICompatible)
-        }
-        
-        // Update configuration (API keys are stored separately in Keychain)
-        configuration.activeProvider = activeProvider
-        configuration.claudeConfig = ProviderConfig(baseURL: claudeBaseURL, model: claudeModel, isStreaming: claudeStreaming)
-        configuration.openAIConfig = ProviderConfig(baseURL: openAIBaseURL, model: openAIModel, isStreaming: openAIStreaming)
-        configuration.compatibleConfig = ProviderConfig(baseURL: compatBaseURL, model: compatModel, isStreaming: compatStreaming)
+        // Update configuration
+        configuration.planningProvider = planningProvider
+        configuration.executionProvider = executionProvider
+        configuration.activeProvider = executionProvider
+        configuration.planningConfigSetId = planningConfigSetId
+        configuration.executionConfigSetId = executionConfigSetId
         configuration.enableStreaming = enableStreaming
         configuration.maxContextMessages = maxContextMessages
-        
-        // Update in-memory API keys
-        configuration.setAPIKey(claudeApiKey, for: .claude)
-        configuration.setAPIKey(openAIApiKey, for: .openAI)
-        configuration.setAPIKey(compatApiKey, for: .openAICompatible)
 
         if let data = try? JSONEncoder().encode(configuration) {
             UserDefaults.standard.set(data, forKey: "ai_configuration")
-            RioLogger.config.info("💾 设置已保存 (端点: \(compatBaseURL, privacy: .public), 模型: \(compatModel, privacy: .public))")
+            RioLogger.config.info("💾 设置已保存 (规划: \(planningProvider.displayName, privacy: .public), 执行: \(executionProvider.displayName, privacy: .public))")
         } else {
             RioLogger.config.error("❌ 设置保存失败: 编码出错")
         }
@@ -145,6 +101,8 @@ struct SettingsView: View {
                         switch selectedTab {
                         case .ai:
                             darkAIConfigSection
+                        case .configSets:
+                            ConfigSetManagementView(manager: configSetManager)
                         case .multiAgent:
                             MultiAgentSettingsView(config: $multiAgentConfig, aiConfig: currentAIConfigInfo)
                         case .about:
@@ -162,16 +120,19 @@ struct SettingsView: View {
     }
 
     private var currentAIConfigInfo: AIConfigInfo {
-        AIConfigInfo(
-            hasClaudeKey: hasClaudeApiKey,
-            hasOpenAIKey: hasOpenAIApiKey,
-            hasCompatibleEndpoint: hasCompatibleEndpoint,
-            claudeApiKey: claudeApiKey,
-            openAIApiKey: openAIApiKey,
-            compatibleApiKey: compatApiKey,
-            currentClaudeModel: claudeModel,
-            currentOpenAIModel: openAIModel,
-            currentCompatibleModel: compatModel
+        return AIConfigInfo(
+            hasClaudeKey: configSetManager.selectedPlanningConfigSet?.claudeConfig.apiKey.isEmpty == false ||
+                         configSetManager.selectedExecutionConfigSet?.claudeConfig.apiKey.isEmpty == false,
+            hasOpenAIKey: configSetManager.selectedPlanningConfigSet?.openAIConfig.apiKey.isEmpty == false ||
+                        configSetManager.selectedExecutionConfigSet?.openAIConfig.apiKey.isEmpty == false,
+            hasCompatibleEndpoint: configSetManager.selectedPlanningConfigSet?.customConfig.apiKey.isEmpty == false ||
+                                 configSetManager.selectedExecutionConfigSet?.customConfig.apiKey.isEmpty == false,
+            claudeApiKey: configSetManager.selectedExecutionConfigSet?.claudeConfig.apiKey ?? "",
+            openAIApiKey: configSetManager.selectedExecutionConfigSet?.openAIConfig.apiKey ?? "",
+            compatibleApiKey: configSetManager.selectedExecutionConfigSet?.customConfig.apiKey ?? "",
+            currentClaudeModel: configSetManager.selectedExecutionConfigSet?.claudeConfig.model ?? "",
+            currentOpenAIModel: configSetManager.selectedExecutionConfigSet?.openAIConfig.model ?? "",
+            currentCompatibleModel: configSetManager.selectedExecutionConfigSet?.customConfig.model ?? ""
         )
     }
 
@@ -190,6 +151,7 @@ struct SettingsView: View {
 
             VStack(spacing: 6) {
                 SettingsSidebarItem(tab: .ai, selectedTab: $selectedTab)
+                SettingsSidebarItem(tab: .configSets, selectedTab: $selectedTab)
                 SettingsSidebarItem(tab: .multiAgent, selectedTab: $selectedTab)
                 SettingsSidebarItem(tab: .about, selectedTab: $selectedTab)
             }
@@ -197,9 +159,18 @@ struct SettingsView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 8) {
-                ProviderHealthRow(name: "Claude", isReady: hasClaudeApiKey)
-                ProviderHealthRow(name: "OpenAI", isReady: hasOpenAIApiKey)
-                ProviderHealthRow(name: "自定义端点", isReady: hasCompatibleEndpoint)
+                ProviderHealthRow(
+                    name: "Claude",
+                    isReady: configSetManager.configSets.contains { !$0.claudeConfig.apiKey.isEmpty }
+                )
+                ProviderHealthRow(
+                    name: "OpenAI",
+                    isReady: configSetManager.configSets.contains { !$0.openAIConfig.apiKey.isEmpty }
+                )
+                ProviderHealthRow(
+                    name: "自定义端点",
+                    isReady: configSetManager.configSets.contains { !$0.customConfig.apiKey.isEmpty }
+                )
             }
             .padding(12)
             .background(Theme.bgSecondary)
@@ -242,16 +213,16 @@ struct SettingsView: View {
     private var configurationSummary: some View {
         HStack(spacing: 12) {
             SettingsMetric(
-                title: "当前提供商",
-                value: activeProvider.displayName,
-                icon: activeProvider.icon,
-                tone: isProviderConfigured(activeProvider) ? Theme.statusSuccess : Theme.statusWarning
+                title: "规划来源",
+                value: "\(planningProvider.displayName) / \(planningModelName)",
+                icon: planningProvider.icon,
+                tone: isProviderConfigured(planningProvider) ? Theme.statusSuccess : Theme.statusWarning
             )
             SettingsMetric(
-                title: "当前模型",
-                value: currentModelName,
-                icon: "cpu",
-                tone: Theme.accentSecondary
+                title: "执行来源",
+                value: "\(executionProvider.displayName) / \(executionModelName)",
+                icon: executionProvider.icon,
+                tone: isProviderConfigured(executionProvider) ? Theme.statusSuccess : Theme.statusWarning
             )
             SettingsMetric(
                 title: "Multi-Agent",
@@ -262,12 +233,20 @@ struct SettingsView: View {
         }
     }
 
-    private var currentModelName: String {
-        switch activeProvider {
-        case .claude: return claudeModel
-        case .openAI: return openAIModel
-        case .openAICompatible: return compatModel
-        }
+    private var planningModelName: String {
+        guard let configSet = configSetManager.selectedPlanningConfigSet else { return "未设置" }
+        return configSet.config(for: planningProvider).model
+    }
+
+    private var executionModelName: String {
+        guard let configSet = configSetManager.selectedExecutionConfigSet else { return "未设置" }
+        return configSet.config(for: executionProvider).model
+    }
+
+    private func isProviderConfigured(_ provider: AIProvider) -> Bool {
+        let configSet = (provider == planningProvider) ? configSetManager.selectedPlanningConfigSet : configSetManager.selectedExecutionConfigSet
+        guard let configSet = configSet else { return false }
+        return !configSet.config(for: provider).apiKey.isEmpty
     }
 
     // MARK: - AI Config Section
@@ -276,39 +255,27 @@ struct SettingsView: View {
     private var darkAIConfigSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 14) {
-                DarkSettingsSection(title: "默认提供商", icon: "cpu") {
-                    VStack(spacing: 9) {
-                        ForEach(AIProvider.allCases, id: \.self) { p in
-                            ProviderSelectionRow(
-                                provider: p,
-                                model: modelName(for: p),
-                                isSelected: activeProvider == p,
-                                isConfigured: isProviderConfigured(p)
-                            ) {
-                                activeProvider = p
-                            }
-                        }
-                    }
-                }
-                .frame(width: 245)
+                RoleConfigSetSection(
+                    title: "规划调用",
+                    detail: "用于任务拆解、复杂度判断和对话压缩",
+                    selectedProvider: $planningProvider,
+                    selectedConfigSetId: $planningConfigSetId,
+                    configSets: configSetManager.configSets
+                )
 
-                VStack(spacing: 12) {
-                    switch activeProvider {
-                    case .claude:
-                        claudeConfigView
-                    case .openAI:
-                        openAIConfigView
-                    case .openAICompatible:
-                        compatibleConfigView
-                    }
-                }
-                .frame(maxWidth: .infinity)
+                RoleConfigSetSection(
+                    title: "执行调用",
+                    detail: "用于对话回复、工具调用和文件操作",
+                    selectedProvider: $executionProvider,
+                    selectedConfigSetId: $executionConfigSetId,
+                    configSets: configSetManager.configSets
+                )
             }
 
             DarkSettingsSection(title: "全局设置", icon: "slider.horizontal.3") {
                 HStack(spacing: 18) {
                     HStack {
-                        SettingsFieldLabel("流式输出", detail: "回复边生成边显示")
+                        SettingsFieldLabel("流式输出", detail: "执行调用边生成边显示")
                         Spacer()
                         Toggle("", isOn: $enableStreaming)
                             .toggleStyle(.switch)
@@ -335,211 +302,6 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-        }
-    }
-
-    private func modelName(for provider: AIProvider) -> String {
-        switch provider {
-        case .claude: return claudeModel
-        case .openAI: return openAIModel
-        case .openAICompatible: return compatModel
-        }
-    }
-
-    private var claudeConfigView: some View {
-        VStack(spacing: 12) {
-            DarkSettingsSection(title: "Claude API Key", icon: "key") {
-                VStack(alignment: .leading, spacing: 8) {
-                    SecureField("sk-ant-api03-...", text: $claudeApiKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(Theme.bgInput)
-                        .cornerRadius(Theme.radiusMD)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                        )
-
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(claudeApiKey.isEmpty ? Theme.statusError : Theme.statusSuccess)
-                            .frame(width: 6, height: 6)
-                        Text(claudeApiKey.isEmpty ? "未配置" : "已配置")
-                            .font(.system(size: 11))
-                            .foregroundColor(claudeApiKey.isEmpty ? Theme.statusError : Theme.statusSuccess)
-                    }
-
-                    HStack(spacing: 4) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 10))
-                        Text("访问 console.anthropic.com 获取 API Key")
-                            .font(.system(size: 11))
-                    }
-                    .foregroundColor(Theme.textTertiary)
-                }
-            }
-
-            DarkSettingsSection(title: "自定义端点 (可选)", icon: "server.rack") {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("https://api.anthropic.com", text: $claudeBaseURL)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(Theme.bgInput)
-                        .cornerRadius(Theme.radiusMD)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                        )
-
-                    Text("留空使用官方 API，或填入代理/中转站地址")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.textTertiary)
-                }
-            }
-
-            DarkSettingsSection(title: "模型", icon: "cpu") {
-                Picker("", selection: $claudeModel) {
-                    Label("Claude Sonnet 4", systemImage: "bolt.fill").tag("claude-sonnet-4-20250514")
-                    Label("Claude Opus 4", systemImage: "star.fill").tag("claude-opus-4-20250514")
-                    Label("Claude Haiku 3.5", systemImage: "hare.fill").tag("claude-3-5-haiku-20241022")
-                }
-                .pickerStyle(.menu)
-            }
-        }
-    }
-
-    private var openAIConfigView: some View {
-        VStack(spacing: 12) {
-            DarkSettingsSection(title: "OpenAI API Key", icon: "key") {
-                VStack(alignment: .leading, spacing: 8) {
-                    SecureField("sk-proj-...", text: $openAIApiKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(Theme.bgInput)
-                        .cornerRadius(Theme.radiusMD)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                        )
-
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(openAIApiKey.isEmpty ? Theme.statusError : Theme.statusSuccess)
-                            .frame(width: 6, height: 6)
-                        Text(openAIApiKey.isEmpty ? "未配置" : "已配置")
-                            .font(.system(size: 11))
-                            .foregroundColor(openAIApiKey.isEmpty ? Theme.statusError : Theme.statusSuccess)
-                    }
-                }
-            }
-
-            DarkSettingsSection(title: "自定义端点 (可选)", icon: "server.rack") {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("https://api.openai.com", text: $openAIBaseURL)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(Theme.bgInput)
-                        .cornerRadius(Theme.radiusMD)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                        )
-
-                    Text("留空使用官方 API，或填入代理地址")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.textTertiary)
-                }
-            }
-
-            DarkSettingsSection(title: "模型", icon: "cpu") {
-                Picker("", selection: $openAIModel) {
-                    Label("GPT-4o", systemImage: "star.fill").tag("gpt-4o")
-                    Label("GPT-4o Mini", systemImage: "bolt.fill").tag("gpt-4o-mini")
-                    Label("GPT-4 Turbo", systemImage: "brain.head.profile").tag("gpt-4-turbo")
-                }
-                .pickerStyle(.menu)
-            }
-        }
-    }
-
-    private var compatibleConfigView: some View {
-        VStack(spacing: 12) {
-            DarkSettingsSection(title: "API 端点", icon: "server.rack") {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("https://api.openrouter.ai/api 或 http://localhost:11434", text: $compatBaseURL)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(Theme.bgInput)
-                        .cornerRadius(Theme.radiusMD)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                        )
-
-                    Text("支持 OpenAI 兼容格式的服务：OpenRouter、Ollama、LM Studio 等")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.textTertiary)
-                }
-            }
-
-            DarkSettingsSection(title: "API Key", icon: "key") {
-                VStack(alignment: .leading, spacing: 8) {
-                    SecureField("留空或输入 API Key", text: $compatApiKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(Theme.bgInput)
-                        .cornerRadius(Theme.radiusMD)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                        )
-
-                    Text("本地模型（如 Ollama）通常不需要 API Key")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.textTertiary)
-                }
-            }
-
-            DarkSettingsSection(title: "模型名称", icon: "cpu") {
-                TextField("例如: llama3, mistral, deepseek-coder", text: $compatModel)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundColor(Theme.textPrimary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(Theme.bgInput)
-                    .cornerRadius(Theme.radiusMD)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusMD)
-                            .stroke(Theme.borderSubtle, lineWidth: 1)
-                    )
-            }
-        }
-    }
-
-    private func isProviderConfigured(_ provider: AIProvider) -> Bool {
-        switch provider {
-        case .claude: return hasClaudeApiKey
-        case .openAI: return hasOpenAIApiKey
-        case .openAICompatible: return !compatBaseURL.isEmpty
         }
     }
 
@@ -694,6 +456,49 @@ struct ProviderHealthRow: View {
     }
 }
 
+struct RoleProviderSection: View {
+    let title: String
+    let detail: String
+    @Binding var selectedProvider: AIProvider
+    let modelName: (AIProvider) -> String
+    let isConfigured: (AIProvider) -> Bool
+
+    var body: some View {
+        DarkSettingsSection(title: title, icon: "arrow.triangle.branch") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+
+                ForEach(AIProvider.allCases, id: \.self) { provider in
+                    ProviderSelectionRow(
+                        provider: provider,
+                        model: modelName(provider),
+                        isSelected: selectedProvider == provider,
+                        isConfigured: isConfigured(provider)
+                    ) {
+                        selectedProvider = provider
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct ProviderConfigPanel<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        DarkSettingsSection(title: title, icon: icon) {
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
 struct ProviderSelectionRow: View {
     let provider: AIProvider
     let model: String
@@ -767,6 +572,125 @@ struct SettingsFieldLabel: View {
                 Text(detail)
                     .font(.system(size: 11))
                     .foregroundColor(Theme.textTertiary)
+            }
+        }
+    }
+}
+
+struct RoleConfigSetSection: View {
+    let title: String
+    let detail: String
+    @Binding var selectedProvider: AIProvider
+    @Binding var selectedConfigSetId: UUID?
+    let configSets: [ConfigSet]
+
+    var body: some View {
+        DarkSettingsSection(title: title, icon: "arrow.triangle.branch") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+
+                ForEach(AIProvider.allCases, id: \.self) { provider in
+                    ProviderConfigSetRow(
+                        provider: provider,
+                        configSets: configSets,
+                        isSelected: selectedProvider == provider,
+                        selectedConfigSetId: $selectedConfigSetId
+                    ) {
+                        selectedProvider = provider
+                        if configSets.isEmpty {
+                            selectedConfigSetId = nil
+                        } else if selectedConfigSetId == nil {
+                            selectedConfigSetId = configSets.first?.id
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct ProviderConfigSetRow: View {
+    let provider: AIProvider
+    let configSets: [ConfigSet]
+    let isSelected: Bool
+    @Binding var selectedConfigSetId: UUID?
+    let action: () -> Void
+
+    @State private var showingConfigSetPicker = false
+
+    private var selectedConfigSet: ConfigSet? {
+        configSets.first { $0.id == selectedConfigSetId }
+    }
+
+    private var model: String {
+        guard let configSet = selectedConfigSet else { return "未设置" }
+        return configSet.config(for: provider).model
+    }
+
+    private var isConfigured: Bool {
+        guard let configSet = selectedConfigSet else { return false }
+        return !configSet.config(for: provider).apiKey.isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Button(action: action) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: Theme.radiusSM)
+                            .fill(isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.bgTertiary)
+                            .frame(width: 34, height: 34)
+                        Image(systemName: provider.icon)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(provider.displayName)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Theme.textPrimary)
+                            Circle()
+                                .fill(isConfigured ? Theme.statusSuccess : Theme.statusWarning)
+                                .frame(width: 6, height: 6)
+                        }
+                        Text(model.isEmpty ? "未设置模型" : model)
+                            .font(.system(size: 10, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundColor(Theme.textTertiary)
+                    }
+
+                    Spacer()
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(Theme.accentPrimary)
+                    }
+                }
+                .padding(9)
+                .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(0.72))
+                .cornerRadius(Theme.radiusMD)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                        .stroke(isSelected ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+
+            if isSelected && !configSets.isEmpty {
+                Picker("配置集", selection: $selectedConfigSetId) {
+                    Text("选择配置集").tag(nil as UUID?)
+                    ForEach(configSets) { configSet in
+                        Text(configSet.name).tag(configSet.id as UUID?)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
             }
         }
     }

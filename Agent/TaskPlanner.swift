@@ -489,7 +489,7 @@ class TaskPlanner {
     }
     
     /// Generate a plan using AI (to be called from AgentEngine)
-    static func generatePlanWithAI(_ input: String, aiService: AIService, model: String = "claude-3-5-sonnet-20241022") async -> AITaskPlan? {
+    static func generatePlanWithAI(_ input: String, aiService: AIService, model: String = AIProvider.claude.defaultPlanningModel) async -> AITaskPlan? {
         let planPrompt = """
         分析以下任务，生成一个详细的执行计划。
         
@@ -534,7 +534,7 @@ class TaskPlanner {
     }
     
     /// Improved task analysis that uses AI when available
-    static func analyzeTaskEnhanced(_ input: String, memory: AgentMemory?, aiService: AIService? = nil, model: String = "claude-3-5-sonnet-20241022") async -> TaskAnalysis {
+    static func analyzeTaskEnhanced(_ input: String, memory: AgentMemory?, aiService: AIService? = nil, model: String = AIProvider.claude.defaultPlanningModel) async -> TaskAnalysis {
         // First, do the quick analysis
         let quickAnalysis = analyzeTask(input, memory: memory)
         

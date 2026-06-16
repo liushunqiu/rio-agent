@@ -69,6 +69,22 @@ enum AIProvider: String, Codable, CaseIterable {
         }
     }
 
+    var defaultPlanningModel: String {
+        switch self {
+        case .claude: return "claude-sonnet-4-20250514"
+        case .openAI: return "gpt-4o"
+        case .openAICompatible: return "gpt-4o"
+        }
+    }
+
+    var defaultExecutionModel: String {
+        switch self {
+        case .claude: return "claude-3-5-haiku-20241022"
+        case .openAI: return "gpt-4o-mini"
+        case .openAICompatible: return "gpt-4o-mini"
+        }
+    }
+
     var icon: String {
         switch self {
         case .claude: return "brain.head.profile"
@@ -94,19 +110,27 @@ struct ProviderConfig: Codable, Hashable {
     // apiKey is NOT encoded - stored in Keychain instead
     var apiKey: String
     var baseURL: String
-    var model: String
+    var planningModel: String
+    var executionModel: String
     var isStreaming: Bool
     var maxTokens: Int
 
     enum CodingKeys: String, CodingKey {
-        case baseURL, model, isStreaming, maxTokens
+        case baseURL, model, planningModel, executionModel, isStreaming, maxTokens
         // apiKey is excluded from encoding/decoding
     }
 
-    init(apiKey: String = "", baseURL: String = "", model: String = "", isStreaming: Bool = true, maxTokens: Int = 0) {
+    init(
+        apiKey: String = "",
+        baseURL: String = "",
+        model: String = "",
+        isStreaming: Bool = true,
+        maxTokens: Int = 0
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
-        self.model = model
+        self.executionModel = model
+        self.planningModel = model
         self.isStreaming = isStreaming
         self.maxTokens = maxTokens
     }
@@ -115,7 +139,9 @@ struct ProviderConfig: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         apiKey = "" // API keys are loaded from Keychain separately
         baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
-        model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        let legacyModel = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        executionModel = try container.decodeIfPresent(String.self, forKey: .executionModel) ?? legacyModel
+        planningModel = executionModel // Always unified
         isStreaming = try container.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? true
         maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 0
     }
@@ -123,7 +149,8 @@ struct ProviderConfig: Codable, Hashable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(baseURL, forKey: .baseURL)
-        try container.encode(model, forKey: .model)
+        try container.encode(planningModel, forKey: .planningModel)
+        try container.encode(executionModel, forKey: .executionModel)
         try container.encode(isStreaming, forKey: .isStreaming)
         try container.encode(maxTokens, forKey: .maxTokens)
         // apiKey is NOT encoded
@@ -131,7 +158,15 @@ struct ProviderConfig: Codable, Hashable {
 
     var effectiveMaxTokens: Int {
         if maxTokens > 0 { return maxTokens }
-        return AIProvider.defaultMaxTokens(for: model)
+        return AIProvider.defaultMaxTokens(for: executionModel)
+    }
+
+    var model: String {
+        get { executionModel }
+        set {
+            executionModel = newValue
+            planningModel = newValue
+        }
     }
 
     var isConfigured: Bool {
@@ -150,9 +185,10 @@ struct ProviderConfig: Codable, Hashable {
 
 struct AIConfiguration: Codable {
     var activeProvider: AIProvider
-    var claudeConfig: ProviderConfig
-    var openAIConfig: ProviderConfig
-    var compatibleConfig: ProviderConfig
+    var planningProvider: AIProvider
+    var executionProvider: AIProvider
+    var planningConfigSetId: UUID?
+    var executionConfigSetId: UUID?
 
     // Context management
     var maxContextMessages: Int
@@ -162,31 +198,24 @@ struct AIConfiguration: Codable {
     private var _apiKeyStorage: [AIProvider: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case activeProvider, claudeConfig, openAIConfig, compatibleConfig
+        case activeProvider, planningProvider, executionProvider, planningConfigSetId, executionConfigSetId
         case maxContextMessages, enableStreaming
     }
 
     init(
         activeProvider: AIProvider = .claude,
-        claudeConfig: ProviderConfig = ProviderConfig(
-            baseURL: "https://api.anthropic.com",
-            model: "claude-sonnet-4-20250514"
-        ),
-        openAIConfig: ProviderConfig = ProviderConfig(
-            baseURL: "https://api.openai.com",
-            model: "gpt-4o"
-        ),
-        compatibleConfig: ProviderConfig = ProviderConfig(
-            baseURL: "",
-            model: "gpt-4o"
-        ),
+        planningProvider: AIProvider? = nil,
+        executionProvider: AIProvider? = nil,
+        planningConfigSetId: UUID? = nil,
+        executionConfigSetId: UUID? = nil,
         maxContextMessages: Int = 999,
         enableStreaming: Bool = true
     ) {
         self.activeProvider = activeProvider
-        self.claudeConfig = claudeConfig
-        self.openAIConfig = openAIConfig
-        self.compatibleConfig = compatibleConfig
+        self.planningProvider = planningProvider ?? activeProvider
+        self.executionProvider = executionProvider ?? activeProvider
+        self.planningConfigSetId = planningConfigSetId
+        self.executionConfigSetId = executionConfigSetId
         self.maxContextMessages = maxContextMessages
         self.enableStreaming = enableStreaming
         
@@ -197,9 +226,10 @@ struct AIConfiguration: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         activeProvider = try container.decode(AIProvider.self, forKey: .activeProvider)
-        claudeConfig = try container.decode(ProviderConfig.self, forKey: .claudeConfig)
-        openAIConfig = try container.decode(ProviderConfig.self, forKey: .openAIConfig)
-        compatibleConfig = try container.decode(ProviderConfig.self, forKey: .compatibleConfig)
+        planningProvider = try container.decodeIfPresent(AIProvider.self, forKey: .planningProvider) ?? activeProvider
+        executionProvider = try container.decodeIfPresent(AIProvider.self, forKey: .executionProvider) ?? activeProvider
+        planningConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .planningConfigSetId)
+        executionConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .executionConfigSetId)
         maxContextMessages = try container.decode(Int.self, forKey: .maxContextMessages)
         enableStreaming = try container.decode(Bool.self, forKey: .enableStreaming)
         
@@ -210,9 +240,10 @@ struct AIConfiguration: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(activeProvider, forKey: .activeProvider)
-        try container.encode(claudeConfig, forKey: .claudeConfig)
-        try container.encode(openAIConfig, forKey: .openAIConfig)
-        try container.encode(compatibleConfig, forKey: .compatibleConfig)
+        try container.encode(planningProvider, forKey: .planningProvider)
+        try container.encode(executionProvider, forKey: .executionProvider)
+        try container.encodeIfPresent(planningConfigSetId, forKey: .planningConfigSetId)
+        try container.encodeIfPresent(executionConfigSetId, forKey: .executionConfigSetId)
         try container.encode(maxContextMessages, forKey: .maxContextMessages)
         try container.encode(enableStreaming, forKey: .enableStreaming)
         // API keys are NOT encoded - they stay in Keychain
@@ -260,19 +291,53 @@ struct AIConfiguration: Codable {
 
     // MARK: - Convenience Accessors
 
-    var currentConfig: ProviderConfig {
-        switch activeProvider {
-        case .claude: return claudeConfig
-        case .openAI: return openAIConfig
-        case .openAICompatible: return compatibleConfig
+    func config(for provider: AIProvider, configSetId: UUID?) -> ProviderConfig {
+        guard let configSetId = configSetId else {
+            return ProviderConfig()
         }
+        
+        let userDefaultsKey = "config_sets"
+        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
+              let configSets = try? JSONDecoder().decode([ConfigSet].self, from: data),
+              let configSet = configSets.first(where: { $0.id == configSetId }) else {
+            return ProviderConfig()
+        }
+        return configSet.config(for: provider)
+    }
+
+    var currentConfig: ProviderConfig {
+        config(for: executionProvider, configSetId: executionConfigSetId)
+    }
+
+    var planningConfig: ProviderConfig {
+        config(for: planningProvider, configSetId: planningConfigSetId)
+    }
+
+    var executionConfig: ProviderConfig {
+        config(for: executionProvider, configSetId: executionConfigSetId)
     }
 
     var apiKey: String? {
-        return getAPIKey(for: activeProvider)
+        guard let configSetId = executionConfigSetId else { return nil }
+        let keychainKey = "config_set_\(configSetId.uuidString)_\(executionProvider.rawValue)_api_key"
+        return KeychainManager.load(forKey: keychainKey)
+    }
+
+    func apiKey(for provider: AIProvider, configSetId: UUID?) -> String? {
+        guard let configSetId = configSetId else { return nil }
+        let keychainKey = "config_set_\(configSetId.uuidString)_\(provider.rawValue)_api_key"
+        return KeychainManager.load(forKey: keychainKey)
     }
 
     var model: String {
+        currentConfig.model
+    }
+
+    var planningModel: String {
+        planningConfig.model
+    }
+
+    var executionModel: String {
         currentConfig.model
     }
 
@@ -281,9 +346,13 @@ struct AIConfiguration: Codable {
     }
 
     var baseURL: String {
-        let url = currentConfig.baseURL
+        baseURL(for: executionProvider)
+    }
+
+    func baseURL(for provider: AIProvider) -> String {
+        let url = config(for: provider, configSetId: executionConfigSetId).baseURL
         if url.isEmpty {
-            switch activeProvider {
+            switch provider {
             case .claude: return "https://api.anthropic.com"
             case .openAI: return "https://api.openai.com"
             case .openAICompatible: return ""
@@ -293,7 +362,7 @@ struct AIConfiguration: Codable {
     }
 
     var isStreaming: Bool {
-        enableStreaming && currentConfig.isStreaming
+        enableStreaming && executionConfig.isStreaming
     }
 
     // MARK: - Model Capabilities
@@ -305,8 +374,11 @@ struct AIConfiguration: Codable {
     // MARK: - Legacy Compatibility
 
     var provider: AIProvider {
-        get { activeProvider }
-        set { activeProvider = newValue }
+        get { executionProvider }
+        set {
+            executionProvider = newValue
+            activeProvider = newValue
+        }
     }
 
     var claudeApiKey: String? {
@@ -324,20 +396,17 @@ struct AIConfiguration: Codable {
         set { setAPIKey(newValue, for: .openAICompatible) }
     }
 
-    var claudeModel: String {
-        get { claudeConfig.model }
-        set { claudeConfig.model = newValue }
-    }
-
-    var openAIModel: String {
-        get { openAIConfig.model }
-        set { openAIConfig.model = newValue }
-    }
-
     // MARK: - Validation
 
     var isConfigured: Bool {
-        guard let key = apiKey else { return false }
-        return !key.isEmpty || activeProvider == .openAICompatible
+        isConfigured(for: executionProvider)
+    }
+
+    func isConfigured(for provider: AIProvider) -> Bool {
+        if provider == .openAICompatible {
+            return !baseURL(for: provider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard let key = getAPIKey(for: provider) else { return false }
+        return !key.isEmpty
     }
 }
