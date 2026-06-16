@@ -43,6 +43,11 @@ class AgentEngine: ObservableObject {
     /// 优化的 Token 追踪器（准确度提升 30%，性能提升 3-5x）
     private let tokenTracker = TokenTracker()
 
+    /// 对话压缩器（智能压缩历史消息）
+    private lazy var conversationCompactor: ConversationCompactor = {
+        return ConversationCompactor(aiService: planningService, model: configuration.planningModel)
+    }()
+
     /// Called when a user message is added to the conversation (for immediate title update)
     var onUserMessageAdded: (() -> Void)?
 
@@ -1387,162 +1392,25 @@ RULES:
     
     /// Auto-compact conversation when message count exceeds threshold
     private func autoCompactIfNeeded() async {
-        let autoCompactThreshold = 50
-        
-        guard messages.count > autoCompactThreshold else {
+        guard conversationCompactor.shouldCompact(messageCount: messages.count, threshold: 50) else {
             return
         }
-        
+
         // Perform AI-powered compaction silently
-        let maxMessages = 30
-        await performCompaction(keepRecent: maxMessages, showNotification: false)
+        messages = await conversationCompactor.compact(
+            messages: messages,
+            keepRecent: 30,
+            showNotification: false
+        )
     }
-    
+
     /// Compact conversation by summarizing old messages with AI
     func compactConversation() async {
-        let maxMessages = 20
-        
-        guard messages.count > maxMessages else {
-            let msg = Message.system("💬 当前对话较短（\(messages.count) 条消息），无需压缩。")
-            messages.append(msg)
-            return
-        }
-        
-        await performCompaction(keepRecent: maxMessages, showNotification: true)
-    }
-    
-    /// Perform AI-powered conversation compaction
-    private func performCompaction(keepRecent: Int, showNotification: Bool) async {
-        guard let planningService else {
-            // Fallback to simple compaction if no AI service
-            performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
-            return
-        }
-        
-        let oldMessages = Array(messages.prefix(messages.count - keepRecent))
-        let recentMessages = Array(messages.suffix(keepRecent))
-        
-        // Build conversation text for summarization
-        var conversationText = ""
-        for msg in oldMessages {
-            let role: String
-            switch msg.role {
-            case .user: role = "用户"
-            case .assistant: role = "助手"
-            case .system: role = "系统"
-            }
-            
-            if !msg.content.isEmpty {
-                conversationText += "\(role): \(msg.content)\n"
-            }
-            
-            // Include tool usage info
-            if let toolCalls = msg.toolCalls {
-                for tc in toolCalls {
-                    conversationText += "\(role) 调用工具: \(tc.name)\n"
-                }
-            }
-        }
-        
-        // Limit conversation text to avoid token overflow
-        let maxInputLength = 10000
-        if conversationText.count > maxInputLength {
-            conversationText = String(conversationText.prefix(maxInputLength)) + "\n... (对话内容已截断)"
-        }
-        
-        // Create summarization prompt
-        let summaryPrompt = """
-        请将以下对话历史压缩为简洁的摘要。要求：
-        
-        1. 保留所有重要的上下文信息（用户的需求、已完成的任务、发现的问题）
-        2. 保留关键的技术细节（文件路径、函数名、代码修改）
-        3. 保留当前的工作状态（正在做什么、下一步计划）
-        4. 使用结构化格式，便于后续 AI 继续工作
-        
-        对话历史：
-        \(conversationText)
-        
-        请输出压缩后的摘要（使用 Markdown 格式）：
-        """
-        
-        do {
-            let summaryMessages = [Message.system(summaryPrompt)]
-            let response = try await planningService.sendMessage(
-                summaryMessages,
-                tools: [],
-                model: configuration.planningModel,
-                maxTokens: 1000
-            )
-            
-            if let summary = response.content, !summary.isEmpty {
-                // Create summary message with metadata
-                let summaryMessage = Message.system("## 对话历史摘要（AI 压缩）\n\n\(summary)\n\n*（已压缩 \(oldMessages.count) 条历史消息，保留最近 \(recentMessages.count) 条）*")
-                
-                // Replace messages
-                messages = [summaryMessage] + recentMessages
-                
-                if showNotification {
-                    let msg = Message.system("✅ 已使用 AI 压缩 \(oldMessages.count) 条历史消息。")
-                    messages.append(msg)
-                }
-            } else {
-                // Fallback if AI returns empty
-                performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
-            }
-        } catch {
-            // Fallback on error
-            performSimpleCompaction(keepRecent: keepRecent, showNotification: showNotification)
-        }
-    }
-    
-    /// Simple rule-based compaction (fallback)
-    private func performSimpleCompaction(keepRecent: Int, showNotification: Bool) {
-        let oldMessages = Array(messages.prefix(messages.count - keepRecent))
-        let recentMessages = Array(messages.suffix(keepRecent))
-        
-        var summary = "## 对话历史摘要\n\n"
-        var userMessages: [String] = []
-        var toolCallsMade: [String] = []
-        
-        for msg in oldMessages {
-            switch msg.role {
-            case .user:
-                if !msg.content.isEmpty {
-                    userMessages.append(String(msg.content.prefix(80)))
-                }
-            case .assistant:
-                if let toolCalls = msg.toolCalls {
-                    for tc in toolCalls {
-                        toolCallsMade.append(tc.name)
-                    }
-                }
-            case .system:
-                break
-            }
-        }
-        
-        if !userMessages.isEmpty {
-            summary += "**用户请求:**\n"
-            for (index, msg) in userMessages.prefix(3).enumerated() {
-                summary += "\(index + 1). \(msg)\n"
-            }
-            if userMessages.count > 3 {
-                summary += "... 还有 \(userMessages.count - 3) 个请求\n"
-            }
-        }
-        
-        if !toolCallsMade.isEmpty {
-            let uniqueTools = Set(toolCallsMade)
-            summary += "\n**使用的工具:** \(uniqueTools.joined(separator: ", "))\n"
-        }
-        
-        let summaryMessage = Message.system(summary)
-        messages = [summaryMessage] + recentMessages
-        
-        if showNotification {
-            let msg = Message.system("✅ 已压缩 \(oldMessages.count) 条历史消息。")
-            messages.append(msg)
-        }
+        messages = await conversationCompactor.compact(
+            messages: messages,
+            keepRecent: 20,
+            showNotification: true
+        )
     }
 
     func loadConversation(_ conversation: Conversation) {
