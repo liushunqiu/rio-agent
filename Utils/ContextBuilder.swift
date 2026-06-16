@@ -25,13 +25,20 @@ class ContextBuilder {
     private let tokenTracker: TokenTracker
     private let model: String
     private let workingDirectory: String?
+    private let maxContextMessages: Int?
 
     // MARK: - Initialization
 
-    init(tokenTracker: TokenTracker, model: String, workingDirectory: String? = nil) {
+    init(
+        tokenTracker: TokenTracker,
+        model: String,
+        workingDirectory: String? = nil,
+        maxContextMessages: Int? = nil
+    ) {
         self.tokenTracker = tokenTracker
         self.model = model
         self.workingDirectory = workingDirectory
+        self.maxContextMessages = Self.normalizeMessageLimit(maxContextMessages)
     }
 
     // MARK: - Public Methods
@@ -51,6 +58,10 @@ class ContextBuilder {
         var keepCount = 0
 
         for msg in reversedMessages {
+            if let maxContextMessages, keepCount >= maxContextMessages {
+                break
+            }
+
             let msgTokens = estimateMessageTokens(msg)
             if totalTokens + msgTokens > threshold, keepCount >= minimumMessageCount {
                 break
@@ -217,5 +228,10 @@ class ContextBuilder {
                 isStreaming: message.isStreaming
             )
         }
+    }
+
+    private static func normalizeMessageLimit(_ value: Int?) -> Int? {
+        guard let value, value > 0, value < 999 else { return nil }
+        return max(value, 1)
     }
 }

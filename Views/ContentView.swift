@@ -50,10 +50,9 @@ struct ContentView: View {
                 inputText: $inputText,
                 showingSettings: $showingSettings,
                 onSubmit: {
-                    Task {
-                        let text = inputText
-                        inputText = ""
-                        await agentEngine.processUserInput(text)
+                    let text = inputText
+                    inputText = ""
+                    agentEngine.submitUserInput(text) {
                         conversationManager.updateCurrentConversation(
                             messages: agentEngine.messages,
                             workingDirectory: agentEngine.workingDirectory
@@ -61,13 +60,12 @@ struct ContentView: View {
                     }
                 },
                 onNewChatSubmit: { text in
-                    Task {
-                        // 如果没有当前对话，创建新对话
-                        if conversationManager.currentConversation == nil {
-                            let newConversation = conversationManager.createNewConversation()
-                            agentEngine.loadConversation(newConversation)
-                        }
-                        await agentEngine.processUserInput(text)
+                    // 如果没有当前对话，创建新对话
+                    if conversationManager.currentConversation == nil {
+                        let newConversation = conversationManager.createNewConversation()
+                        agentEngine.loadConversation(newConversation)
+                    }
+                    agentEngine.submitUserInput(text) {
                         conversationManager.updateCurrentConversation(
                             messages: agentEngine.messages,
                             workingDirectory: agentEngine.workingDirectory
@@ -146,6 +144,11 @@ struct ContentView: View {
                     workingDirectory: agentEngine.workingDirectory
                 )
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .createNewConversation)) { _ in
+            let newConversation = conversationManager.createNewConversation()
+            agentEngine.workingDirectory = nil
+            agentEngine.loadConversation(newConversation)
         }
     }
 }

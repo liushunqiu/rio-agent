@@ -35,7 +35,7 @@ struct SettingsView: View {
     @Binding var multiAgentConfig: MultiAgentConfig
     @Environment(\.dismiss) var dismiss
     @State private var selectedTab: SettingsTab = .ai
-    @StateObject private var configSetManager = ConfigSetManager()
+    @ObservedObject private var configSetManager = ConfigSetManager.shared
 
     // Local state
     @State private var planningConfigSetId: UUID?
@@ -60,14 +60,9 @@ struct SettingsView: View {
         configuration.enableStreaming = enableStreaming
         configuration.maxContextMessages = maxContextMessages
 
-        if let data = try? JSONEncoder().encode(configuration) {
-            UserDefaults.standard.set(data, forKey: "ai_configuration")
-            let pName = planningConfigSet?.name ?? "未设置"
-            let eName = executionConfigSet?.name ?? "未设置"
-            RioLogger.config.info("💾 设置已保存 (规划: \(pName, privacy: .public), 执行: \(eName, privacy: .public))")
-        } else {
-            RioLogger.config.error("❌ 设置保存失败: 编码出错")
-        }
+        let pName = planningConfigSet?.name ?? "未设置"
+        let eName = executionConfigSet?.name ?? "未设置"
+        RioLogger.config.info("💾 设置已保存 (规划: \(pName, privacy: .public), 执行: \(eName, privacy: .public))")
     }
 
     var body: some View {
@@ -112,7 +107,7 @@ struct SettingsView: View {
                 planningConfigSetId = first.id
             }
         }
-        .onChange(of: configSetManager.configSets.count) { _ in
+        .onChange(of: configSetManager.configSets.count) {
             // Auto-select first config set if current selection is invalid
             if !configSetManager.configSets.contains(where: { $0.id == executionConfigSetId }) {
                 executionConfigSetId = configSetManager.configSets.first?.id

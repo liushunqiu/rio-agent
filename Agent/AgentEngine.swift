@@ -43,15 +43,20 @@ class AgentEngine: ObservableObject {
     /// 优化的 Token 追踪器（准确度提升 30%，性能提升 3-5x）
     private let tokenTracker = TokenTracker()
 
-    /// 对话压缩器（智能压缩历史消息）
-    private lazy var conversationCompactor: ConversationCompactor = {
-        return ConversationCompactor(aiService: planningService, model: configuration.planningModel)
-    }()
+    /// 对话压缩器（始终跟随最新规划模型配置）
+    private var conversationCompactor: ConversationCompactor {
+        ConversationCompactor(aiService: planningService, model: configuration.planningModel)
+    }
 
-    /// 上下文构建器（智能管理消息上下文和 Token 预算）
-    private lazy var contextBuilder: ContextBuilder = {
-        return ContextBuilder(tokenTracker: tokenTracker, model: configuration.executionModel, workingDirectory: workingDirectory)
-    }()
+    /// 上下文构建器（始终跟随最新执行模型和工作目录）
+    private var contextBuilder: ContextBuilder {
+        ContextBuilder(
+            tokenTracker: tokenTracker,
+            model: configuration.executionModel,
+            workingDirectory: workingDirectory,
+            maxContextMessages: configuration.maxContextMessages
+        )
+    }
 
     /// 工具执行器（管理工具调用的执行流程）
     private lazy var toolExecutor: ToolExecutor = {
@@ -95,9 +100,7 @@ class AgentEngine: ObservableObject {
 
     private func createService(configSetId: UUID?) -> AIService? {
         guard let id = configSetId,
-              let data = UserDefaults.standard.data(forKey: "config_sets_v2"),
-              let sets = try? JSONDecoder().decode([ConfigSet].self, from: data),
-              let configSet = sets.first(where: { $0.id == id }) else {
+              let configSet = ConfigSetManager.shared.configSet(for: id) else {
             return nil
         }
         let provider = configSet.provider
@@ -142,6 +145,7 @@ class AgentEngine: ObservableObject {
     func updateConfiguration(_ newConfig: AIConfiguration) {
         configuration = newConfig
         setupAIService()
+        setupMultiAgentEngine()
         saveConfiguration()
     }
 
@@ -317,6 +321,23 @@ class AgentEngine: ObservableObject {
 
     // MARK: - Public Methods
 
+    func submitUserInput(
+        _ input: String,
+        onComplete: @escaping @MainActor () -> Void = {}
+    ) {
+        guard !isProcessing else { return }
+
+        currentProcessingTask?.cancel()
+        currentProcessingTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.currentProcessingTask = nil
+                onComplete()
+            }
+            await self.processUserInput(input)
+        }
+    }
+
     func processUserInput(_ input: String) async {
         let trimmedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty else { return }
@@ -472,6 +493,8 @@ class AgentEngine: ObservableObject {
                     try await processConversationLoop(aiService: executionService)
                 }
             }
+        } catch is CancellationError {
+            RioLogger.agent.info("⏹️ 用户取消了当前任务")
         } catch {
             self.error = error.localizedDescription
         }
@@ -486,6 +509,8 @@ class AgentEngine: ObservableObject {
     func stopProcessing() {
         guard isProcessing else { return }
         isCancelled = true
+        currentProcessingTask?.cancel()
+        currentProcessingTask = nil
         isProcessing = false
         currentToolExecution = nil
 
@@ -967,20 +992,24 @@ class AgentEngine: ObservableObject {
         currentToolExecution = nil
         currentTaskPlan = nil
         pendingInitConfirmation = false
+        resetUsageTracking()
         memory.clearSession()
         clearActivePlan()
     }
     
     /// Auto-compact conversation when message count exceeds threshold
     private func autoCompactIfNeeded() async {
-        guard conversationCompactor.shouldCompact(messageCount: messages.count, threshold: 50) else {
+        let threshold = normalizedContextMessageLimit ?? 50
+        guard conversationCompactor.shouldCompact(messageCount: messages.count, threshold: threshold) else {
             return
         }
+
+        let keepRecent = min(max(threshold / 2, 10), 30)
 
         // Perform AI-powered compaction silently
         messages = await conversationCompactor.compact(
             messages: messages,
-            keepRecent: 30,
+            keepRecent: keepRecent,
             showNotification: false
         )
     }
@@ -999,6 +1028,9 @@ class AgentEngine: ObservableObject {
         workingDirectory = conversation.workingDirectory
         error = nil
         currentTaskPlan = nil
+        currentProcessingTask?.cancel()
+        currentProcessingTask = nil
+        resetUsageTracking()
     }
 
     func exportConversation() -> Conversation {
@@ -1076,6 +1108,12 @@ class AgentEngine: ObservableObject {
             self.error = "导出失败: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    private var normalizedContextMessageLimit: Int? {
+        let limit = configuration.maxContextMessages
+        guard limit > 0, limit < 999 else { return nil }
+        return limit
     }
 }
 

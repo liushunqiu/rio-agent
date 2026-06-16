@@ -324,7 +324,7 @@ struct ConfigSetEditorView: View {
     
     private func save() {
         let id = configSet?.id ?? UUID()
-        var newSet = ConfigSet(
+        let newSet = ConfigSet(
             id: id,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             provider: provider,

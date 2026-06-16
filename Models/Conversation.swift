@@ -229,13 +229,7 @@ struct AIConfiguration: Codable {
     // MARK: - ConfigSet Lookup
 
     private func lookupConfigSet(_ id: UUID?) -> ConfigSet? {
-        guard let id else { return nil }
-        let key = "config_sets_v2"
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let sets = try? JSONDecoder().decode([ConfigSet].self, from: data) else {
-            return nil
-        }
-        return sets.first { $0.id == id }
+        ConfigSetManager.shared.configSet(for: id)
     }
 
     var planningConfigSet: ConfigSet? { lookupConfigSet(planningConfigSetId) }

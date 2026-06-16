@@ -41,11 +41,11 @@ class ToolRegistry {
     }
 
     func getAllTools() -> [Tool] {
-        return Array(tools.values)
+        tools.values.sorted { $0.name < $1.name }
     }
 
     func getToolDefinitions() -> [[String: Any]] {
-        return tools.values.map { tool in
+        getAllTools().map { tool in
             var properties: [String: Any] = [:]
             var required: [String] = []
 

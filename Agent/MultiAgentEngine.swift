@@ -35,6 +35,8 @@ class MultiAgentEngine: ObservableObject {
     }
 
     private func setupServices() {
+        services.removeAll()
+
         if canCreateService(for: config.orchestrator.provider) {
             let apiKey = apiKeyStore[config.orchestrator.provider] ?? ""
             let baseURL = baseURLStore[config.orchestrator.provider] ?? ""

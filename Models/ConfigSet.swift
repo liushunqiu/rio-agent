@@ -50,6 +50,7 @@ struct ConfigSet: Identifiable, Codable {
 
 class ConfigSetManager: ObservableObject {
     static let shared = ConfigSetManager()
+    static let storageKey = "config_sets_v2"
     
     @Published var configSets: [ConfigSet] = []
     
@@ -72,6 +73,9 @@ class ConfigSetManager: ObservableObject {
     }
     
     func deleteConfigSet(id: UUID) {
+        if let configSet = configSets.first(where: { $0.id == id }) {
+            configSet.saveAPIKey("")
+        }
         configSets.removeAll { $0.id == id }
         saveToUserDefaults()
     }
@@ -83,16 +87,14 @@ class ConfigSetManager: ObservableObject {
     
     // MARK: - Persistence
     
-    private let userDefaultsKey = "config_sets_v2"
-    
     private func saveToUserDefaults() {
         if let data = try? JSONEncoder().encode(configSets) {
-            UserDefaults.standard.set(data, forKey: userDefaultsKey)
+            UserDefaults.standard.set(data, forKey: Self.storageKey)
         }
     }
     
     private func loadFromUserDefaults() {
-        if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
+        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
            let sets = try? JSONDecoder().decode([ConfigSet].self, from: data) {
             configSets = sets
         }
