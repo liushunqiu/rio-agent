@@ -317,6 +317,122 @@ struct ModelCapabilities {
     }
 }
 
+// MARK: - Model Pricing
+
+struct ModelPricing {
+    /// Cost per million input tokens (USD)
+    let inputPerMillion: Double
+    /// Cost per million output tokens (USD)
+    let outputPerMillion: Double
+    
+    /// Calculate cost for given token counts
+    func cost(promptTokens: Int, completionTokens: Int) -> Double {
+        let inputCost = Double(promptTokens) / 1_000_000.0 * inputPerMillion
+        let outputCost = Double(completionTokens) / 1_000_000.0 * outputPerMillion
+        return inputCost + outputCost
+    }
+}
+
+extension ModelCapabilities {
+    /// Get pricing information for a model (USD per million tokens)
+    /// Based on publicly available pricing as of June 2026
+    static func pricing(for model: String) -> ModelPricing {
+        let lowercased = model.lowercased()
+        
+        // Claude Models
+        if lowercased.contains("claude-sonnet-4") || lowercased.contains("claude-4") {
+            return ModelPricing(inputPerMillion: 3.0, outputPerMillion: 15.0)
+        }
+        if lowercased.contains("claude-3-opus") || lowercased.contains("claude-3.5-opus") || lowercased.contains("opus-4") {
+            return ModelPricing(inputPerMillion: 15.0, outputPerMillion: 75.0)
+        }
+        if lowercased.contains("claude-3-5-haiku") || lowercased.contains("claude-3.5-haiku") {
+            return ModelPricing(inputPerMillion: 0.80, outputPerMillion: 4.0)
+        }
+        if lowercased.contains("claude-3-haiku") {
+            return ModelPricing(inputPerMillion: 0.25, outputPerMillion: 1.25)
+        }
+        if lowercased.contains("claude-3-5-sonnet") || lowercased.contains("claude-3.5-sonnet") {
+            return ModelPricing(inputPerMillion: 3.0, outputPerMillion: 15.0)
+        }
+        
+        // OpenAI Models
+        if lowercased.contains("gpt-4o-mini") {
+            return ModelPricing(inputPerMillion: 0.15, outputPerMillion: 0.60)
+        }
+        if lowercased.contains("gpt-4o") {
+            return ModelPricing(inputPerMillion: 2.50, outputPerMillion: 10.0)
+        }
+        if lowercased.contains("gpt-4.1-mini") {
+            return ModelPricing(inputPerMillion: 0.40, outputPerMillion: 1.60)
+        }
+        if lowercased.contains("gpt-4.1") {
+            return ModelPricing(inputPerMillion: 2.0, outputPerMillion: 8.0)
+        }
+        if lowercased.contains("o3-mini") {
+            return ModelPricing(inputPerMillion: 1.10, outputPerMillion: 4.40)
+        }
+        if lowercased.contains("o3") {
+            return ModelPricing(inputPerMillion: 10.0, outputPerMillion: 40.0)
+        }
+        if lowercased.contains("o1") {
+            return ModelPricing(inputPerMillion: 15.0, outputPerMillion: 60.0)
+        }
+        
+        // DeepSeek Models (permanently reduced pricing)
+        if lowercased.contains("deepseek-v3") || lowercased.contains("deepseek-chat") {
+            return ModelPricing(inputPerMillion: 0.27, outputPerMillion: 1.10)
+        }
+        if lowercased.contains("deepseek-r1") || lowercased.contains("deepseek-reasoner") {
+            return ModelPricing(inputPerMillion: 0.55, outputPerMillion: 2.19)
+        }
+        if lowercased.contains("deepseek") {
+            return ModelPricing(inputPerMillion: 0.44, outputPerMillion: 0.87)
+        }
+        
+        // Gemini Models
+        if lowercased.contains("gemini-2.5-flash") || lowercased.contains("gemini-3-flash") {
+            return ModelPricing(inputPerMillion: 0.50, outputPerMillion: 3.0)
+        }
+        if lowercased.contains("gemini-2.5-pro") || lowercased.contains("gemini-3.1-pro") {
+            return ModelPricing(inputPerMillion: 1.25, outputPerMillion: 10.0)
+        }
+        if lowercased.contains("gemini-2.0-flash") {
+            return ModelPricing(inputPerMillion: 0.10, outputPerMillion: 0.40)
+        }
+        if lowercased.contains("gemini-1.5-pro") {
+            return ModelPricing(inputPerMillion: 1.25, outputPerMillion: 5.0)
+        }
+        if lowercased.contains("gemini-1.5-flash") {
+            return ModelPricing(inputPerMillion: 0.075, outputPerMillion: 0.30)
+        }
+        
+        // Qwen Models
+        if lowercased.contains("qwen-max") || lowercased.contains("qwen2.5-72b") {
+            return ModelPricing(inputPerMillion: 1.60, outputPerMillion: 4.80)
+        }
+        if lowercased.contains("qwen-plus") {
+            return ModelPricing(inputPerMillion: 0.40, outputPerMillion: 1.20)
+        }
+        if lowercased.contains("qwen-turbo") || lowercased.contains("qwen3.6-flash") {
+            return ModelPricing(inputPerMillion: 0.05, outputPerMillion: 0.20)
+        }
+        
+        // Kimi Models
+        if lowercased.contains("kimi-k2") || lowercased.contains("moonshot") {
+            return ModelPricing(inputPerMillion: 0.95, outputPerMillion: 4.0)
+        }
+        
+        // GLM Models
+        if lowercased.contains("glm-4") || lowercased.contains("glm-5") {
+            return ModelPricing(inputPerMillion: 0.70, outputPerMillion: 2.80)
+        }
+        
+        // Default (conservative estimate)
+        return ModelPricing(inputPerMillion: 2.0, outputPerMillion: 8.0)
+    }
+}
+
 // MARK: - Model Features Enum
 
 enum ModelFeature: String, CaseIterable {

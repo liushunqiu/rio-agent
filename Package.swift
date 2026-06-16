@@ -30,7 +30,8 @@ let package = Package(
                 "Tests",
                 "Resources",
                 "project.yml",
-                "Rio Agent.app"
+                "Rio Agent.app",
+                "OPTIMIZATION_ANALYSIS.md"
             ],
             sources: [
                 "App",

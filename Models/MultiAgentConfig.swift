@@ -191,6 +191,96 @@ struct MultiAgentConfig: Codable {
     }
 }
 
+// MARK: - Budget Worker Presets
+
+extension MultiAgentConfig {
+    /// 性价比最优 Worker 阵容——灵感来自 OpenRouter Fusion 测试结论：
+    /// 平价模型各司其职，整体效果可逼近高端模型，成本降低 80%+
+    ///
+    /// - 搜索 Agent: Gemini 2.0 Flash（信息检索能力强，极低价格）
+    /// - 代码 Agent: DeepSeek V3 / DeepSeek Chat（代码能力强，永久降价后性价比极高）
+    /// - 文件 Agent: Gemini 1.5 Flash（百万上下文窗口，文件操作友好）
+    static var budgetWorkers: [AgentConfig] {
+        [
+            AgentConfig(
+                name: "搜索 Agent",
+                role: .worker,
+                capability: .search,
+                provider: .openAICompatible,
+                model: "gemini-2.0-flash",
+                systemPrompt: "你是一个搜索助手。负责查找和整理信息。使用工具高效搜索，优先返回准确、结构化的结果。"
+            ),
+            AgentConfig(
+                name: "代码 Agent",
+                role: .worker,
+                capability: .code,
+                provider: .openAICompatible,
+                model: "deepseek-chat",
+                systemPrompt: "你是一个代码助手。负责代码分析、实现和调试。写出简洁、可维护的代码，遵循项目已有的代码风格。"
+            ),
+            AgentConfig(
+                name: "文件 Agent",
+                role: .worker,
+                capability: .file,
+                provider: .openAICompatible,
+                model: "gemini-1.5-flash",
+                systemPrompt: "你是一个文件助手。负责文件读写操作。精确匹配文件内容，避免破坏文件结构。"
+            )
+        ]
+    }
+
+    /// 高性能 Worker 阵容——使用各厂商旗舰模型
+    static var premiumWorkers: [AgentConfig] {
+        [
+            AgentConfig(
+                name: "搜索 Agent",
+                role: .worker,
+                capability: .search,
+                provider: .openAICompatible,
+                model: "gemini-2.5-pro",
+                systemPrompt: "你是一个搜索助手。负责查找和整理信息。"
+            ),
+            AgentConfig(
+                name: "代码 Agent",
+                role: .worker,
+                capability: .code,
+                provider: .claude,
+                model: "claude-sonnet-4-20250514",
+                systemPrompt: "你是一个代码助手。负责代码分析和实现。"
+            ),
+            AgentConfig(
+                name: "文件 Agent",
+                role: .worker,
+                capability: .file,
+                provider: .openAICompatible,
+                model: "gpt-4o",
+                systemPrompt: "你是一个文件助手。负责文件读写操作。"
+            )
+        ]
+    }
+
+    /// 获取预设配置列表（供 UI 展示）
+    static var availablePresets: [(name: String, description: String, workers: [AgentConfig])] {
+        [
+            (
+                name: "默认阵容",
+                description: "全部使用 Claude 3.5 Haiku，均衡稳定",
+                workers: defaultWorkers
+            ),
+            (
+                name: "性价比阵容",
+                description: "Gemini Flash + DeepSeek Chat + Gemini 1.5 Flash，成本降低 80%+",
+                workers: budgetWorkers
+            ),
+            (
+                name: "高性能阵容",
+                description: "Gemini Pro + Claude Sonnet 4 + GPT-4o，最强输出",
+                workers: premiumWorkers
+            )
+        ]
+    }
+}
+
 // MARK: - Router Configuration
 
 struct RouterConfig: Codable {

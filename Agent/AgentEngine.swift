@@ -582,6 +582,9 @@ class AgentEngine: ObservableObject {
                 throw error
             }
 
+            // Track token usage and cost
+            trackUsage(response.usage)
+
             // Flush any remaining buffered content
             await buffer.flush { content, thinking in
                 guard streamingIndex < messages.count else { return }
@@ -801,6 +804,15 @@ class AgentEngine: ObservableObject {
     /// Accumulated token usage from actual API responses
     private var accumulatedUsage: (promptTokens: Int, completionTokens: Int) = (0, 0)
 
+    /// Estimated total cost for current session (USD)
+    @Published var sessionCost: Double = 0.0
+
+    /// Reset tracking for a new conversation
+    private func resetUsageTracking() {
+        accumulatedUsage = (0, 0)
+        sessionCost = 0.0
+    }
+
     // MARK: - Context Management
 
     private func estimateTokens(_ text: String) -> Int {
@@ -855,11 +867,26 @@ class AgentEngine: ObservableObject {
         return total
     }
 
-    /// Track usage from an API response for more accurate token counting
+    /// Track usage from an API response and calculate running cost
     private func trackUsage(_ usage: AIResponse.Usage?) {
         guard let usage = usage else { return }
         accumulatedUsage.promptTokens += usage.promptTokens
         accumulatedUsage.completionTokens += usage.completionTokens
+        
+        // Calculate incremental cost using model pricing
+        let pricing = ModelCapabilities.pricing(for: configuration.executionModel)
+        sessionCost += pricing.cost(promptTokens: usage.promptTokens, completionTokens: usage.completionTokens)
+    }
+
+    /// Get a formatted summary of session token usage and cost
+    func getSessionUsageSummary() -> String {
+        let totalTokens = accumulatedUsage.promptTokens + accumulatedUsage.completionTokens
+        guard totalTokens > 0 else { return "" }
+        
+        let costUSD = sessionCost
+        let costCNY = costUSD * 7.25  // approximate CNY rate
+        
+        return "Tokens: \(accumulatedUsage.promptTokens) in / \(accumulatedUsage.completionTokens) out | ~$\(String(format: "%.4f", costUSD)) (≈¥\(String(format: "%.2f", costCNY)))"
     }
 
     /// Get the estimated total tokens used in this conversation
