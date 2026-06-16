@@ -138,7 +138,8 @@ struct SettingsView: View {
             compatibleApiKey: customSet?.loadAPIKey() ?? "",
             currentClaudeModel: claudeSet?.model ?? "",
             currentOpenAIModel: openAISet?.model ?? "",
-            currentCompatibleModel: customSet?.model ?? ""
+            currentCompatibleModel: customSet?.model ?? "",
+            allConfigSets: sets  // 传递所有配置集
         )
     }
 
@@ -225,9 +226,9 @@ struct SettingsView: View {
             )
             SettingsMetric(
                 title: "Multi-Agent",
-                value: multiAgentConfig.isEnabled ? "\(multiAgentConfig.workers.count) 个子 Agent" : "未启用",
+                value: "\(multiAgentConfig.workers.count) 个子 Agent",
                 icon: "person.3.fill",
-                tone: multiAgentConfig.isEnabled ? Theme.statusSuccess : Theme.textTertiary
+                tone: Theme.statusSuccess
             )
         }
     }
@@ -878,6 +879,7 @@ struct AIConfigInfo {
     let currentClaudeModel: String
     let currentOpenAIModel: String
     let currentCompatibleModel: String
+    let allConfigSets: [ConfigSet]  // 新增：所有配置集
 
     var availableProviders: [AIProvider] {
         var providers: [AIProvider] = []
@@ -905,6 +907,17 @@ struct AIConfigInfo {
         case .openAI: return currentOpenAIModel
         case .openAICompatible: return currentCompatibleModel
         }
+    }
+    
+    // 新增：获取指定提供商的所有配置集
+    func configSets(for provider: AIProvider) -> [ConfigSet] {
+        return allConfigSets.filter { $0.provider == provider }
+    }
+    
+    // 新增：获取指定提供商的所有可用模型
+    func availableModels(for provider: AIProvider) -> [String] {
+        let sets = configSets(for: provider)
+        return sets.map { $0.model }.filter { !$0.isEmpty }
     }
 }
 

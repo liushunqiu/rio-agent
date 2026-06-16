@@ -387,7 +387,7 @@ struct MainContentView: View {
             // Top bar
             TopBar(
                 showingSettings: $showingSettings,
-                isMultiAgentEnabled: agentEngine.multiAgentConfig.isEnabled,
+                isPipelineActive: true,
                 currentProvider: agentEngine.configuration.executionProvider
             )
 
@@ -455,7 +455,7 @@ struct MainContentView: View {
 
 struct TopBar: View {
     @Binding var showingSettings: Bool
-    var isMultiAgentEnabled: Bool = false
+    var isPipelineActive: Bool = true
     var currentProvider: AIProvider = .claude
 
     var body: some View {
@@ -477,11 +477,11 @@ struct TopBar: View {
                     .stroke(Theme.borderSubtle, lineWidth: 1)
             )
 
-            if isMultiAgentEnabled {
+            if isPipelineActive {
                 HStack(spacing: 5) {
-                    Image(systemName: "person.3.fill")
+                    Image(systemName: "arrow.triangle.branch")
                         .font(.system(size: 10))
-                    Text("Multi-Agent")
+                    Text("Pipeline")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .foregroundColor(Theme.accentPrimary)

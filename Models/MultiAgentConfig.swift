@@ -120,7 +120,6 @@ struct AgentConfig: Identifiable, Codable {
 // MARK: - Multi-Agent Configuration
 
 struct MultiAgentConfig: Codable {
-    var isEnabled: Bool
     var orchestrator: AgentConfig
     var workers: [AgentConfig]
     var maxParallelWorkers: Int
@@ -128,18 +127,19 @@ struct MultiAgentConfig: Codable {
     var maxTokens: Int
     var maxRetries: Int
     var enableCritic: Bool
+    var router: RouterConfig
 
     init(
-        isEnabled: Bool = false,
         orchestrator: AgentConfig? = nil,
         workers: [AgentConfig] = [],
         maxParallelWorkers: Int = 3,
         taskSplitStrategy: TaskSplitStrategy = .automatic,
         maxTokens: Int = 0,
         maxRetries: Int = 2,
-        enableCritic: Bool = true
+        enableCritic: Bool = true,
+        router: RouterConfig = RouterConfig()
     ) {
-        self.isEnabled = isEnabled
+        self.router = router
         self.orchestrator = orchestrator ?? AgentConfig(
             name: "主 Agent",
             role: .orchestrator,
@@ -189,6 +189,131 @@ struct MultiAgentConfig: Codable {
             )
         ]
     }
+}
+
+// MARK: - Router Configuration
+
+struct RouterConfig: Codable {
+    var enabled: Bool = false
+    var configSetId: UUID?
+    var model: String = ""
+    var maxTokens: Int = 128
+    var prompt: String = Self.defaultPrompt
+    
+    // Qwen3.5-4B 专用配置
+    var enableQwenRouter: Bool = false
+    var qwenBaseUrl: String = "http://localhost:8000"
+    var qwenModel: String = "Qwen/Qwen3.5-4B"
+    var disableThinking: Bool = true  // 路由层必须关闭思考模式
+    var temperature: Float = 0.7
+    var topP: Float = 0.80
+    var topK: Int = 20
+    var presencePenalty: Float = 1.5
+    
+    // 路由目标节点定义
+    var routingTargets: [RoutingTarget] = RoutingTarget.defaultTargets
+
+    static let defaultPrompt = """
+    你是一个任务路由器。分析用户输入，输出 JSON 决定如何处理。
+
+    {
+      "mode": "skip | process",
+      "confidence": 0.0-1.0,
+      "reasoning": "简短理由"
+    }
+
+    规则：
+    - skip: 问候、闲聊、身份介绍等无需工具调用的对话，直接简短回复即可
+    - process: 需要工具调用的任务（文件操作、代码修改、信息查询等），由后续规划层决定执行策略
+
+    只输出 JSON，不要额外文字。
+    """
+    
+    // Qwen3.5-4B 专用路由 Schema
+    static let qwenRoutingSchema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "target_node": [
+                "type": "string",
+                "enum": ["skip", "code_expert", "search_agent", "data_analyst", "chitchat", "process"]
+            ],
+            "extracted_params": [
+                "type": "object"
+            ],
+            "confidence": [
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0
+            ],
+            "reasoning": [
+                "type": "string"
+            ]
+        ],
+        "required": ["target_node"]
+    ]
+}
+
+// MARK: - 路由目标节点
+
+struct RoutingTarget: Codable, Identifiable {
+    let id: UUID
+    var name: String
+    var displayName: String
+    var description: String
+    var isEnabled: Bool
+    
+    init(
+        id: UUID = UUID(),
+        name: String,
+        displayName: String,
+        description: String,
+        isEnabled: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.displayName = displayName
+        self.description = description
+        self.isEnabled = isEnabled
+    }
+    
+    static var defaultTargets: [RoutingTarget] = [
+        RoutingTarget(
+            name: "skip",
+            displayName: "跳过",
+            description: "问候、闲聊、身份介绍等无需工具调用的对话",
+            isEnabled: true
+        ),
+        RoutingTarget(
+            name: "code_expert",
+            displayName: "代码专家",
+            description: "代码阅读、实现、调试、重构建议",
+            isEnabled: true
+        ),
+        RoutingTarget(
+            name: "search_agent",
+            displayName: "搜索代理",
+            description: "信息检索、资料整理、外部上下文收集",
+            isEnabled: true
+        ),
+        RoutingTarget(
+            name: "data_analyst",
+            displayName: "数据分析师",
+            description: "数据分析、图表生成、统计计算",
+            isEnabled: true
+        ),
+        RoutingTarget(
+            name: "chitchat",
+            displayName: "闲聊",
+            description: "日常对话、情感交流、非任务性交流",
+            isEnabled: true
+        ),
+        RoutingTarget(
+            name: "process",
+            displayName: "处理",
+            description: "需要工具调用的任务，由规划层决定执行策略",
+            isEnabled: true
+        )
+    ]
 }
 
 // MARK: - Task Split Strategy

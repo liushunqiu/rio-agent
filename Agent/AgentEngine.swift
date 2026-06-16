@@ -27,6 +27,7 @@ class AgentEngine: ObservableObject {
     let multiFileCoordinator = MultiFileCoordinator()
     private var planningService: AIService?
     private var executionService: AIService?
+    private var criticService: CriticService?
     var configuration: AIConfiguration
     var multiAgentConfig: MultiAgentConfig
     private var multiAgentEngine: MultiAgentEngine?
@@ -51,6 +52,15 @@ class AgentEngine: ObservableObject {
     private func setupAIService() {
         planningService = createService(configSetId: configuration.planningConfigSetId)
         executionService = createService(configSetId: configuration.executionConfigSetId)
+        setupCriticService()
+    }
+
+    private func setupCriticService() {
+        let service = createService(configSetId: configuration.planningConfigSetId)
+        criticService = CriticService(
+            aiService: service,
+            model: configuration.planningModel
+        )
     }
 
     private func createService(configSetId: UUID?) -> AIService? {
@@ -80,24 +90,19 @@ class AgentEngine: ObservableObject {
     }
 
     private func setupMultiAgentEngine() {
-        if multiAgentConfig.isEnabled {
-            let engine = MultiAgentEngine(config: multiAgentConfig, toolRegistry: toolRegistry)
-            // Pass API keys for multi-agent services
-            var keys: [AIProvider: String] = [:]
-            var urls: [AIProvider: String] = [:]
-            let configManager = ConfigSetManager.shared
-            for configSet in configManager.configSets {
-                let key = configSet.loadAPIKey()
-                if !key.isEmpty {
-                    keys[configSet.provider] = key
-                    urls[configSet.provider] = configSet.baseURL
-                }
+        let engine = MultiAgentEngine(config: multiAgentConfig, toolRegistry: toolRegistry, criticService: criticService)
+        var keys: [AIProvider: String] = [:]
+        var urls: [AIProvider: String] = [:]
+        let configManager = ConfigSetManager.shared
+        for configSet in configManager.configSets {
+            let key = configSet.loadAPIKey()
+            if !key.isEmpty {
+                keys[configSet.provider] = key
+                urls[configSet.provider] = configSet.baseURL
             }
-            engine.configureAPIKeys(keys, baseUrls: urls)
-            multiAgentEngine = engine
-        } else {
-            multiAgentEngine = nil
         }
+        engine.configureAPIKeys(keys, baseUrls: urls)
+        multiAgentEngine = engine
     }
 
     func updateConfiguration(_ newConfig: AIConfiguration) {
@@ -192,6 +197,34 @@ class AgentEngine: ObservableObject {
             }
             return
         }
+
+        // MARK: - Router interception (本地路由模型前置拦截)
+        var routerSkip = false
+        if multiAgentConfig.router.enabled,
+           let configSetId = multiAgentConfig.router.configSetId,
+           let routerService = createService(configSetId: configSetId) {
+            let routerConfig = multiAgentConfig.router
+            let model = routerConfig.model.isEmpty ? configuration.executionModel : routerConfig.model
+            if let decision = await RouterService.route(
+                input: trimmedInput,
+                service: routerService,
+                model: model,
+                config: routerConfig
+            ) {
+                switch decision {
+                case .skip(let reason):
+                    let userMessage = Message.user(input)
+                    messages.append(userMessage)
+                    onUserMessageAdded?()
+                    let response = Message.assistant(reason)
+                    messages.append(response)
+                    routerSkip = true
+                case .routeToTarget(let target, _, let confidence, _):
+                    RioLogger.service.info("路由决策: \(target, privacy: .public) (置信度: \(confidence, privacy: .public))")
+                }
+            }
+        }
+        guard !routerSkip else { return }
         
         // Analyze task complexity and generate plan if needed
         let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: planningService, model: configuration.planningModel)
@@ -236,9 +269,11 @@ class AgentEngine: ObservableObject {
         }
 
         do {
-            if multiAgentConfig.isEnabled,
-               let multiAgentEngine = multiAgentEngine,
-               MultiAgentRouting.shouldUseMultiAgent(for: trimmedInput, analysis: taskAnalysis) {
+            // Unified pipeline: Planner complexity decides execution strategy
+            let useDAG = taskAnalysis.complexity == .complex || taskAnalysis.complexity == .veryComplex
+
+            if useDAG,
+               let multiAgentEngine = multiAgentEngine {
                 try await processWithMultiAgent(input: input, engine: multiAgentEngine)
             } else {
                 guard let executionService else {
@@ -626,6 +661,21 @@ class AgentEngine: ObservableObject {
                     }
                 }
 
+                // When consecutive errors accumulate, escalate to Critic for deeper analysis
+                if consecutiveErrors >= 2, let criticService {
+                    let errorMessages = results.filter { $0.status == .error }.compactMap { $0.error }
+                    if !errorMessages.isEmpty {
+                        let taskContext = activePlan.first ?? memory.session.currentTask ?? ""
+                        let criticFeedback = await criticService.analyze(
+                            task: taskContext,
+                            errors: errorMessages,
+                            output: messages.last?.content ?? "",
+                            systemPrompt: nil
+                        )
+                        reflectionContent += "\n\n[Critic Analysis]\n\(criticFeedback)"
+                    }
+                }
+
                 let resultMessage = Message(
                     role: .user,
                     content: reflectionContent.isEmpty ? "" : "[Tool Execution Results with Analysis]",
@@ -706,6 +756,21 @@ class AgentEngine: ObservableObject {
                 for (index, toolCall) in toolCalls.enumerated() {
                     if index < results.count && results[index].status == .error {
                         reflectionContent += generateErrorReflection(toolCall: toolCall, result: results[index])
+                    }
+                }
+
+                // When consecutive errors accumulate, escalate to Critic for deeper analysis
+                if consecutiveErrors >= 2, let criticService {
+                    let errorMessages = results.filter { $0.status == .error }.compactMap { $0.error }
+                    if !errorMessages.isEmpty {
+                        let taskContext = activePlan.first ?? memory.session.currentTask ?? ""
+                        let criticFeedback = await criticService.analyze(
+                            task: taskContext,
+                            errors: errorMessages,
+                            output: messages.last?.content ?? "",
+                            systemPrompt: nil
+                        )
+                        reflectionContent += "\n\n[Critic Analysis]\n\(criticFeedback)"
                     }
                 }
 

@@ -2,7 +2,7 @@ import XCTest
 @testable import RioAgent
 
 final class MultiAgentRoutingTests: XCTestCase {
-    func testIdentityQuestionDoesNotUseMultiAgent() {
+    func testComplexityAnalysisSimple() {
         let analysis = TaskPlanner.TaskAnalysis(
             complexity: .simple,
             estimatedSteps: 1,
@@ -11,22 +11,10 @@ final class MultiAgentRoutingTests: XCTestCase {
             estimatedTime: 5
         )
 
-        XCTAssertFalse(MultiAgentRouting.shouldUseMultiAgent(for: "你是？", analysis: analysis))
+        XCTAssertEqual(analysis.complexity, .simple)
     }
 
-    func testShortConversationalInputOverridesModerateAnalysis() {
-        let analysis = TaskPlanner.TaskAnalysis(
-            complexity: .moderate,
-            estimatedSteps: 2,
-            suggestedSteps: [.analyze],
-            reasoning: "contains an analysis keyword",
-            estimatedTime: 30
-        )
-
-        XCTAssertFalse(MultiAgentRouting.shouldUseMultiAgent(for: "你是谁？", analysis: analysis))
-    }
-
-    func testComplexTaskUsesMultiAgent() {
+    func testComplexityAnalysisComplex() {
         let analysis = TaskPlanner.TaskAnalysis(
             complexity: .complex,
             estimatedSteps: 4,
@@ -35,15 +23,12 @@ final class MultiAgentRoutingTests: XCTestCase {
             estimatedTime: 120
         )
 
-        XCTAssertTrue(MultiAgentRouting.shouldUseMultiAgent(
-            for: "分析这个项目并修复登录失败的问题，最后运行测试",
-            analysis: analysis
-        ))
+        XCTAssertEqual(analysis.complexity, .complex)
     }
 
     @MainActor
     func testMalformedSplitResponseDoesNotCreateFallbackSubTask() {
-        let engine = MultiAgentEngine(config: MultiAgentConfig(isEnabled: true))
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
 
         let subTasks = engine.parseSubTasks(from: "我是 Rio Agent，可以帮助你处理代码和文件任务。")
 

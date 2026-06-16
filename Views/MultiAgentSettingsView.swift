@@ -4,7 +4,6 @@ struct MultiAgentSettingsView: View {
     @Binding var config: MultiAgentConfig
     let aiConfig: AIConfigInfo
 
-    @State private var isEnabled: Bool
     @State private var orchestratorProvider: AIProvider
     @State private var orchestratorModel: String
     @State private var orchestratorPrompt: String
@@ -16,13 +15,25 @@ struct MultiAgentSettingsView: View {
     @State private var showingAddWorker = false
     @State private var editingWorker: AgentConfig?
 
+    @State private var routerEnabled: Bool
+    @State private var routerConfigSetId: UUID?
+    @State private var routerModel: String
+    @State private var routerPrompt: String
+    
+    // Qwen3.5-4B 专用配置状态
+    @State private var enableQwenRouter: Bool
+    @State private var qwenBaseUrl: String
+    @State private var qwenModel: String
+    @State private var disableThinking: Bool
+    @State private var qwenTemperature: Float
+    @State private var qwenTopP: Float
+    @State private var qwenTopK: Int
+    @State private var qwenPresencePenalty: Float
+
     init(config: Binding<MultiAgentConfig>, aiConfig: AIConfigInfo) {
         self._config = config
         self.aiConfig = aiConfig
         let initial = config.wrappedValue
-        let canUseMultiAgent = aiConfig.hasAnyProvider
-
-        self._isEnabled = State(initialValue: initial.isEnabled && canUseMultiAgent)
         let validProvider = aiConfig.availableProviders.contains(initial.orchestrator.provider)
             ? initial.orchestrator.provider
             : aiConfig.availableProviders.first ?? .claude
@@ -51,10 +62,23 @@ struct MultiAgentSettingsView: View {
         self._taskStrategy = State(initialValue: initial.taskSplitStrategy)
         self._maxRetries = State(initialValue: initial.maxRetries)
         self._enableCritic = State(initialValue: initial.enableCritic)
+        self._routerEnabled = State(initialValue: initial.router.enabled)
+        self._routerConfigSetId = State(initialValue: initial.router.configSetId)
+        self._routerModel = State(initialValue: initial.router.model)
+        self._routerPrompt = State(initialValue: initial.router.prompt)
+        
+        // Qwen3.5-4B 专用配置初始化
+        self._enableQwenRouter = State(initialValue: initial.router.enableQwenRouter)
+        self._qwenBaseUrl = State(initialValue: initial.router.qwenBaseUrl)
+        self._qwenModel = State(initialValue: initial.router.qwenModel)
+        self._disableThinking = State(initialValue: initial.router.disableThinking)
+        self._qwenTemperature = State(initialValue: initial.router.temperature)
+        self._qwenTopP = State(initialValue: initial.router.topP)
+        self._qwenTopK = State(initialValue: initial.router.topK)
+        self._qwenPresencePenalty = State(initialValue: initial.router.presencePenalty)
     }
 
     private func syncToConfig() {
-        config.isEnabled = isEnabled
         config.orchestrator.provider = orchestratorProvider
         config.orchestrator.model = orchestratorModel
         config.orchestrator.systemPrompt = orchestratorPrompt
@@ -63,6 +87,20 @@ struct MultiAgentSettingsView: View {
         config.taskSplitStrategy = taskStrategy
         config.maxRetries = maxRetries
         config.enableCritic = enableCritic
+        config.router.enabled = routerEnabled
+        config.router.configSetId = routerConfigSetId
+        config.router.model = routerModel
+        config.router.prompt = routerPrompt
+        
+        // 同步 Qwen3.5-4B 专用配置
+        config.router.enableQwenRouter = enableQwenRouter
+        config.router.qwenBaseUrl = qwenBaseUrl
+        config.router.qwenModel = qwenModel
+        config.router.disableThinking = disableThinking
+        config.router.temperature = qwenTemperature
+        config.router.topP = qwenTopP
+        config.router.topK = qwenTopK
+        config.router.presencePenalty = qwenPresencePenalty
     }
 
     private var canEnable: Bool {
@@ -81,10 +119,10 @@ struct MultiAgentSettingsView: View {
                 )
                 MultiAgentMetric(
                     title: "工作模式",
-                    value: isEnabled && canEnable ? "协作" : "单 Agent",
-                    detail: isEnabled && canEnable ? "编排器会分派子任务" : "主会话直接执行",
-                    icon: "person.3.fill",
-                    tone: isEnabled && canEnable ? Theme.accentPrimary : Theme.textTertiary
+                    value: "自动流水线",
+                    detail: "由规划层按复杂度自动选择执行策略",
+                    icon: "arrow.triangle.branch",
+                    tone: Theme.accentPrimary
                 )
                 MultiAgentMetric(
                     title: "并行上限",
@@ -95,22 +133,11 @@ struct MultiAgentSettingsView: View {
                 )
             }
 
-            SettingsSection(title: "协作入口", icon: "switch.2") {
+            SettingsSection(title: "流水线配置", icon: "switch.2") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Toggle(isOn: $isEnabled) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("启用 Multi-Agent")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(Theme.textPrimary)
-                            Text(canEnable ? "复杂任务会先交给主 Agent 规划，再分派给子 Agent 并行处理" : "需要先在 AI 配置里启用至少一个提供商")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.textTertiary)
-                        }
-                    }
-                    .toggleStyle(.switch)
-                    .tint(Theme.accentPrimary)
-                    .disabled(!canEnable)
-                    .onChange(of: isEnabled) { _, _ in syncToConfig() }
+                    Text("Router → Planner → Executor → Critic 四层流水线始终启用。简单任务由单 Agent 直接执行（带 Critic 重试），复杂任务自动拆分为 DAG 并行执行。")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
 
                     ProviderDependencyStrip(aiConfig: aiConfig)
 
@@ -122,7 +149,7 @@ struct MultiAgentSettingsView: View {
                 }
             }
 
-            if isEnabled && canEnable {
+            if canEnable {
                 OrchestratorSection(
                     provider: $orchestratorProvider,
                     model: $orchestratorModel,
@@ -199,9 +226,310 @@ struct MultiAgentSettingsView: View {
                         }
                     }
                 }
+
+                SettingsSection(title: "路由配置", icon: "arrow.triangle.branch") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle(isOn: $routerEnabled) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("启用本地路由模型")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(Theme.textPrimary)
+                                Text("使用轻量模型前置判断任务类型，拦截寒暄、分配单/多 Agent 模式，降低 API 成本")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.textTertiary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .tint(Theme.accentPrimary)
+                        .onChange(of: routerEnabled) { _, _ in syncToConfig() }
+
+                        if routerEnabled {
+                            VStack(alignment: .leading, spacing: 10) {
+                                let configSets = ConfigSetManager.shared.configSets
+                                if configSets.isEmpty {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.statusWarning)
+                                        Text("暂无可用模型端点，请先在 AI 配置中添加")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.textTertiary)
+                                    }
+                                    .padding(8)
+                                    .background(Theme.statusWarning.opacity(0.08))
+                                    .cornerRadius(Theme.radiusSM)
+                                } else {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("模型端点")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundColor(Theme.textTertiary)
+                                        ForEach(configSets) { cs in
+                                            HStack(spacing: 8) {
+                                                Button {
+                                                    routerConfigSetId = cs.id
+                                                    syncToConfig()
+                                                } label: {
+                                                    HStack(spacing: 8) {
+                                                        Image(systemName: routerConfigSetId == cs.id ? "circle.fill" : "circle")
+                                                            .font(.system(size: 10))
+                                                            .foregroundColor(routerConfigSetId == cs.id ? Theme.accentPrimary : Theme.textTertiary)
+                                                        Text(cs.name)
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(Theme.textPrimary)
+                                                        Text(cs.model)
+                                                            .font(.system(size: 10, design: .monospaced))
+                                                            .foregroundColor(Theme.textTertiary)
+                                                    }
+                                                    .padding(.horizontal, 10)
+                                                    .padding(.vertical, 7)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                                    .background(routerConfigSetId == cs.id ? Theme.bgTertiary : Theme.bgInput)
+                                                    .cornerRadius(Theme.radiusSM)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                                            .stroke(routerConfigSetId == cs.id ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+                                                    )
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("模型名称")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(Theme.textTertiary)
+                                    TextField("例如: qwen3.5:4b 或 qwen3.5-4b", text: $routerModel)
+                                        .textFieldStyle(.plain)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundColor(Theme.textPrimary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 7)
+                                        .background(Theme.bgInput)
+                                        .cornerRadius(Theme.radiusMD)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                                        )
+                                        .onChange(of: routerModel) { _, _ in syncToConfig() }
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("路由提示词")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(Theme.textTertiary)
+                                    TextEditor(text: $routerPrompt)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(Theme.textPrimary)
+                                        .scrollContentBackground(.hidden)
+                                        .frame(height: 100)
+                                        .padding(8)
+                                        .background(Theme.bgInput)
+                                        .cornerRadius(Theme.radiusMD)
+                                        .onChange(of: routerPrompt) { _, _ in syncToConfig() }
+                                }
+
+                                HStack(spacing: 6) {
+                                    Image(systemName: "info.circle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.accentSecondary)
+                                    Text("推荐使用 Ollama + Qwen3.5-4B 作为路由模型，兼顾速度与准确率")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.textTertiary)
+                                }
+                                .padding(8)
+                                .background(Theme.accentSecondary.opacity(0.06))
+                                .cornerRadius(Theme.radiusSM)
+                                
+                                // Qwen3.5-4B 专用配置部分
+                                Divider()
+                                    .padding(.vertical, 8)
+                                
+                                Toggle(isOn: $enableQwenRouter) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("启用 Qwen3.5-4B 专用路由器")
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundColor(Theme.textPrimary)
+                                        Text("使用 vLLM 部署的 Qwen3.5-4B 作为专用路由层，支持结构化 JSON 输出和多模态路由")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Theme.textTertiary)
+                                    }
+                                }
+                                .toggleStyle(.switch)
+                                .tint(Theme.accentPrimary)
+                                .onChange(of: enableQwenRouter) { _, _ in syncToConfig() }
+                                
+                                if enableQwenRouter {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        // vLLM 服务地址
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("vLLM 服务地址")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(Theme.textTertiary)
+                                            TextField("http://localhost:8000", text: $qwenBaseUrl)
+                                                .textFieldStyle(.plain)
+                                                .font(.system(size: 12, design: .monospaced))
+                                                .foregroundColor(Theme.textPrimary)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 7)
+                                                .background(Theme.bgInput)
+                                                .cornerRadius(Theme.radiusMD)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                                                )
+                                                .onChange(of: qwenBaseUrl) { _, _ in syncToConfig() }
+                                        }
+                                        
+                                        // Qwen 模型名称
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("模型名称")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(Theme.textTertiary)
+                                            TextField("Qwen/Qwen3.5-4B", text: $qwenModel)
+                                                .textFieldStyle(.plain)
+                                                .font(.system(size: 12, design: .monospaced))
+                                                .foregroundColor(Theme.textPrimary)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 7)
+                                                .background(Theme.bgInput)
+                                                .cornerRadius(Theme.radiusMD)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                                                )
+                                                .onChange(of: qwenModel) { _, _ in syncToConfig() }
+                                        }
+                                        
+                                        // 关闭思考模式开关
+                                        Toggle(isOn: $disableThinking) {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text("关闭思考模式")
+                                                    .font(.system(size: 13, weight: .medium))
+                                                    .foregroundColor(Theme.textPrimary)
+                                                Text("路由任务不需要深度思考，关闭可大幅提升响应速度并节省 Token")
+                                                    .font(.system(size: 11))
+                                                    .foregroundColor(Theme.textTertiary)
+                                            }
+                                        }
+                                        .toggleStyle(.switch)
+                                        .tint(Theme.accentPrimary)
+                                        .onChange(of: disableThinking) { _, _ in syncToConfig() }
+                                        
+                                        // 采样参数配置
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Text("采样参数")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(Theme.textTertiary)
+                                            
+                                            HStack(spacing: 12) {
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("Temperature")
+                                                        .font(.system(size: 10))
+                                                        .foregroundColor(Theme.textTertiary)
+                                                    TextField("0.7", value: $qwenTemperature, format: .number)
+                                                        .textFieldStyle(.plain)
+                                                        .font(.system(size: 12, design: .monospaced))
+                                                        .foregroundColor(Theme.textPrimary)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 5)
+                                                        .background(Theme.bgInput)
+                                                        .cornerRadius(Theme.radiusSM)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                                                        )
+                                                        .onChange(of: qwenTemperature) { _, _ in syncToConfig() }
+                                                }
+                                                
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("Top P")
+                                                        .font(.system(size: 10))
+                                                        .foregroundColor(Theme.textTertiary)
+                                                    TextField("0.80", value: $qwenTopP, format: .number)
+                                                        .textFieldStyle(.plain)
+                                                        .font(.system(size: 12, design: .monospaced))
+                                                        .foregroundColor(Theme.textPrimary)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 5)
+                                                        .background(Theme.bgInput)
+                                                        .cornerRadius(Theme.radiusSM)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                                                        )
+                                                        .onChange(of: qwenTopP) { _, _ in syncToConfig() }
+                                                }
+                                                
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("Top K")
+                                                        .font(.system(size: 10))
+                                                        .foregroundColor(Theme.textTertiary)
+                                                    TextField("20", value: $qwenTopK, format: .number)
+                                                        .textFieldStyle(.plain)
+                                                        .font(.system(size: 12, design: .monospaced))
+                                                        .foregroundColor(Theme.textPrimary)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 5)
+                                                        .background(Theme.bgInput)
+                                                        .cornerRadius(Theme.radiusSM)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                                                        )
+                                                        .onChange(of: qwenTopK) { _, _ in syncToConfig() }
+                                                }
+                                                
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("Presence Penalty")
+                                                        .font(.system(size: 10))
+                                                        .foregroundColor(Theme.textTertiary)
+                                                    TextField("1.5", value: $qwenPresencePenalty, format: .number)
+                                                        .textFieldStyle(.plain)
+                                                        .font(.system(size: 12, design: .monospaced))
+                                                        .foregroundColor(Theme.textPrimary)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 5)
+                                                        .background(Theme.bgInput)
+                                                        .cornerRadius(Theme.radiusSM)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                                                        )
+                                                        .onChange(of: qwenPresencePenalty) { _, _ in syncToConfig() }
+                                                }
+                                            }
+                                        }
+                                        
+                                        // 使用说明
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("部署说明")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(Theme.textTertiary)
+                                            
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text("1. 安装 vLLM: `uv pip install vllm --torch-backend=auto`")
+                                                Text("2. 启动服务: `vllm serve Qwen/Qwen3.5-4B --port 8000 --max-model-len 262144 --enable-auto-tool-choice --tool-call-parser qwen3_coder`")
+                                                Text("3. 路由层会自动关闭思考模式，使用 guided_json 约束输出格式")
+                                                Text("4. 支持多模态路由：可直接传入图片进行视觉意图判断")
+                                            }
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(Theme.textSecondary)
+                                            .padding(8)
+                                            .background(Theme.bgTertiary)
+                                            .cornerRadius(Theme.radiusSM)
+                                        }
+                                    }
+                                    .padding(.leading, 2)
+                                }
+                            }
+                            .padding(.leading, 2)
+                        }
+                    }
+                }
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: isEnabled)
         .sheet(isPresented: $showingAddWorker) {
             AddWorkerSheet(aiConfig: aiConfig) { newWorker in
                 workers.append(newWorker)
@@ -449,10 +777,25 @@ struct AgentModelSelector: View {
 
     private var suggestedModels: [ModelChoice] {
         var choices: [ModelChoice] = []
-        let current = aiConfig.currentModel(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if !current.isEmpty {
-            choices.append(ModelChoice(id: current, label: "当前配置: \(current)"))
+        
+        // 获取当前提供商的所有配置集
+        let configSets = aiConfig.configSets(for: provider)
+        
+        // 添加所有配置集中的模型
+        for configSet in configSets {
+            let modelName = configSet.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !modelName.isEmpty && !choices.contains(where: { $0.id == modelName }) {
+                let label = configSet.name.isEmpty ? modelName : "\(configSet.name): \(modelName)"
+                choices.append(ModelChoice(id: modelName, label: label))
+            }
+        }
+        
+        // 如果没有找到配置集，回退到当前配置
+        if choices.isEmpty {
+            let current = aiConfig.currentModel(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !current.isEmpty {
+                choices.append(ModelChoice(id: current, label: "当前配置: \(current)"))
+            }
         }
 
         if provider != .openAICompatible {

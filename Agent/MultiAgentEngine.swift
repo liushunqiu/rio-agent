@@ -1,44 +1,6 @@
 import Foundation
 import Combine
 
-// MARK: - Routing (Layer 1: Cost Control)
-
-enum MultiAgentRouting {
-    static func shouldUseMultiAgent(for input: String, analysis: TaskPlanner.TaskAnalysis) -> Bool {
-        let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return false }
-        guard !isConversationalInput(normalized) else { return false }
-
-        switch analysis.complexity {
-        case .simple:
-            return false
-        case .moderate, .complex, .veryComplex:
-            return true
-        }
-    }
-
-    static func isConversationalInput(_ input: String) -> Bool {
-        let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowercased = normalized.lowercased()
-        let trimmedPunctuation = lowercased.trimmingCharacters(in: CharacterSet(charactersIn: "？?！!。.,， "))
-
-        let exactMatches: Set<String> = [
-            "你是", "你是谁", "你是?", "你是谁?",
-            "who are you", "hi", "hello", "hey",
-            "你好", "您好", "早上好", "下午好", "晚上好"
-        ]
-        if exactMatches.contains(trimmedPunctuation) { return true }
-
-        let shortIdentityQuestions = ["你是", "你是谁", "你叫什么", "who are you", "what are you"]
-        if normalized.count <= 12,
-           shortIdentityQuestions.contains(where: { lowercased.contains($0) }) {
-            return true
-        }
-
-        return false
-    }
-}
-
 // MARK: - Multi-Agent Engine (Layers 2-4)
 
 @MainActor
@@ -52,13 +14,15 @@ class MultiAgentEngine: ObservableObject {
     private var config: MultiAgentConfig
     private var apiKeyStore: [AIProvider: String] = [:]
     private var baseURLStore: [AIProvider: String] = [:]
+    private let criticService: CriticService?
 
     /// Cached project context injected into every Worker
     private var projectContext: String = ""
 
-    init(config: MultiAgentConfig, toolRegistry: ToolRegistry = .shared) {
+    init(config: MultiAgentConfig, toolRegistry: ToolRegistry = .shared, criticService: CriticService? = nil) {
         self.config = config
         self.toolRegistry = toolRegistry
+        self.criticService = criticService
         setupServices()
     }
 
@@ -106,10 +70,6 @@ class MultiAgentEngine: ObservableObject {
     // MARK: - Main Processing Pipeline
 
     func processTask(_ task: String) async -> String {
-        guard config.isEnabled else {
-            return await processSingleAgent(task)
-        }
-
         isProcessing = true
         error = nil
 
@@ -174,10 +134,6 @@ class MultiAgentEngine: ObservableObject {
             isProcessing = false
             return "处理失败: \(error.localizedDescription)"
         }
-    }
-
-    private func processSingleAgent(_ task: String) async -> String {
-        return "单 Agent 模式: \(task)"
     }
 
     // MARK: - Layer 2: Planner — Project Context Builder
@@ -600,83 +556,15 @@ class MultiAgentEngine: ObservableObject {
         output: String,
         worker: AgentConfig
     ) async -> String {
-        // Use the orchestrator service as the Critic (stronger model reviews weaker worker output)
-        guard let orchestratorService = services[config.orchestrator.id] else {
-            return generateFallbackCriticFeedback(errors: errors)
+        guard let criticService else {
+            return CriticService(aiService: nil, model: "").fallbackFeedback(errors: errors)
         }
-
-        let criticPrompt = buildCriticPrompt(subTask: subTask, errors: errors, output: output, worker: worker)
-        let messages = [Message.system(criticPrompt)]
-
-        do {
-            let response = try await orchestratorService.sendMessage(
-                messages, tools: [], model: config.orchestrator.model, maxTokens: 2000
-            )
-            return response.content ?? generateFallbackCriticFeedback(errors: errors)
-        } catch {
-            return generateFallbackCriticFeedback(errors: errors)
-        }
-    }
-
-    private func buildCriticPrompt(
-        subTask: SubTask,
-        errors: [String],
-        output: String,
-        worker: AgentConfig
-    ) -> String {
-        let truncatedOutput = output.count > 3000 ? String(output.prefix(3000)) + "\n[... 已截断 ...]" : output
-
-        return """
-        你是一个代码审查专家（Critic）。一个子 Agent 在执行任务时遇到了错误。请分析错误原因并给出具体的修复建议。
-
-        <original_task>
-        \(subTask.description)
-        </original_task>
-
-        <worker_system_prompt>
-        \(worker.systemPrompt)
-        </worker_system_prompt>
-
-        <execution_output>
-        \(truncatedOutput)
-        </execution_output>
-
-        <errors>
-        \(errors.joined(separator: "\n"))
-        </errors>
-
-        请分析：
-        1. 错误的根本原因是什么？（路径错误、权限问题、逻辑错误、依赖缺失等）
-        2. 具体的修复建议（下一步应该怎么做）
-        3. 需要避免的常见陷阱
-
-        输出简洁的修复指导，这将作为子 Agent 下一次尝试的补充指令。不要写代码，只写指导。
-        """
-    }
-
-    /// Fallback critic feedback when the orchestrator service is unavailable.
-    private func generateFallbackCriticFeedback(errors: [String]) -> String {
-        var feedback = "执行过程中遇到以下错误，请逐一分析并修复：\n\n"
-        for (i, error) in errors.enumerated() {
-            feedback += "\(i + 1). \(error)\n"
-
-            // Pattern-based suggestions (similar to AgentEngine's error reflection)
-            let lower = error.lowercased()
-            if lower.contains("file not found") || lower.contains("no such file") {
-                feedback += "   → 建议：先用 find_files 搜索文件名，或用 list_directory 确认目录存在\n"
-            } else if lower.contains("permission denied") {
-                feedback += "   → 建议：检查文件权限 (ls -la)，可能需要用户确认\n"
-            } else if lower.contains("old_text") && (lower.contains("not found") || lower.contains("no match")) {
-                feedback += "   → 建议：先用 read_file 读取文件最新内容，确认 old_text 精确匹配\n"
-            } else if lower.contains("command not found") {
-                feedback += "   → 建议：检查命令是否已安装 (which <cmd>)\n"
-            } else if lower.contains("syntax error") || lower.contains("parse error") {
-                feedback += "   → 建议：用 read_file 检查最近修改的文件，找到并修复语法错误\n"
-            } else if lower.contains("module") && lower.contains("not found") {
-                feedback += "   → 建议：运行包管理器安装依赖\n"
-            }
-        }
-        return feedback
+        return await criticService.analyze(
+            task: subTask.description,
+            errors: errors,
+            output: output,
+            systemPrompt: worker.systemPrompt
+        )
     }
 
     // MARK: - Result Synthesis (enhanced with execution metadata)
