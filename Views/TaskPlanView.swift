@@ -86,6 +86,7 @@ struct DarkStatusBadge: View {
         case .planning: return "doc.text"
         case .executing: return "gear"
         case .synthesizing: return "arrow.triangle.merge"
+        case .verifying: return "checkmark.shield"
         case .completed: return "checkmark"
         case .failed: return "xmark"
         }
@@ -96,6 +97,7 @@ struct DarkStatusBadge: View {
         case .planning: return "规划中"
         case .executing: return "执行中"
         case .synthesizing: return "汇总中"
+        case .verifying: return "验证中"
         case .completed: return "已完成"
         case .failed: return "失败"
         }
@@ -106,6 +108,7 @@ struct DarkStatusBadge: View {
         case .planning: return Theme.statusInfo
         case .executing: return Theme.statusWarning
         case .synthesizing: return Theme.accentPrimary
+        case .verifying: return Theme.accentSecondary
         case .completed: return Theme.statusSuccess
         case .failed: return Theme.statusError
         }
@@ -167,6 +170,16 @@ struct DarkSubTaskRow: View {
                         .font(.system(size: 10))
                         .foregroundColor(Theme.textTertiary)
                         .lineLimit(2)
+                }
+
+                if subTask.retryCount > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 9))
+                        Text("重试 \(subTask.retryCount) 次")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(Theme.statusWarning)
                 }
             }
 

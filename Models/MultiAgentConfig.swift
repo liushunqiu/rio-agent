@@ -126,6 +126,8 @@ struct MultiAgentConfig: Codable {
     var maxParallelWorkers: Int
     var taskSplitStrategy: TaskSplitStrategy
     var maxTokens: Int
+    var maxRetries: Int
+    var enableCritic: Bool
 
     init(
         isEnabled: Bool = false,
@@ -133,7 +135,9 @@ struct MultiAgentConfig: Codable {
         workers: [AgentConfig] = [],
         maxParallelWorkers: Int = 3,
         taskSplitStrategy: TaskSplitStrategy = .automatic,
-        maxTokens: Int = 0
+        maxTokens: Int = 0,
+        maxRetries: Int = 2,
+        enableCritic: Bool = true
     ) {
         self.isEnabled = isEnabled
         self.orchestrator = orchestrator ?? AgentConfig(
@@ -148,6 +152,8 @@ struct MultiAgentConfig: Codable {
         self.maxParallelWorkers = maxParallelWorkers
         self.taskSplitStrategy = taskSplitStrategy
         self.maxTokens = maxTokens
+        self.maxRetries = maxRetries
+        self.enableCritic = enableCritic
     }
 
     var effectiveMaxTokens: Int {
@@ -217,6 +223,9 @@ struct SubTask: Identifiable {
     var assignmentReason: String?
     var status: SubTaskStatus
     var result: String?
+    var dependencies: [UUID]
+    var retryCount: Int
+    var verificationStatus: VerificationStatus
 
     init(
         id: UUID = UUID(),
@@ -226,7 +235,10 @@ struct SubTask: Identifiable {
         assignedWorker: AgentConfig? = nil,
         assignmentReason: String? = nil,
         status: SubTaskStatus = .pending,
-        result: String? = nil
+        result: String? = nil,
+        dependencies: [UUID] = [],
+        retryCount: Int = 0,
+        verificationStatus: VerificationStatus = .unverified
     ) {
         self.id = id
         self.description = description
@@ -236,6 +248,9 @@ struct SubTask: Identifiable {
         self.assignmentReason = assignmentReason
         self.status = status
         self.result = result
+        self.dependencies = dependencies
+        self.retryCount = retryCount
+        self.verificationStatus = verificationStatus
     }
 }
 
@@ -244,6 +259,26 @@ enum SubTaskStatus: String {
     case running
     case completed
     case failed
+}
+
+// MARK: - Verification Status
+
+enum VerificationStatus: String {
+    case unverified
+    case verified
+    case needsRetry
+}
+
+// MARK: - Execution Result
+
+struct ExecutionResult {
+    let subTaskId: UUID
+    let output: String
+    let errors: [String]
+    let retryCount: Int
+    let verificationStatus: VerificationStatus
+
+    var hasErrors: Bool { !errors.isEmpty }
 }
 
 struct TaskPlan: Identifiable {
@@ -268,6 +303,7 @@ struct TaskPlan: Identifiable {
 enum TaskPlanStatus: String {
     case planning
     case executing
+    case verifying
     case synthesizing
     case completed
     case failed

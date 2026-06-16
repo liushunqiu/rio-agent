@@ -2,14 +2,12 @@ import SwiftUI
 
 enum SettingsTab: CaseIterable {
     case ai
-    case configSets
     case multiAgent
     case about
 
     var title: String {
         switch self {
         case .ai: return "AI 配置"
-        case .configSets: return "配置集"
         case .multiAgent: return "Multi-Agent"
         case .about: return "关于"
         }
@@ -18,7 +16,6 @@ enum SettingsTab: CaseIterable {
     var subtitle: String {
         switch self {
         case .ai: return "选择默认模型、端点和上下文行为"
-        case .configSets: return "管理 AI 提供商配置"
         case .multiAgent: return "配置编排器、子 Agent 和任务拆分策略"
         case .about: return "应用版本与能力概览"
         }
@@ -27,7 +24,6 @@ enum SettingsTab: CaseIterable {
     var icon: String {
         switch self {
         case .ai: return "cpu"
-        case .configSets: return "folder.fill"
         case .multiAgent: return "person.3.fill"
         case .about: return "info.circle"
         }
@@ -42,8 +38,6 @@ struct SettingsView: View {
     @StateObject private var configSetManager = ConfigSetManager()
 
     // Local state
-    @State private var planningProvider: AIProvider
-    @State private var executionProvider: AIProvider
     @State private var planningConfigSetId: UUID?
     @State private var executionConfigSetId: UUID?
     @State private var enableStreaming: Bool
@@ -53,8 +47,6 @@ struct SettingsView: View {
         self._configuration = configuration
         self._multiAgentConfig = multiAgentConfig ?? .constant(MultiAgentConfig())
         let cfg = configuration.wrappedValue
-        self._planningProvider = State(initialValue: cfg.planningProvider)
-        self._executionProvider = State(initialValue: cfg.executionProvider)
         self._planningConfigSetId = State(initialValue: cfg.planningConfigSetId)
         self._executionConfigSetId = State(initialValue: cfg.executionConfigSetId)
         self._enableStreaming = State(initialValue: cfg.enableStreaming)
@@ -63,9 +55,6 @@ struct SettingsView: View {
 
     private func saveConfiguration() {
         // Update configuration
-        configuration.planningProvider = planningProvider
-        configuration.executionProvider = executionProvider
-        configuration.activeProvider = executionProvider
         configuration.planningConfigSetId = planningConfigSetId
         configuration.executionConfigSetId = executionConfigSetId
         configuration.enableStreaming = enableStreaming
@@ -73,7 +62,9 @@ struct SettingsView: View {
 
         if let data = try? JSONEncoder().encode(configuration) {
             UserDefaults.standard.set(data, forKey: "ai_configuration")
-            RioLogger.config.info("💾 设置已保存 (规划: \(planningProvider.displayName, privacy: .public), 执行: \(executionProvider.displayName, privacy: .public))")
+            let pName = planningConfigSet?.name ?? "未设置"
+            let eName = executionConfigSet?.name ?? "未设置"
+            RioLogger.config.info("💾 设置已保存 (规划: \(pName, privacy: .public), 执行: \(eName, privacy: .public))")
         } else {
             RioLogger.config.error("❌ 设置保存失败: 编码出错")
         }
@@ -101,8 +92,6 @@ struct SettingsView: View {
                         switch selectedTab {
                         case .ai:
                             darkAIConfigSection
-                        case .configSets:
-                            ConfigSetManagementView(manager: configSetManager)
                         case .multiAgent:
                             MultiAgentSettingsView(config: $multiAgentConfig, aiConfig: currentAIConfigInfo)
                         case .about:
@@ -117,22 +106,39 @@ struct SettingsView: View {
         .frame(width: 880, height: 660)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+        .onAppear {
+            if executionConfigSetId == nil, let first = configSetManager.configSets.first {
+                executionConfigSetId = first.id
+                planningConfigSetId = first.id
+            }
+        }
+        .onChange(of: configSetManager.configSets.count) { _ in
+            // Auto-select first config set if current selection is invalid
+            if !configSetManager.configSets.contains(where: { $0.id == executionConfigSetId }) {
+                executionConfigSetId = configSetManager.configSets.first?.id
+                planningConfigSetId = executionConfigSetId
+            }
+        }
     }
 
     private var currentAIConfigInfo: AIConfigInfo {
+        let sets = configSetManager.configSets
+        
+        // Find first configured model for each provider type
+        let claudeSet = sets.first { $0.provider == .claude }
+        let openAISet = sets.first { $0.provider == .openAI }
+        let customSet = sets.first { $0.provider == .openAICompatible }
+        
         return AIConfigInfo(
-            hasClaudeKey: configSetManager.selectedPlanningConfigSet?.claudeConfig.apiKey.isEmpty == false ||
-                         configSetManager.selectedExecutionConfigSet?.claudeConfig.apiKey.isEmpty == false,
-            hasOpenAIKey: configSetManager.selectedPlanningConfigSet?.openAIConfig.apiKey.isEmpty == false ||
-                        configSetManager.selectedExecutionConfigSet?.openAIConfig.apiKey.isEmpty == false,
-            hasCompatibleEndpoint: configSetManager.selectedPlanningConfigSet?.customConfig.apiKey.isEmpty == false ||
-                                 configSetManager.selectedExecutionConfigSet?.customConfig.apiKey.isEmpty == false,
-            claudeApiKey: configSetManager.selectedExecutionConfigSet?.claudeConfig.apiKey ?? "",
-            openAIApiKey: configSetManager.selectedExecutionConfigSet?.openAIConfig.apiKey ?? "",
-            compatibleApiKey: configSetManager.selectedExecutionConfigSet?.customConfig.apiKey ?? "",
-            currentClaudeModel: configSetManager.selectedExecutionConfigSet?.claudeConfig.model ?? "",
-            currentOpenAIModel: configSetManager.selectedExecutionConfigSet?.openAIConfig.model ?? "",
-            currentCompatibleModel: configSetManager.selectedExecutionConfigSet?.customConfig.model ?? ""
+            hasClaudeKey: claudeSet?.loadAPIKey().isEmpty == false,
+            hasOpenAIKey: openAISet?.loadAPIKey().isEmpty == false,
+            hasCompatibleEndpoint: customSet?.baseURL.isEmpty == false,
+            claudeApiKey: claudeSet?.loadAPIKey() ?? "",
+            openAIApiKey: openAISet?.loadAPIKey() ?? "",
+            compatibleApiKey: customSet?.loadAPIKey() ?? "",
+            currentClaudeModel: claudeSet?.model ?? "",
+            currentOpenAIModel: openAISet?.model ?? "",
+            currentCompatibleModel: customSet?.model ?? ""
         )
     }
 
@@ -151,7 +157,6 @@ struct SettingsView: View {
 
             VStack(spacing: 6) {
                 SettingsSidebarItem(tab: .ai, selectedTab: $selectedTab)
-                SettingsSidebarItem(tab: .configSets, selectedTab: $selectedTab)
                 SettingsSidebarItem(tab: .multiAgent, selectedTab: $selectedTab)
                 SettingsSidebarItem(tab: .about, selectedTab: $selectedTab)
             }
@@ -159,18 +164,12 @@ struct SettingsView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 8) {
-                ProviderHealthRow(
-                    name: "Claude",
-                    isReady: configSetManager.configSets.contains { !$0.claudeConfig.apiKey.isEmpty }
-                )
-                ProviderHealthRow(
-                    name: "OpenAI",
-                    isReady: configSetManager.configSets.contains { !$0.openAIConfig.apiKey.isEmpty }
-                )
-                ProviderHealthRow(
-                    name: "自定义端点",
-                    isReady: configSetManager.configSets.contains { !$0.customConfig.apiKey.isEmpty }
-                )
+                ForEach(configSetManager.configSets) { cs in
+                    ProviderHealthRow(
+                        name: cs.name,
+                        isReady: cs.isConfigured
+                    )
+                }
             }
             .padding(12)
             .background(Theme.bgSecondary)
@@ -213,16 +212,16 @@ struct SettingsView: View {
     private var configurationSummary: some View {
         HStack(spacing: 12) {
             SettingsMetric(
-                title: "规划来源",
-                value: "\(planningProvider.displayName) / \(planningModelName)",
-                icon: planningProvider.icon,
-                tone: isProviderConfigured(planningProvider) ? Theme.statusSuccess : Theme.statusWarning
+                title: "规划模型",
+                value: planningModelName,
+                icon: planningConfigSet?.provider.icon ?? "cpu",
+                tone: planningConfigSet?.isConfigured == true ? Theme.statusSuccess : Theme.statusWarning
             )
             SettingsMetric(
-                title: "执行来源",
-                value: "\(executionProvider.displayName) / \(executionModelName)",
-                icon: executionProvider.icon,
-                tone: isProviderConfigured(executionProvider) ? Theme.statusSuccess : Theme.statusWarning
+                title: "执行模型",
+                value: executionModelName,
+                icon: executionConfigSet?.provider.icon ?? "cpu",
+                tone: executionConfigSet?.isConfigured == true ? Theme.statusSuccess : Theme.statusWarning
             )
             SettingsMetric(
                 title: "Multi-Agent",
@@ -233,20 +232,20 @@ struct SettingsView: View {
         }
     }
 
+    private var planningConfigSet: ConfigSet? {
+        configSetManager.configSet(for: planningConfigSetId)
+    }
+
+    private var executionConfigSet: ConfigSet? {
+        configSetManager.configSet(for: executionConfigSetId)
+    }
+
     private var planningModelName: String {
-        guard let configSet = configSetManager.selectedPlanningConfigSet else { return "未设置" }
-        return configSet.config(for: planningProvider).model
+        planningConfigSet?.name ?? "未设置"
     }
 
     private var executionModelName: String {
-        guard let configSet = configSetManager.selectedExecutionConfigSet else { return "未设置" }
-        return configSet.config(for: executionProvider).model
-    }
-
-    private func isProviderConfigured(_ provider: AIProvider) -> Bool {
-        let configSet = (provider == planningProvider) ? configSetManager.selectedPlanningConfigSet : configSetManager.selectedExecutionConfigSet
-        guard let configSet = configSet else { return false }
-        return !configSet.config(for: provider).apiKey.isEmpty
+        executionConfigSet?.name ?? "未设置"
     }
 
     // MARK: - AI Config Section
@@ -254,20 +253,23 @@ struct SettingsView: View {
     @ViewBuilder
     private var darkAIConfigSection: some View {
         VStack(alignment: .leading, spacing: 16) {
+            // 1. 配置集管理（先配模型）
+            ConfigSetManagementView(manager: configSetManager)
+
+            // 2. 规划调用 - 选择配置集
+            // 3. 执行调用 - 选择配置集
             HStack(alignment: .top, spacing: 14) {
-                RoleConfigSetSection(
+                ConfigSetPickerSection(
                     title: "规划调用",
                     detail: "用于任务拆解、复杂度判断和对话压缩",
-                    selectedProvider: $planningProvider,
-                    selectedConfigSetId: $planningConfigSetId,
+                    selectedId: $planningConfigSetId,
                     configSets: configSetManager.configSets
                 )
 
-                RoleConfigSetSection(
+                ConfigSetPickerSection(
                     title: "执行调用",
                     detail: "用于对话回复、工具调用和文件操作",
-                    selectedProvider: $executionProvider,
-                    selectedConfigSetId: $executionConfigSetId,
+                    selectedId: $executionConfigSetId,
                     configSets: configSetManager.configSets
                 )
             }
@@ -577,124 +579,7 @@ struct SettingsFieldLabel: View {
     }
 }
 
-struct RoleConfigSetSection: View {
-    let title: String
-    let detail: String
-    @Binding var selectedProvider: AIProvider
-    @Binding var selectedConfigSetId: UUID?
-    let configSets: [ConfigSet]
-
-    var body: some View {
-        DarkSettingsSection(title: title, icon: "arrow.triangle.branch") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textTertiary)
-
-                ForEach(AIProvider.allCases, id: \.self) { provider in
-                    ProviderConfigSetRow(
-                        provider: provider,
-                        configSets: configSets,
-                        isSelected: selectedProvider == provider,
-                        selectedConfigSetId: $selectedConfigSetId
-                    ) {
-                        selectedProvider = provider
-                        if configSets.isEmpty {
-                            selectedConfigSetId = nil
-                        } else if selectedConfigSetId == nil {
-                            selectedConfigSetId = configSets.first?.id
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-struct ProviderConfigSetRow: View {
-    let provider: AIProvider
-    let configSets: [ConfigSet]
-    let isSelected: Bool
-    @Binding var selectedConfigSetId: UUID?
-    let action: () -> Void
-
-    @State private var showingConfigSetPicker = false
-
-    private var selectedConfigSet: ConfigSet? {
-        configSets.first { $0.id == selectedConfigSetId }
-    }
-
-    private var model: String {
-        guard let configSet = selectedConfigSet else { return "未设置" }
-        return configSet.config(for: provider).model
-    }
-
-    private var isConfigured: Bool {
-        guard let configSet = selectedConfigSet else { return false }
-        return !configSet.config(for: provider).apiKey.isEmpty
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Button(action: action) {
-                HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: Theme.radiusSM)
-                            .fill(isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.bgTertiary)
-                            .frame(width: 34, height: 34)
-                        Image(systemName: provider.icon)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
-                    }
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(provider.displayName)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(Theme.textPrimary)
-                            Circle()
-                                .fill(isConfigured ? Theme.statusSuccess : Theme.statusWarning)
-                                .frame(width: 6, height: 6)
-                        }
-                        Text(model.isEmpty ? "未设置模型" : model)
-                            .font(.system(size: 10, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundColor(Theme.textTertiary)
-                    }
-
-                    Spacer()
-
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(Theme.accentPrimary)
-                    }
-                }
-                .padding(9)
-                .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(0.72))
-                .cornerRadius(Theme.radiusMD)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMD)
-                        .stroke(isSelected ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
-
-            if isSelected && !configSets.isEmpty {
-                Picker("配置集", selection: $selectedConfigSetId) {
-                    Text("选择配置集").tag(nil as UUID?)
-                    ForEach(configSets) { configSet in
-                        Text(configSet.name).tag(configSet.id as UUID?)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-            }
-        }
-    }
-}
+// (RoleConfigSetSection and ProviderConfigSetRow removed - replaced by ConfigSetPickerSection)
 
 struct DarkTabButton: View {
     let title: String
@@ -835,6 +720,95 @@ struct DarkInfoRow: View {
     }
 }
 
+// MARK: - ConfigSet Picker Section (for planning / execution role)
+
+struct ConfigSetPickerSection: View {
+    let title: String
+    let detail: String
+    @Binding var selectedId: UUID?
+    let configSets: [ConfigSet]
+
+    var body: some View {
+        DarkSettingsSection(title: title, icon: "arrow.triangle.branch") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textTertiary)
+
+                if configSets.isEmpty {
+                    Text("暂无可用模型，请先在上方添加模型配置")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(configSets) { cs in
+                        ConfigSetPickerRow(
+                            configSet: cs,
+                            isSelected: selectedId == cs.id
+                        ) {
+                            selectedId = cs.id
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct ConfigSetPickerRow: View {
+    let configSet: ConfigSet
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: Theme.radiusSM)
+                        .fill(isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.bgTertiary)
+                        .frame(width: 34, height: 34)
+                    Image(systemName: configSet.provider.icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(configSet.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.textPrimary)
+                        Circle()
+                            .fill(configSet.isConfigured ? Theme.statusSuccess : Theme.statusWarning)
+                            .frame(width: 6, height: 6)
+                    }
+                    Text(configSet.model.isEmpty ? "未设置模型" : configSet.model)
+                        .font(.system(size: 10, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundColor(Theme.textTertiary)
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(Theme.accentPrimary)
+                }
+            }
+            .padding(9)
+            .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(0.72))
+            .cornerRadius(Theme.radiusMD)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .stroke(isSelected ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // Keep legacy components for compatibility
 struct SettingsSection<Content: View>: View {
     let title: String
@@ -933,3 +907,5 @@ struct AIConfigInfo {
         }
     }
 }
+
+// (ProviderSelectionSection and SimpleProviderRow removed - replaced by ConfigSetPickerSection)

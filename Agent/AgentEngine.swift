@@ -49,18 +49,26 @@ class AgentEngine: ObservableObject {
     }
 
     private func setupAIService() {
-        planningService = createService(for: configuration.planningProvider)
-        executionService = createService(for: configuration.executionProvider)
+        planningService = createService(configSetId: configuration.planningConfigSetId)
+        executionService = createService(configSetId: configuration.executionConfigSetId)
     }
 
-    private func createService(for provider: AIProvider) -> AIService? {
-        let baseURL = configuration.baseURL(for: provider)
+    private func createService(configSetId: UUID?) -> AIService? {
+        guard let id = configSetId,
+              let data = UserDefaults.standard.data(forKey: "config_sets_v2"),
+              let sets = try? JSONDecoder().decode([ConfigSet].self, from: data),
+              let configSet = sets.first(where: { $0.id == id }) else {
+            return nil
+        }
+        let provider = configSet.provider
+        let baseURL = configSet.baseURL
+        let apiKey = configSet.loadAPIKey()
+        
         if provider == .openAICompatible {
             guard !baseURL.isEmpty else { return nil }
-            let apiKey = configuration.apiKey(for: provider, configSetId: configuration.executionConfigSetId) ?? ""
             return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
         }
-        guard let apiKey = configuration.apiKey(for: provider, configSetId: configuration.executionConfigSetId) else { return nil }
+        guard !apiKey.isEmpty else { return nil }
         return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
     }
 
@@ -79,20 +87,10 @@ class AgentEngine: ObservableObject {
             var urls: [AIProvider: String] = [:]
             let configManager = ConfigSetManager.shared
             for configSet in configManager.configSets {
-                if let claudeKey = configManager.loadConfigSetAPIKey(configSetId: configSet.id, provider: .claude),
-                   !claudeKey.isEmpty {
-                    keys[.claude] = claudeKey
-                    urls[.claude] = configSet.claudeConfig.baseURL
-                }
-                if let openAIKey = configManager.loadConfigSetAPIKey(configSetId: configSet.id, provider: .openAI),
-                   !openAIKey.isEmpty {
-                    keys[.openAI] = openAIKey
-                    urls[.openAI] = configSet.openAIConfig.baseURL
-                }
-                if !configSet.customConfig.baseURL.isEmpty {
-                    let customKey = configManager.loadConfigSetAPIKey(configSetId: configSet.id, provider: .openAICompatible) ?? ""
-                    keys[.openAICompatible] = customKey
-                    urls[.openAICompatible] = configSet.customConfig.baseURL
+                let key = configSet.loadAPIKey()
+                if !key.isEmpty {
+                    keys[configSet.provider] = key
+                    urls[configSet.provider] = configSet.baseURL
                 }
             }
             engine.configureAPIKeys(keys, baseUrls: urls)
@@ -503,7 +501,7 @@ class AgentEngine: ObservableObject {
                     contextMessages,
                     tools: toolDefinitions,
                     model: model,
-                    maxTokens: configuration.executionConfig.effectiveMaxTokens,
+                    maxTokens: configuration.maxTokens,
                     onChunk: { [weak self] chunk in
                         buffer.appendContent(chunk)
                         await buffer.flushIfNeeded { content, thinking in
@@ -670,7 +668,7 @@ class AgentEngine: ObservableObject {
                 contextMessages,
                 tools: toolDefinitions,
                 model: model,
-                maxTokens: configuration.executionConfig.effectiveMaxTokens
+                maxTokens: configuration.maxTokens
             )
 
             // Track actual token usage from API response

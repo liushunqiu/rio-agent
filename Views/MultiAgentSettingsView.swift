@@ -11,6 +11,8 @@ struct MultiAgentSettingsView: View {
     @State private var workers: [AgentConfig]
     @State private var maxParallel: Int
     @State private var taskStrategy: TaskSplitStrategy
+    @State private var maxRetries: Int
+    @State private var enableCritic: Bool
     @State private var showingAddWorker = false
     @State private var editingWorker: AgentConfig?
 
@@ -38,10 +40,17 @@ struct MultiAgentSettingsView: View {
                 updated.model = aiConfig.currentModel(for: validProvider)
                 return updated
             }
-            return worker
+            // Provider is valid, but ensure model matches the provider
+            var updated = worker
+            if updated.model.isEmpty {
+                updated.model = aiConfig.currentModel(for: worker.provider)
+            }
+            return updated
         })
         self._maxParallel = State(initialValue: initial.maxParallelWorkers)
         self._taskStrategy = State(initialValue: initial.taskSplitStrategy)
+        self._maxRetries = State(initialValue: initial.maxRetries)
+        self._enableCritic = State(initialValue: initial.enableCritic)
     }
 
     private func syncToConfig() {
@@ -52,6 +61,8 @@ struct MultiAgentSettingsView: View {
         config.workers = workers
         config.maxParallelWorkers = maxParallel
         config.taskSplitStrategy = taskStrategy
+        config.maxRetries = maxRetries
+        config.enableCritic = enableCritic
     }
 
     private var canEnable: Bool {
@@ -142,6 +153,48 @@ struct MultiAgentSettingsView: View {
                             ) {
                                 taskStrategy = strategy
                                 syncToConfig()
+                            }
+                        }
+                    }
+                }
+
+                SettingsSection(title: "PEV 验证闭环", icon: "checkmark.shield") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle(isOn: $enableCritic) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("启用 Critic 审查与自动重试")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(Theme.textPrimary)
+                                Text("Worker 执行失败后，Critic 模型会分析错误并给出修复建议，自动重试直到成功")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.textTertiary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .tint(Theme.accentPrimary)
+                        .onChange(of: enableCritic) { _, _ in syncToConfig() }
+
+                        if enableCritic {
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("最大重试次数")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(Theme.textPrimary)
+                                    Text("每个子任务失败后最多重试的次数")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.textTertiary)
+                                }
+
+                                Picker("", selection: $maxRetries) {
+                                    ForEach(0...5, id: \.self) { count in
+                                        Text("\(count)").tag(count)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 80)
+                                .onChange(of: maxRetries) { _, _ in syncToConfig() }
+
+                                Spacer()
                             }
                         }
                     }
@@ -427,8 +480,9 @@ struct AgentModelSelector: View {
                             onChange()
                         }
                     )) {
-                        if !suggestedModels.contains(where: { $0.id == model }) {
-                            Text("自定义").tag("")
+                        if !suggestedModels.contains(where: { $0.id == model }), !model.isEmpty {
+                            let shortName = model.count > 20 ? String(model.prefix(20)) + "…" : model
+                            Text("自定义: \(shortName)").tag("")
                         }
                         ForEach(suggestedModels) { choice in
                             Text(choice.label).tag(choice.id)

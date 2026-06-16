@@ -184,9 +184,6 @@ struct ProviderConfig: Codable, Hashable {
 }
 
 struct AIConfiguration: Codable {
-    var activeProvider: AIProvider
-    var planningProvider: AIProvider
-    var executionProvider: AIProvider
     var planningConfigSetId: UUID?
     var executionConfigSetId: UUID?
 
@@ -194,219 +191,131 @@ struct AIConfiguration: Codable {
     var maxContextMessages: Int
     var enableStreaming: Bool
 
-    // Use Keychain for API keys (not encoded to JSON)
-    private var _apiKeyStorage: [AIProvider: String] = [:]
-
     enum CodingKeys: String, CodingKey {
-        case activeProvider, planningProvider, executionProvider, planningConfigSetId, executionConfigSetId
+        case planningConfigSetId, executionConfigSetId
         case maxContextMessages, enableStreaming
+        // Legacy keys for backward compat
+        case activeProvider, planningProvider, executionProvider
     }
 
     init(
-        activeProvider: AIProvider = .claude,
-        planningProvider: AIProvider? = nil,
-        executionProvider: AIProvider? = nil,
         planningConfigSetId: UUID? = nil,
         executionConfigSetId: UUID? = nil,
         maxContextMessages: Int = 999,
         enableStreaming: Bool = true
     ) {
-        self.activeProvider = activeProvider
-        self.planningProvider = planningProvider ?? activeProvider
-        self.executionProvider = executionProvider ?? activeProvider
         self.planningConfigSetId = planningConfigSetId
         self.executionConfigSetId = executionConfigSetId
         self.maxContextMessages = maxContextMessages
         self.enableStreaming = enableStreaming
-        
-        // Load API keys from Keychain on init
-        loadAPIKeysFromKeychain()
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        activeProvider = try container.decode(AIProvider.self, forKey: .activeProvider)
-        planningProvider = try container.decodeIfPresent(AIProvider.self, forKey: .planningProvider) ?? activeProvider
-        executionProvider = try container.decodeIfPresent(AIProvider.self, forKey: .executionProvider) ?? activeProvider
         planningConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .planningConfigSetId)
         executionConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .executionConfigSetId)
         maxContextMessages = try container.decode(Int.self, forKey: .maxContextMessages)
         enableStreaming = try container.decode(Bool.self, forKey: .enableStreaming)
-        
-        // Load API keys from Keychain
-        loadAPIKeysFromKeychain()
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(activeProvider, forKey: .activeProvider)
-        try container.encode(planningProvider, forKey: .planningProvider)
-        try container.encode(executionProvider, forKey: .executionProvider)
         try container.encodeIfPresent(planningConfigSetId, forKey: .planningConfigSetId)
         try container.encodeIfPresent(executionConfigSetId, forKey: .executionConfigSetId)
         try container.encode(maxContextMessages, forKey: .maxContextMessages)
         try container.encode(enableStreaming, forKey: .enableStreaming)
-        // API keys are NOT encoded - they stay in Keychain
     }
 
-    // MARK: - Keychain Integration
+    // MARK: - ConfigSet Lookup
 
-    /// Load API keys from Keychain into memory
-    private mutating func loadAPIKeysFromKeychain() {
-        for provider in AIProvider.allCases {
-            if let key = KeychainManager.loadAPIKey(for: provider) {
-                _apiKeyStorage[provider] = key
-            }
+    private func lookupConfigSet(_ id: UUID?) -> ConfigSet? {
+        guard let id else { return nil }
+        let key = "config_sets_v2"
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let sets = try? JSONDecoder().decode([ConfigSet].self, from: data) else {
+            return nil
         }
+        return sets.first { $0.id == id }
     }
 
-    /// Save all API keys to Keychain
-    func saveAPIKeysToKeychain() {
-        for (provider, key) in _apiKeyStorage {
-            if !key.isEmpty {
-                try? KeychainManager.saveAPIKey(key, for: provider)
-            }
-        }
+    var planningConfigSet: ConfigSet? { lookupConfigSet(planningConfigSetId) }
+    var executionConfigSet: ConfigSet? { lookupConfigSet(executionConfigSetId) }
+
+    // MARK: - Provider & Model Access
+
+    var planningProvider: AIProvider {
+        planningConfigSet?.provider ?? .openAICompatible
     }
 
-    /// Save a specific API key to Keychain
-    mutating func setAPIKey(_ key: String?, for provider: AIProvider) {
-        _apiKeyStorage[provider] = key
-        if let key = key, !key.isEmpty {
-            try? KeychainManager.saveAPIKey(key, for: provider)
-        } else {
-            try? KeychainManager.deleteAPIKey(for: provider)
-        }
-    }
-
-    /// Get API key for a specific provider
-    func getAPIKey(for provider: AIProvider) -> String? {
-        // First check in-memory storage
-        if let key = _apiKeyStorage[provider], !key.isEmpty {
-            return key
-        }
-        // Then check Keychain
-        return KeychainManager.loadAPIKey(for: provider)
-    }
-
-    // MARK: - Convenience Accessors
-
-    func config(for provider: AIProvider, configSetId: UUID?) -> ProviderConfig {
-        guard let configSetId = configSetId else {
-            return ProviderConfig()
-        }
-        
-        let userDefaultsKey = "config_sets"
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-              let configSets = try? JSONDecoder().decode([ConfigSet].self, from: data),
-              let configSet = configSets.first(where: { $0.id == configSetId }) else {
-            return ProviderConfig()
-        }
-        return configSet.config(for: provider)
-    }
-
-    var currentConfig: ProviderConfig {
-        config(for: executionProvider, configSetId: executionConfigSetId)
-    }
-
-    var planningConfig: ProviderConfig {
-        config(for: planningProvider, configSetId: planningConfigSetId)
-    }
-
-    var executionConfig: ProviderConfig {
-        config(for: executionProvider, configSetId: executionConfigSetId)
-    }
-
-    var apiKey: String? {
-        guard let configSetId = executionConfigSetId else { return nil }
-        let keychainKey = "config_set_\(configSetId.uuidString)_\(executionProvider.rawValue)_api_key"
-        return KeychainManager.load(forKey: keychainKey)
-    }
-
-    func apiKey(for provider: AIProvider, configSetId: UUID?) -> String? {
-        guard let configSetId = configSetId else { return nil }
-        let keychainKey = "config_set_\(configSetId.uuidString)_\(provider.rawValue)_api_key"
-        return KeychainManager.load(forKey: keychainKey)
-    }
-
-    var model: String {
-        currentConfig.model
+    var executionProvider: AIProvider {
+        executionConfigSet?.provider ?? .openAICompatible
     }
 
     var planningModel: String {
-        planningConfig.model
+        planningConfigSet?.model ?? ""
     }
 
     var executionModel: String {
-        currentConfig.model
+        executionConfigSet?.model ?? ""
     }
+
+    var model: String { executionModel }
+
+    var planningBaseURL: String {
+        planningConfigSet?.baseURL ?? ""
+    }
+
+    var executionBaseURL: String {
+        executionConfigSet?.baseURL ?? ""
+    }
+
+    var baseURL: String { executionBaseURL }
+
+    var planningAPIKey: String? {
+        planningConfigSet?.loadAPIKey()
+    }
+
+    var executionAPIKey: String? {
+        executionConfigSet?.loadAPIKey()
+    }
+
+    var isStreaming: Bool { enableStreaming }
 
     var maxTokens: Int {
-        currentConfig.effectiveMaxTokens
+        ModelCapabilities.capabilities(for: executionModel).maxOutputTokens
     }
-
-    var baseURL: String {
-        baseURL(for: executionProvider)
-    }
-
-    func baseURL(for provider: AIProvider) -> String {
-        let url = config(for: provider, configSetId: executionConfigSetId).baseURL
-        if url.isEmpty {
-            switch provider {
-            case .claude: return "https://api.anthropic.com"
-            case .openAI: return "https://api.openai.com"
-            case .openAICompatible: return ""
-            }
-        }
-        return url
-    }
-
-    var isStreaming: Bool {
-        enableStreaming && executionConfig.isStreaming
-    }
-
-    // MARK: - Model Capabilities
 
     var capabilities: ModelCapabilities {
-        return ModelCapabilities.capabilities(for: model)
+        ModelCapabilities.capabilities(for: model)
     }
 
-    // MARK: - Legacy Compatibility
+    // MARK: - Legacy Compat
+
+    var activeProvider: AIProvider { executionProvider }
 
     var provider: AIProvider {
         get { executionProvider }
-        set {
-            executionProvider = newValue
-            activeProvider = newValue
-        }
+        set { /* no-op for compat */ }
     }
-
-    var claudeApiKey: String? {
-        get { getAPIKey(for: .claude) }
-        set { setAPIKey(newValue, for: .claude) }
-    }
-
-    var openAIApiKey: String? {
-        get { getAPIKey(for: .openAI) }
-        set { setAPIKey(newValue, for: .openAI) }
-    }
-
-    var compatibleApiKey: String? {
-        get { getAPIKey(for: .openAICompatible) }
-        set { setAPIKey(newValue, for: .openAICompatible) }
-    }
-
-    // MARK: - Validation
 
     var isConfigured: Bool {
-        isConfigured(for: executionProvider)
+        !(executionAPIKey?.isEmpty ?? true)
     }
 
     func isConfigured(for provider: AIProvider) -> Bool {
         if provider == .openAICompatible {
-            return !baseURL(for: provider).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return !executionBaseURL.isEmpty
         }
-        guard let key = getAPIKey(for: provider) else { return false }
-        return !key.isEmpty
+        return !(executionAPIKey?.isEmpty ?? true)
+    }
+
+    // MARK: - API Key helpers
+
+    func apiKey(for provider: AIProvider, configSetId: UUID?) -> String? {
+        lookupConfigSet(configSetId)?.loadAPIKey()
+    }
+
+    func baseURL(for provider: AIProvider) -> String {
+        executionBaseURL
     }
 }

@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 
+// MARK: - Routing (Layer 1: Cost Control)
+
 enum MultiAgentRouting {
     static func shouldUseMultiAgent(for input: String, analysis: TaskPlanner.TaskAnalysis) -> Bool {
         let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -21,31 +23,13 @@ enum MultiAgentRouting {
         let trimmedPunctuation = lowercased.trimmingCharacters(in: CharacterSet(charactersIn: "？?！!。.,， "))
 
         let exactMatches: Set<String> = [
-            "你是",
-            "你是谁",
-            "你是?",
-            "你是谁?",
-            "who are you",
-            "hi",
-            "hello",
-            "hey",
-            "你好",
-            "您好",
-            "早上好",
-            "下午好",
-            "晚上好"
+            "你是", "你是谁", "你是?", "你是谁?",
+            "who are you", "hi", "hello", "hey",
+            "你好", "您好", "早上好", "下午好", "晚上好"
         ]
-        if exactMatches.contains(trimmedPunctuation) {
-            return true
-        }
+        if exactMatches.contains(trimmedPunctuation) { return true }
 
-        let shortIdentityQuestions = [
-            "你是",
-            "你是谁",
-            "你叫什么",
-            "who are you",
-            "what are you"
-        ]
+        let shortIdentityQuestions = ["你是", "你是谁", "你叫什么", "who are you", "what are you"]
         if normalized.count <= 12,
            shortIdentityQuestions.contains(where: { lowercased.contains($0) }) {
             return true
@@ -54,6 +38,8 @@ enum MultiAgentRouting {
         return false
     }
 }
+
+// MARK: - Multi-Agent Engine (Layers 2-4)
 
 @MainActor
 class MultiAgentEngine: ObservableObject {
@@ -67,13 +53,17 @@ class MultiAgentEngine: ObservableObject {
     private var apiKeyStore: [AIProvider: String] = [:]
     private var baseURLStore: [AIProvider: String] = [:]
 
+    /// Cached project context injected into every Worker
+    private var projectContext: String = ""
+
     init(config: MultiAgentConfig, toolRegistry: ToolRegistry = .shared) {
         self.config = config
         self.toolRegistry = toolRegistry
         setupServices()
     }
 
-    /// Store API keys for providers so services can be created
+    // MARK: - Service Setup (unchanged)
+
     func configureAPIKeys(_ keys: [AIProvider: String], baseUrls: [AIProvider: String] = [:]) {
         apiKeyStore = keys
         baseURLStore = baseUrls
@@ -81,26 +71,19 @@ class MultiAgentEngine: ObservableObject {
     }
 
     private func setupServices() {
-        // Setup orchestrator service
         if canCreateService(for: config.orchestrator.provider) {
             let apiKey = apiKeyStore[config.orchestrator.provider] ?? ""
             let baseURL = baseURLStore[config.orchestrator.provider] ?? ""
             services[config.orchestrator.id] = AIServiceFactory.createService(
-                provider: config.orchestrator.provider,
-                apiKey: apiKey,
-                baseURL: baseURL
+                provider: config.orchestrator.provider, apiKey: apiKey, baseURL: baseURL
             )
         }
-
-        // Setup worker services
         for worker in config.workers {
             if canCreateService(for: worker.provider) {
                 let apiKey = apiKeyStore[worker.provider] ?? ""
                 let baseURL = baseURLStore[worker.provider] ?? ""
                 services[worker.id] = AIServiceFactory.createService(
-                    provider: worker.provider,
-                    apiKey: apiKey,
-                    baseURL: baseURL
+                    provider: worker.provider, apiKey: apiKey, baseURL: baseURL
                 )
             }
         }
@@ -120,7 +103,7 @@ class MultiAgentEngine: ObservableObject {
         setupServices()
     }
 
-    // MARK: - Main Processing
+    // MARK: - Main Processing Pipeline
 
     func processTask(_ task: String) async -> String {
         guard config.isEnabled else {
@@ -130,37 +113,53 @@ class MultiAgentEngine: ObservableObject {
         isProcessing = true
         error = nil
 
-        // Create task plan
         var plan = TaskPlan(originalTask: task)
         currentPlan = plan
 
         do {
-            // Step 1: Orchestrator analyzes and splits the task
+            // ── Layer 2: Planner — Orchestrator generates DAG ──
             plan.status = .planning
             currentPlan = plan
+
+            // Build project context once for all workers
+            projectContext = buildProjectContext()
 
             let subTasks = try await splitTask(task)
             plan.subTasks = subTasks
 
             if subTasks.isEmpty {
-                let finalResult = try await synthesizeResults(originalTask: task, subResults: [:])
+                let finalResult = try await synthesizeResults(originalTask: task, results: [:])
                 plan.status = .completed
                 currentPlan = plan
                 isProcessing = false
                 return finalResult
             }
 
-            // Step 2: Execute sub-tasks in parallel
+            // ── Layer 3: Execution Guild — DAG wave-based execution ──
             plan.status = .executing
             currentPlan = plan
 
-            let results = try await executeSubTasks(subTasks, plan: &plan)
+            let results = try await executeSubTasksDAG(plan: &plan)
 
-            // Step 3: Orchestrator synthesizes results
+            // ── Layer 4: Critic & Verification ──
+            plan.status = .verifying
+            currentPlan = plan
+
+            // Verify results — mark verified / needsRetry status on each sub-task
+            for subTask in plan.subTasks {
+                if let idx = plan.subTasks.firstIndex(where: { $0.id == subTask.id }) {
+                    if let result = results[subTask.id], !result.hasErrors {
+                        plan.subTasks[idx].verificationStatus = .verified
+                    }
+                }
+            }
+            currentPlan = plan
+
+            // ── Synthesis — Orchestrator produces final answer ──
             plan.status = .synthesizing
             currentPlan = plan
 
-            let finalResult = try await synthesizeResults(originalTask: task, subResults: results)
+            let finalResult = try await synthesizeResults(originalTask: task, results: results)
 
             plan.status = .completed
             currentPlan = plan
@@ -177,14 +176,46 @@ class MultiAgentEngine: ObservableObject {
         }
     }
 
-    // MARK: - Single Agent Fallback
-
     private func processSingleAgent(_ task: String) async -> String {
-        // Use the original single agent logic
         return "单 Agent 模式: \(task)"
     }
 
-    // MARK: - Task Splitting
+    // MARK: - Layer 2: Planner — Project Context Builder
+
+    /// Builds a rich context string injected into every Worker so they are NOT blind.
+    private func buildProjectContext() -> String {
+        var parts: [String] = []
+
+        // Working directory
+        if let dir = toolRegistry.workingDirectory {
+            parts.append("## 工作目录\n\(dir)")
+
+            // AGENT.md — project-level context
+            let agentMDPath = "\(dir)/AGENT.md"
+            if let content = FileManager.default.contents(atPath: agentMDPath),
+               let mdString = String(data: content, encoding: .utf8) {
+                parts.append("## 项目上下文 (from AGENT.md)\n\(mdString)")
+            }
+
+            // Top-level directory listing (shallow, fast)
+            if let items = try? FileManager.default.contentsOfDirectory(atPath: dir) {
+                let filtered = items
+                    .filter { !$0.hasPrefix(".") }
+                    .sorted()
+                    .prefix(50)
+                let listing = filtered.joined(separator: "\n")
+                parts.append("## 项目顶层结构\n\(listing)")
+            }
+        }
+
+        if parts.isEmpty {
+            return "（无项目上下文）"
+        }
+
+        return parts.joined(separator: "\n\n")
+    }
+
+    // MARK: - Layer 2: Planner — Enhanced DAG Task Splitting
 
     private func splitTask(_ task: String) async throws -> [SubTask] {
         guard let orchestratorService = services[config.orchestrator.id] else {
@@ -199,41 +230,44 @@ class MultiAgentEngine: ObservableObject {
               capability: \(worker.capability.workerType)
               capability_description: \(worker.capability.description)
               model: \(worker.model)
-              system_prompt: \(worker.systemPrompt.isEmpty ? "无" : worker.systemPrompt)
             """
         }.joined(separator: "\n")
 
         let splitPrompt = """
-        你是一个任务协调专家。请分析以下用户任务，并将其拆分为可并行执行的子任务，然后从可用子 Agent 中选择最合适的执行者。
+        你是一个任务协调专家。请分析以下用户任务，将其拆分为带有依赖关系的子任务 DAG（有向无环图），并从可用子 Agent 中选择最合适的执行者。
 
         用户任务: \(task)
 
         可用子 Agent:
         \(workerCatalog.isEmpty ? "无可用子 Agent" : workerCatalog)
 
-        请以 JSON 格式返回子任务列表，格式如下:
+        请以 JSON 格式返回子任务列表:
         {
             "sub_tasks": [
                 {
-                    "description": "子任务描述",
+                    "task_id": "唯一标识符 (UUID 格式)",
+                    "description": "子任务的详细描述，包含足够信息让执行者独立完成任务",
                     "worker_id": "从可用子 Agent 中选择的 UUID",
                     "worker_type": "search/code/file/general/custom",
-                    "reason": "选择该子 Agent 的简短原因"
+                    "reason": "选择该子 Agent 的简短原因",
+                    "depends_on": ["依赖的 task_id 列表，无依赖则为空数组"]
                 }
             ]
         }
 
-        注意:
-        1. 每个子任务应该是独立可执行的
-        2. 子任务之间不应有依赖关系
-        3. 如果任务简单不需要拆分，返回空数组
-        4. 优先使用 worker_id 精确指定执行者
-        5. worker_type 必须匹配所选子 Agent 的 capability
-        6. 不要选择不存在的 worker_id
+        关键原则:
+        1. 如果子任务 B 需要子任务 A 的输出才能开始，则 B 的 depends_on 必须包含 A 的 task_id
+        2. 没有依赖的子任务会被并行执行，有依赖的子任务会等待前置任务完成
+        3. 每个子任务的 description 必须足够详细，让执行者无需额外上下文即可工作
+        4. 如果任务简单不需要拆分，返回空的 sub_tasks 数组
+        5. 优先使用 worker_id 精确指定执行者；不要选择不存在的 worker_id
+        6. 不要创建循环依赖
         """
 
         let messages = [Message.system(splitPrompt), Message.user(task)]
-        let response = try await orchestratorService.sendMessage(messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens)
+        let response = try await orchestratorService.sendMessage(
+            messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens
+        )
 
         guard let content = response.content else {
             throw MultiAgentError.taskSplitFailed("无法获取拆分结果")
@@ -243,129 +277,285 @@ class MultiAgentEngine: ObservableObject {
     }
 
     func parseSubTasks(from response: String) -> [SubTask] {
-        // Try to parse JSON response
         guard let data = response.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let subTasksArray = json["sub_tasks"] as? [[String: Any]] else {
-            // Treat malformed split output as "no split"; the orchestrator will answer directly.
             return []
         }
 
+        // First pass: build task_id -> UUID mapping
+        var taskIdMap: [String: UUID] = [:]
+        for taskDict in subTasksArray {
+            if let taskId = taskDict["task_id"] as? String,
+               let uuid = UUID(uuidString: taskId) {
+                taskIdMap[taskId] = uuid
+            } else {
+                // Generate a UUID if task_id is missing or invalid
+                taskIdMap[taskDict["task_id"] as? String ?? ""] = UUID()
+            }
+        }
+
+        // Second pass: create SubTasks with resolved dependencies
         return subTasksArray.compactMap { taskDict in
             guard let description = taskDict["description"] as? String else { return nil }
 
+            let rawTaskId = taskDict["task_id"] as? String ?? ""
+            let subTaskId = taskIdMap[rawTaskId] ?? UUID()
             let workerId = (taskDict["worker_id"] as? String).flatMap(UUID.init(uuidString:))
             let workerType = AgentCapability(workerType: taskDict["worker_type"] as? String ?? "general")
             let reason = taskDict["reason"] as? String
             let worker = selectWorker(id: workerId, capability: workerType)
 
+            // Resolve dependency UUIDs
+            let dependsOnStrings = taskDict["depends_on"] as? [String] ?? []
+            let dependencies = dependsOnStrings.compactMap { taskIdMap[$0] }
+
             return SubTask(
+                id: subTaskId,
                 description: description,
                 workerId: workerId,
                 workerType: workerType,
                 assignedWorker: worker,
-                assignmentReason: reason
+                assignmentReason: reason,
+                dependencies: dependencies
             )
         }
     }
 
+    // MARK: - Worker Selection
+
     private func selectWorker(id: UUID?, capability: AgentCapability) -> AgentConfig? {
         let enabledWorkers = config.workers.filter { $0.isEnabled }
-
-        if let id, let exactMatch = enabledWorkers.first(where: { $0.id == id }) {
-            return exactMatch
-        }
-
-        if let capabilityMatch = enabledWorkers.first(where: { $0.capability == capability }) {
-            return capabilityMatch
-        }
-
+        if let id, let exactMatch = enabledWorkers.first(where: { $0.id == id }) { return exactMatch }
+        if let capMatch = enabledWorkers.first(where: { $0.capability == capability }) { return capMatch }
         return fallbackWorker(for: capability)
     }
 
     private func fallbackWorker(for capability: AgentCapability) -> AgentConfig? {
         let enabledWorkers = config.workers.filter { $0.isEnabled }
-
-        if capability != .general,
-           let generalWorker = enabledWorkers.first(where: { $0.capability == .general }) {
+        if capability != .general, let generalWorker = enabledWorkers.first(where: { $0.capability == .general }) {
             return generalWorker
         }
-
         return enabledWorkers.first
     }
 
-    // MARK: - Parallel Execution
+    // MARK: - Layer 3: Execution Guild — DAG Wave-Based Execution
 
-    private func executeSubTasks(_ subTasks: [SubTask], plan: inout TaskPlan) async throws -> [UUID: String] {
-        var results: [UUID: String] = [:]
+    /// Execute sub-tasks respecting dependency DAG — independent tasks run in parallel waves.
+    private func executeSubTasksDAG(plan: inout TaskPlan) async throws -> [UUID: ExecutionResult] {
+        var allResults: [UUID: ExecutionResult] = [:]
+        var completedIds: Set<UUID> = []
 
-        // Execute in parallel with concurrency limit
-        try await withThrowingTaskGroup(of: (UUID, String).self) { group in
-            var activeCount = 0
+        while completedIds.count < plan.subTasks.count {
+            let wave = getNextWave(plan: plan, completedIds: completedIds)
 
-            for subTask in subTasks {
-                guard let worker = subTask.assignedWorker,
-                      let service = services[worker.id] else {
-                    updateSubTask(subTask.id, in: &plan, status: .failed, result: "服务不可用或未配置")
-                    continue
+            if wave.isEmpty {
+                // Remaining tasks have unresolvable dependencies — mark as failed
+                for subTask in plan.subTasks where !completedIds.contains(subTask.id) {
+                    updateSubTask(subTask.id, in: &plan, status: .failed, result: "依赖无法满足（前置任务失败或不存在）")
+                    completedIds.insert(subTask.id)
+                    allResults[subTask.id] = ExecutionResult(
+                        subTaskId: subTask.id, output: "", errors: ["依赖无法满足"],
+                        retryCount: 0, verificationStatus: .needsRetry
+                    )
                 }
-
-                // Respect max parallel workers limit
-                if activeCount >= config.maxParallelWorkers {
-                    let result = try await group.next()!
-                    results[result.0] = result.1
-                    updateSubTask(result.0, in: &plan, status: .completed, result: result.1)
-                    activeCount -= 1
-                }
-
-                updateSubTask(subTask.id, in: &plan, status: .running)
-                group.addTask { [self] in
-                    let result = try await self.executeSubTask(subTask, service: service, worker: worker)
-                    return (subTask.id, result)
-                }
-                activeCount += 1
+                break
             }
 
-            // Collect remaining results
-            for try await (taskId, result) in group {
-                results[taskId] = result
-                updateSubTask(taskId, in: &plan, status: .completed, result: result)
+            // Execute the current wave in parallel
+            try await withThrowingTaskGroup(of: (UUID, ExecutionResult).self) { group in
+                for subTask in wave {
+                    guard let worker = subTask.assignedWorker,
+                          let service = services[worker.id] else {
+                        updateSubTask(subTask.id, in: &plan, status: .failed, result: "服务不可用或未配置")
+                        completedIds.insert(subTask.id)
+                        allResults[subTask.id] = ExecutionResult(
+                            subTaskId: subTask.id, output: "", errors: ["服务不可用"],
+                            retryCount: 0, verificationStatus: .needsRetry
+                        )
+                        continue
+                    }
+
+                    updateSubTask(subTask.id, in: &plan, status: .running)
+
+                    // Build context with results from completed dependency tasks
+                    let dependencyResults = subTask.dependencies.compactMap { allResults[$0] }
+                    let context = buildWorkerContext(
+                        for: subTask, dependencyResults: dependencyResults
+                    )
+
+                    group.addTask { [self] in
+                        let result = try await self.executeSingleSubTask(
+                            subTask: subTask, service: service, worker: worker, context: context
+                        )
+                        return (subTask.id, result)
+                    }
+                }
+
+                for try await (taskId, result) in group {
+                    allResults[taskId] = result
+                    completedIds.insert(taskId)
+
+                    let status: SubTaskStatus = result.hasErrors ? .failed : .completed
+                    updateSubTask(taskId, in: &plan, status: status, result: result.output)
+
+                    if let idx = plan.subTasks.firstIndex(where: { $0.id == taskId }) {
+                        plan.subTasks[idx].retryCount = result.retryCount
+                        plan.subTasks[idx].verificationStatus = result.verificationStatus
+                    }
+                    currentPlan = plan
+                }
             }
         }
 
-        return results
+        return allResults
     }
 
-    private func updateSubTask(_ id: UUID, in plan: inout TaskPlan, status: SubTaskStatus, result: String? = nil) {
-        guard let index = plan.subTasks.firstIndex(where: { $0.id == id }) else { return }
-        plan.subTasks[index].status = status
-        if let result {
-            plan.subTasks[index].result = result
+    /// Compute the next wave: tasks whose dependencies are ALL satisfied.
+    private func getNextWave(plan: TaskPlan, completedIds: Set<UUID>) -> [SubTask] {
+        plan.subTasks.filter { subTask in
+            guard !completedIds.contains(subTask.id) else { return false }
+            return subTask.dependencies.allSatisfy { completedIds.contains($0) }
         }
-        currentPlan = plan
     }
 
-    private static let maxToolCallIterations = 9999
+    /// Build context for a Worker including project info, dependency results, and instructions.
+    private func buildWorkerContext(for subTask: SubTask, dependencyResults: [ExecutionResult]) -> String {
+        var context = projectContext
 
-    private func executeSubTask(_ subTask: SubTask, service: AIService, worker: AgentConfig) async throws -> String {
+        if !dependencyResults.isEmpty {
+            context += "\n\n## 前置任务结果\n"
+            context += "以下是你依赖的已完成任务的输出，请在此基础上继续工作：\n\n"
+            for (i, dep) in dependencyResults.enumerated() {
+                context += "### 前置任务 \(i + 1) 输出\n"
+                // Truncate very long outputs to avoid context explosion
+                let output = dep.output.count > 5000
+                    ? String(dep.output.prefix(4000)) + "\n\n[... 已截断 \(dep.output.count - 4000) 字符 ...]\n\n" + String(dep.output.suffix(500))
+                    : dep.output
+                context += output + "\n\n"
+            }
+        }
+
+        return context
+    }
+
+    // MARK: - Layer 3+4: Single Worker Execution with PEV Loop
+
+    private static let maxToolCallIterations = 200
+
+    /// Execute a single sub-task with the PEV (Plan-Execute-Verify) retry loop.
+    private func executeSingleSubTask(
+        subTask: SubTask,
+        service: AIService,
+        worker: AgentConfig,
+        context: String
+    ) async throws -> ExecutionResult {
+        var currentSubTask = subTask
+        var allErrors: [String] = []
+        var lastOutput = ""
+        var totalRetries = 0
+
+        for attempt in 0...(config.enableCritic ? config.maxRetries : 0) {
+            let executionResult = try await runWorkerToolLoop(
+                subTask: currentSubTask, service: service, worker: worker, context: context
+            )
+
+            lastOutput = executionResult.output
+            let errors = executionResult.errors
+
+            if errors.isEmpty {
+                // Success — verified
+                return ExecutionResult(
+                    subTaskId: subTask.id, output: lastOutput, errors: [],
+                    retryCount: totalRetries, verificationStatus: .verified
+                )
+            }
+
+            allErrors = errors
+            totalRetries += 1
+
+            // If retries exhausted, return with errors
+            if attempt >= (config.enableCritic ? config.maxRetries : 0) {
+                break
+            }
+
+            // ── Layer 4: Critic — analyze failure, generate fix suggestions ──
+            let criticFeedback = await analyzeAndRetry(
+                subTask: subTask, errors: errors, output: lastOutput, worker: worker
+            )
+
+            // Inject critic feedback into the task description for the next attempt
+            currentSubTask = SubTask(
+                id: subTask.id,
+                description: """
+                \(subTask.description)
+
+                ---
+                ⚠️ 上一次执行遇到问题（第 \(attempt + 1) 次尝试），请根据以下反馈修正：
+
+                \(criticFeedback)
+                """,
+                workerId: subTask.workerId,
+                workerType: subTask.workerType,
+                assignedWorker: subTask.assignedWorker,
+                assignmentReason: subTask.assignmentReason,
+                dependencies: subTask.dependencies
+            )
+
+            // Update plan to show retry
+            if let plan = currentPlan,
+               let idx = plan.subTasks.firstIndex(where: { $0.id == subTask.id }) {
+                var updatedPlan = plan
+                updatedPlan.subTasks[idx].retryCount = totalRetries
+                updatedPlan.subTasks[idx].status = .running
+                currentPlan = updatedPlan
+            }
+        }
+
+        return ExecutionResult(
+            subTaskId: subTask.id,
+            output: lastOutput,
+            errors: allErrors,
+            retryCount: totalRetries,
+            verificationStatus: .needsRetry
+        )
+    }
+
+    /// Run the Worker's tool-call loop for a single attempt (no retry logic here).
+    private func runWorkerToolLoop(
+        subTask: SubTask,
+        service: AIService,
+        worker: AgentConfig,
+        context: String
+    ) async throws -> (output: String, errors: [String]) {
         var allResults: [String] = []
+        var collectedErrors: [String] = []
+
+        // Build messages with structured XML context
         var currentMessages: [Message] = [
             Message.system(worker.systemPrompt),
-            Message.user(subTask.description)
+            Message.user("""
+            <project_context>
+            \(context)
+            </project_context>
+
+            <task>
+            \(subTask.description)
+            </task>
+
+            请使用提供的工具完成任务。如果遇到错误，请分析原因并尝试修复。
+            """)
         ]
 
         let toolDefinitions = toolRegistry.getToolDefinitions()
         var iterationCount = 0
 
-        // Multi-round tool call loop (same pattern as AgentEngine)
         while iterationCount < Self.maxToolCallIterations {
             iterationCount += 1
 
             let response = try await service.sendMessage(
-                currentMessages,
-                tools: toolDefinitions,
-                model: worker.model,
-                maxTokens: config.effectiveMaxTokens
+                currentMessages, tools: toolDefinitions,
+                model: worker.model, maxTokens: config.effectiveMaxTokens
             )
 
             if let content = response.content, !content.isEmpty {
@@ -373,79 +563,184 @@ class MultiAgentEngine: ObservableObject {
             }
 
             if let toolCalls = response.toolCalls, !toolCalls.isEmpty {
-                // Add assistant message with tool calls
                 currentMessages.append(Message(
-                    role: .assistant,
-                    content: response.content ?? "",
-                    toolCalls: toolCalls
+                    role: .assistant, content: response.content ?? "", toolCalls: toolCalls
                 ))
 
-                // Execute tools and collect results
                 var toolResults: [ToolResult] = []
                 for toolCall in toolCalls {
                     let result = try await toolRegistry.executeTool(
-                        name: toolCall.name,
-                        arguments: toolCall.arguments.mapValues { $0.value }
+                        name: toolCall.name, arguments: toolCall.arguments.mapValues { $0.value }
                     )
                     toolResults.append(result)
-                    allResults.append("工具 \(toolCall.name): \(String(result.output.prefix(200)))")
+
+                    // Collect errors for PEV
+                    if result.status == .error, let errorMsg = result.error {
+                        collectedErrors.append("[\(toolCall.name)] \(errorMsg)")
+                    }
                 }
 
-                // Add tool results as next message for the AI to continue
-                currentMessages.append(Message(
-                    role: .user,
-                    content: "",
-                    toolResults: toolResults
-                ))
-
+                currentMessages.append(Message(role: .user, content: "", toolResults: toolResults))
                 continue
             }
 
             break
         }
 
-        return allResults.isEmpty ? "无结果" : allResults.joined(separator: "\n\n")
+        let output = allResults.isEmpty ? "无结果" : allResults.joined(separator: "\n\n")
+        return (output: output, errors: collectedErrors)
     }
 
-    // MARK: - Result Synthesis
+    // MARK: - Layer 4: Critic — Error Analysis & Fix Suggestions
 
-    private func synthesizeResults(originalTask: String, subResults: [UUID: String]) async throws -> String {
+    /// The Critic analyzes execution errors and generates actionable fix suggestions.
+    private func analyzeAndRetry(
+        subTask: SubTask,
+        errors: [String],
+        output: String,
+        worker: AgentConfig
+    ) async -> String {
+        // Use the orchestrator service as the Critic (stronger model reviews weaker worker output)
+        guard let orchestratorService = services[config.orchestrator.id] else {
+            return generateFallbackCriticFeedback(errors: errors)
+        }
+
+        let criticPrompt = buildCriticPrompt(subTask: subTask, errors: errors, output: output, worker: worker)
+        let messages = [Message.system(criticPrompt)]
+
+        do {
+            let response = try await orchestratorService.sendMessage(
+                messages, tools: [], model: config.orchestrator.model, maxTokens: 2000
+            )
+            return response.content ?? generateFallbackCriticFeedback(errors: errors)
+        } catch {
+            return generateFallbackCriticFeedback(errors: errors)
+        }
+    }
+
+    private func buildCriticPrompt(
+        subTask: SubTask,
+        errors: [String],
+        output: String,
+        worker: AgentConfig
+    ) -> String {
+        let truncatedOutput = output.count > 3000 ? String(output.prefix(3000)) + "\n[... 已截断 ...]" : output
+
+        return """
+        你是一个代码审查专家（Critic）。一个子 Agent 在执行任务时遇到了错误。请分析错误原因并给出具体的修复建议。
+
+        <original_task>
+        \(subTask.description)
+        </original_task>
+
+        <worker_system_prompt>
+        \(worker.systemPrompt)
+        </worker_system_prompt>
+
+        <execution_output>
+        \(truncatedOutput)
+        </execution_output>
+
+        <errors>
+        \(errors.joined(separator: "\n"))
+        </errors>
+
+        请分析：
+        1. 错误的根本原因是什么？（路径错误、权限问题、逻辑错误、依赖缺失等）
+        2. 具体的修复建议（下一步应该怎么做）
+        3. 需要避免的常见陷阱
+
+        输出简洁的修复指导，这将作为子 Agent 下一次尝试的补充指令。不要写代码，只写指导。
+        """
+    }
+
+    /// Fallback critic feedback when the orchestrator service is unavailable.
+    private func generateFallbackCriticFeedback(errors: [String]) -> String {
+        var feedback = "执行过程中遇到以下错误，请逐一分析并修复：\n\n"
+        for (i, error) in errors.enumerated() {
+            feedback += "\(i + 1). \(error)\n"
+
+            // Pattern-based suggestions (similar to AgentEngine's error reflection)
+            let lower = error.lowercased()
+            if lower.contains("file not found") || lower.contains("no such file") {
+                feedback += "   → 建议：先用 find_files 搜索文件名，或用 list_directory 确认目录存在\n"
+            } else if lower.contains("permission denied") {
+                feedback += "   → 建议：检查文件权限 (ls -la)，可能需要用户确认\n"
+            } else if lower.contains("old_text") && (lower.contains("not found") || lower.contains("no match")) {
+                feedback += "   → 建议：先用 read_file 读取文件最新内容，确认 old_text 精确匹配\n"
+            } else if lower.contains("command not found") {
+                feedback += "   → 建议：检查命令是否已安装 (which <cmd>)\n"
+            } else if lower.contains("syntax error") || lower.contains("parse error") {
+                feedback += "   → 建议：用 read_file 检查最近修改的文件，找到并修复语法错误\n"
+            } else if lower.contains("module") && lower.contains("not found") {
+                feedback += "   → 建议：运行包管理器安装依赖\n"
+            }
+        }
+        return feedback
+    }
+
+    // MARK: - Result Synthesis (enhanced with execution metadata)
+
+    private func synthesizeResults(originalTask: String, results: [UUID: ExecutionResult]) async throws -> String {
         guard let orchestratorService = services[config.orchestrator.id] else {
             throw MultiAgentError.serviceNotAvailable(config.orchestrator.name)
         }
 
-        let resultsText = subResults.values.enumerated().map { index, result in
-            "=== 子任务 \(index + 1) 结果 ===\n\(result)"
+        if results.isEmpty {
+            let messages = [
+                Message.system(config.orchestrator.systemPrompt),
+                Message.user("你是一个任务协调者。你判断该任务不需要拆分给子 Agent。请直接回答用户的原始任务。\n\n原始用户任务: \(originalTask)")
+            ]
+            let response = try await orchestratorService.sendMessage(
+                messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens
+            )
+            return response.content ?? "无法生成最终结果"
+        }
+
+        // Build rich results text including errors and retry info
+        let resultsText = results.values.enumerated().map { index, result in
+            var text = "=== 子任务 \(index + 1) ===\n"
+            if result.retryCount > 0 {
+                text += "（经过 \(result.retryCount) 次重试）\n"
+            }
+            text += result.output
+            if result.hasErrors {
+                text += "\n\n⚠️ 残留错误:\n" + result.errors.joined(separator: "\n")
+            }
+            return text
         }.joined(separator: "\n\n")
 
-        let synthesizePrompt: String
-        if subResults.isEmpty {
-            synthesizePrompt = """
-            你是一个任务协调者。你判断该任务不需要拆分给子 Agent。请直接回答用户的原始任务。
+        let synthesizePrompt = """
+        你是一个任务协调者。请根据以下信息，给出最终的完整回答。
 
-            原始用户任务: \(originalTask)
-            """
-        } else {
-            synthesizePrompt = """
-            你是一个任务协调者。请根据以下信息，给出最终的完整回答。
+        原始用户任务: \(originalTask)
 
-            原始用户任务: \(originalTask)
+        子任务执行结果:
+        \(resultsText)
 
-            子任务执行结果:
-            \(resultsText)
-
-            请综合所有信息，给出一个完整、准确、有条理的最终回答。
-            """
-        }
+        请综合所有信息，给出一个完整、准确、有条理的最终回答。
+        如果有子任务失败，请说明哪些部分完成了、哪些未完成，以及可能的原因。
+        """
 
         let messages = [
             Message.system(config.orchestrator.systemPrompt),
             Message.user(synthesizePrompt)
         ]
 
-        let response = try await orchestratorService.sendMessage(messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens)
+        let response = try await orchestratorService.sendMessage(
+            messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens
+        )
 
         return response.content ?? "无法生成最终结果"
+    }
+
+    // MARK: - Plan Update Helpers
+
+    private func updateSubTask(_ id: UUID, in plan: inout TaskPlan, status: SubTaskStatus, result: String? = nil) {
+        guard let index = plan.subTasks.firstIndex(where: { $0.id == id }) else { return }
+        plan.subTasks[index].status = status
+        if let result { plan.subTasks[index].result = result }
+        currentPlan = plan
     }
 }
 
@@ -458,12 +753,9 @@ enum MultiAgentError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .serviceNotAvailable(let name):
-            return "服务不可用: \(name)"
-        case .taskSplitFailed(let reason):
-            return "任务拆分失败: \(reason)"
-        case .executionFailed(let reason):
-            return "执行失败: \(reason)"
+        case .serviceNotAvailable(let name): return "服务不可用: \(name)"
+        case .taskSplitFailed(let reason): return "任务拆分失败: \(reason)"
+        case .executionFailed(let reason): return "执行失败: \(reason)"
         }
     }
 }
