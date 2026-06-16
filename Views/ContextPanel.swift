@@ -2,9 +2,8 @@ import SwiftUI
 
 /// Context Panel - Right sidebar showing session context
 struct ContextPanel: View {
+    let runtimeRoles: [AgentEngine.RuntimeModelRole]
     let messageCount: Int
-    let modelName: String
-    let providerName: String
     var estimatedTokens: Int = 0
     var contextWindow: Int = 200000
     var recentFiles: [String] = []
@@ -54,10 +53,17 @@ struct ContextPanel: View {
 
                     // Session Info
                     ContextSection(title: "Session") {
-                        ContextRow(label: "模型", value: modelName)
-                        ContextRow(label: "提供商", value: providerName)
+                        ContextRow(label: "模型数", value: "\(runtimeRoles.count)")
                         ContextRow(label: "消息数", value: "\(messageCount)")
                         ContextRow(label: "时间", value: formatDate(Date()))
+                    }
+
+                    if !runtimeRoles.isEmpty {
+                        ContextSection(title: "Models") {
+                            ForEach(runtimeRoles) { role in
+                                RuntimeModelRow(role: role)
+                            }
+                        }
                     }
 
                     // Context Usage
@@ -240,6 +246,50 @@ struct ContextRow: View {
                 .foregroundColor(Theme.textPrimary)
                 .lineLimit(1)
         }
+    }
+}
+
+struct RuntimeModelRow: View {
+    let role: AgentEngine.RuntimeModelRole
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(role.isActive ? Theme.statusSuccess : Theme.textTertiary.opacity(0.5))
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(role.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+
+                    if role.isActive {
+                        Text("ACTIVE")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundColor(Theme.statusSuccess)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Theme.statusSuccess.opacity(0.12))
+                            .cornerRadius(Theme.radiusSM)
+                    }
+                }
+
+                Text(role.modelName)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Theme.textPrimary)
+                    .lineLimit(1)
+
+                Text(role.providerName)
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.textTertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
     }
 }
 

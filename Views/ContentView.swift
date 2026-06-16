@@ -83,11 +83,10 @@ struct ContentView: View {
 
             // Context panel (right sidebar)
             ContextPanel(
+                runtimeRoles: agentEngine.runtimeModelRoles,
                 messageCount: agentEngine.messages.count,
-                modelName: agentEngine.configuration.executionModel,
-                providerName: agentEngine.configuration.executionProvider.displayName,
                 estimatedTokens: agentEngine.getTotalTokensUsed(),
-                contextWindow: AIProvider.contextWindow(for: agentEngine.configuration.executionModel),
+                contextWindow: AIProvider.contextWindow(for: agentEngine.primaryDisplayModelName),
                 recentFiles: agentEngine.memory.session.recentFiles
             )
             .frame(width: 260)
@@ -432,8 +431,8 @@ struct MainContentView: View {
                     isProcessing: agentEngine.isProcessing,
                     isFocused: $isInputFocused,
                     workingDirectory: $agentEngine.workingDirectory,
-                    modelName: agentEngine.configuration.executionModel,
-                    providerName: agentEngine.configuration.executionProvider.displayName,
+                    modelName: agentEngine.primaryDisplayModelName,
+                    providerName: agentEngine.primaryDisplayProviderName,
                     onSubmit: onSubmit,
                     onStop: {
                         agentEngine.stopProcessing()

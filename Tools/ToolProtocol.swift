@@ -68,7 +68,7 @@ enum CommandRiskLevel {
 // MARK: - Command Classifier
 
 struct CommandClassifier {
-    private static let safeCommands: [String] = [
+    private static let safeCommands: Set<String> = [
         // 只读文件操作
         "ls", "ll", "la", "tree", "file", "stat", "du", "df",
         "cat", "head", "tail", "less", "more", "wc", "sort", "uniq",
@@ -179,11 +179,10 @@ struct CommandClassifier {
             return .normal
         }
 
-        // 检查安全命令
-        for safeCmd in safeCommands {
-            if trimmed == safeCmd || trimmed.hasPrefix(safeCmd + " ") || trimmed.hasPrefix(safeCmd + "\t") {
-                return .safe
-            }
+        // 检查安全命令 - O(1) lookup
+        let baseCommand = extractBaseCommand(trimmed)
+        if safeCommands.contains(baseCommand) {
+            return .safe
         }
 
         // 检查 Git 子命令
@@ -315,5 +314,26 @@ struct CommandClassifier {
 
         let dynamicShellCharacters = CharacterSet(charactersIn: "$`*?[]{}()|&;<>")
         return target.rangeOfCharacter(from: dynamicShellCharacters) == nil
+    }
+
+    /// Extract the base command (1-2 word prefix) from a shell command string
+    private static func extractBaseCommand(_ command: String) -> String {
+        let parts = command.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        guard !parts.isEmpty else { return command }
+
+        // For git commands, include the subcommand (e.g., "git status")
+        if parts[0] == "git", parts.count >= 2 {
+            return "\(parts[0]) \(parts[1])"
+        }
+
+        // For version checks, include the flag (e.g., "swift --version")
+        if parts.count >= 2 && parts[1].hasPrefix("--version") {
+            return "\(parts[0]) --version"
+        }
+        if parts.count >= 2 && parts[1].hasPrefix("-version") {
+            return "\(parts[0]) -version"
+        }
+
+        return String(parts[0])
     }
 }

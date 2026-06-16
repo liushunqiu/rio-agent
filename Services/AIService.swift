@@ -57,36 +57,3 @@ class AIServiceFactory {
         }
     }
 }
-
-// MARK: - SSE Parser
-
-class SSEParser {
-    /// Parse a Server-Sent Events stream from URLSession bytes
-    static func parse(
-        _ data: Data,
-        onEvent: (String, String) -> Void
-    ) {
-        guard let text = String(data: data, encoding: .utf8) else { return }
-        let lines = text.components(separatedBy: "\n")
-
-        var currentEvent = ""
-        var currentData = ""
-
-        for line in lines {
-            if line.hasPrefix("event:") {
-                currentEvent = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:") {
-                currentData = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-            } else if line.isEmpty && !currentData.isEmpty {
-                onEvent(currentEvent, currentData)
-                currentEvent = ""
-                currentData = ""
-            }
-        }
-
-        // Handle remaining data
-        if !currentData.isEmpty {
-            onEvent(currentEvent, currentData)
-        }
-    }
-}

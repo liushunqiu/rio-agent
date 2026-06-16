@@ -1,5 +1,17 @@
 import Foundation
 
+// MARK: - Model Pattern (data-driven capability matching)
+
+private struct ModelPattern {
+    let match: (String) -> Bool
+    let capabilities: ModelCapabilities
+}
+
+private struct PricingPattern {
+    let match: (String) -> Bool
+    let pricing: ModelPricing
+}
+
 /// Model capability matrix for feature detection
 struct ModelCapabilities {
     
@@ -35,261 +47,66 @@ struct ModelCapabilities {
     
     // MARK: - Static Model Database
     
+    private static let defaultCapabilities = ModelCapabilities(
+        supportsToolCalling: true, supportsStreaming: true,
+        contextWindow: 8192, maxOutputTokens: 4096
+    )
+    
+    private static let capabilityPatterns: [ModelPattern] = [
+        // Claude
+        .init(match: { $0.contains("claude-sonnet-4") || $0.contains("claude-4") },
+              capabilities: .init(supportsThinking: true, supportsVision: true, contextWindow: 200000, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("claude-3.5-sonnet") || $0.contains("claude-3-5-sonnet") },
+              capabilities: .init(supportsVision: true, contextWindow: 200000, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("claude-3-opus") || $0.contains("claude-3.5-opus") },
+              capabilities: .init(supportsVision: true, contextWindow: 200000, maxOutputTokens: 4096)),
+        .init(match: { $0.contains("claude-3-haiku") || $0.contains("claude-3-5-haiku") },
+              capabilities: .init(supportsVision: true, contextWindow: 200000, maxOutputTokens: 4096)),
+        // OpenAI (gpt-4.1 before gpt-4o to avoid substring conflicts)
+        .init(match: { $0.contains("gpt-4.1") },
+              capabilities: .init(supportsVision: true, supportsJSON: true, contextWindow: 1047000, maxOutputTokens: 32768)),
+        .init(match: { $0.contains("gpt-4o") },
+              capabilities: .init(supportsVision: true, supportsJSON: true, contextWindow: 128000, maxOutputTokens: 16384)),
+        .init(match: { $0.contains("o1") || $0.contains("o3") },
+              capabilities: .init(supportsThinking: true, supportsVision: true, supportsJSON: true, contextWindow: 128000, maxOutputTokens: 32768)),
+        .init(match: { $0.contains("gpt-4-turbo") },
+              capabilities: .init(supportsVision: true, supportsJSON: true, contextWindow: 128000, maxOutputTokens: 4096)),
+        .init(match: { $0.contains("gpt-4") },
+              capabilities: .init(supportsJSON: true, contextWindow: 8192, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("gpt-3.5") },
+              capabilities: .init(supportsJSON: true, contextWindow: 16384, maxOutputTokens: 4096)),
+        // DeepSeek (r1 before v3/general for correct thinking support)
+        .init(match: { $0.contains("deepseek-r1") },
+              capabilities: .init(supportsThinking: true, supportsJSON: true, contextWindow: 65536, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("deepseek-v3") || $0.contains("deepseek") },
+              capabilities: .init(supportsJSON: true, contextWindow: 65536, maxOutputTokens: 8192)),
+        // Qwen
+        .init(match: { $0.contains("qwen-max") || $0.contains("qwen2.5-72b") },
+              capabilities: .init(supportsJSON: true, contextWindow: 131072, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("qwen") },
+              capabilities: .init(supportsJSON: true, contextWindow: 32768, maxOutputTokens: 8192)),
+        // Gemini
+        .init(match: { $0.contains("gemini-2.0") || $0.contains("gemini-2.5") },
+              capabilities: .init(supportsThinking: true, supportsVision: true, supportsJSON: true, contextWindow: 1_048_576, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("gemini-1.5") },
+              capabilities: .init(supportsVision: true, supportsJSON: true, contextWindow: 1_048_576, maxOutputTokens: 8192)),
+        .init(match: { $0.contains("gemini") },
+              capabilities: .init(supportsVision: true, supportsJSON: true, contextWindow: 32768, maxOutputTokens: 8192)),
+        // Yi
+        .init(match: { $0.contains("yi-") },
+              capabilities: .init(contextWindow: 200000, maxOutputTokens: 4096)),
+        // Million-context models
+        .init(match: { $0.contains("mimo") || $0.contains("glm") || $0.contains("mini-max") || $0.contains("minimax") },
+              capabilities: .init(contextWindow: 1_000_000, maxOutputTokens: 16384)),
+    ]
+    
     /// Get capabilities for a specific model
     static func capabilities(for model: String) -> ModelCapabilities {
-        let lowercased = model.lowercased()
-        
-        // Claude Models
-        if lowercased.contains("claude-sonnet-4") || lowercased.contains("claude-4") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: true,
-                supportsVision: true,
-                supportsJSON: false,
-                contextWindow: 200000,
-                maxOutputTokens: 8192
-            )
+        let lower = model.lowercased()
+        for pattern in capabilityPatterns {
+            if pattern.match(lower) { return pattern.capabilities }
         }
-        
-        if lowercased.contains("claude-3.5-sonnet") || lowercased.contains("claude-3-5-sonnet") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: false,
-                contextWindow: 200000,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        if lowercased.contains("claude-3-opus") || lowercased.contains("claude-3.5-opus") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: false,
-                contextWindow: 200000,
-                maxOutputTokens: 4096
-            )
-        }
-        
-        if lowercased.contains("claude-3-haiku") || lowercased.contains("claude-3-5-haiku") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: false,
-                contextWindow: 200000,
-                maxOutputTokens: 4096
-            )
-        }
-        
-        // OpenAI GPT-4o Models
-        if lowercased.contains("gpt-4o") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 128000,
-                maxOutputTokens: 16384
-            )
-        }
-        
-        // OpenAI GPT-4.1 Models
-        if lowercased.contains("gpt-4.1") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 1047000,
-                maxOutputTokens: 32768
-            )
-        }
-        
-        // OpenAI o1/o3 Reasoning Models
-        if lowercased.contains("o1") || lowercased.contains("o3") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: true,  // Reasoning models have built-in thinking
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 128000,
-                maxOutputTokens: 32768
-            )
-        }
-        
-        // OpenAI GPT-4 Turbo
-        if lowercased.contains("gpt-4-turbo") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 128000,
-                maxOutputTokens: 4096
-            )
-        }
-        
-        // OpenAI GPT-4
-        if lowercased.contains("gpt-4") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: true,
-                contextWindow: 8192,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        // OpenAI GPT-3.5 Turbo
-        if lowercased.contains("gpt-3.5") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: true,
-                contextWindow: 16384,
-                maxOutputTokens: 4096
-            )
-        }
-        
-        // DeepSeek Models
-        if lowercased.contains("deepseek-v3") || lowercased.contains("deepseek-r1") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: lowercased.contains("r1"),  // R1 has reasoning
-                supportsVision: false,
-                supportsJSON: true,
-                contextWindow: 65536,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        if lowercased.contains("deepseek") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: true,
-                contextWindow: 65536,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        // Qwen Models
-        if lowercased.contains("qwen-max") || lowercased.contains("qwen2.5-72b") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: true,
-                contextWindow: 131072,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        if lowercased.contains("qwen") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: true,
-                contextWindow: 32768,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        // Gemini Models
-        if lowercased.contains("gemini-2.0") || lowercased.contains("gemini-2.5") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: true,  // Gemini 2.0+ supports thinking
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 1_048_576,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        if lowercased.contains("gemini-1.5") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 1_048_576,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        if lowercased.contains("gemini") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: true,
-                supportsJSON: true,
-                contextWindow: 32768,
-                maxOutputTokens: 8192
-            )
-        }
-        
-        // Yi Models
-        if lowercased.contains("yi-") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: false,
-                contextWindow: 200000,
-                maxOutputTokens: 4096
-            )
-        }
-        
-        // Million context models (mimo, glm, minimax)
-        if lowercased.contains("mimo") || lowercased.contains("glm") || 
-           lowercased.contains("mini-max") || lowercased.contains("minimax") {
-            return ModelCapabilities(
-                supportsToolCalling: true,
-                supportsStreaming: true,
-                supportsThinking: false,
-                supportsVision: false,
-                supportsJSON: false,
-                contextWindow: 1_000_000,
-                maxOutputTokens: 16384
-            )
-        }
-        
-        // Default fallback (conservative)
-        return ModelCapabilities(
-            supportsToolCalling: true,
-            supportsStreaming: true,
-            supportsThinking: false,
-            supportsVision: false,
-            supportsJSON: false,
-            contextWindow: 8192,
-            maxOutputTokens: 4096
-        )
+        return defaultCapabilities
     }
     
     // MARK: - Convenience Methods
@@ -334,102 +151,52 @@ struct ModelPricing {
 }
 
 extension ModelCapabilities {
+    
+    private static let defaultPricing = ModelPricing(inputPerMillion: 2.0, outputPerMillion: 8.0)
+    
+    private static let pricingPatterns: [PricingPattern] = [
+        // Claude
+        .init(match: { $0.contains("claude-sonnet-4") || $0.contains("claude-4") }, pricing: .init(inputPerMillion: 3.0, outputPerMillion: 15.0)),
+        .init(match: { $0.contains("claude-3-opus") || $0.contains("claude-3.5-opus") || $0.contains("opus-4") }, pricing: .init(inputPerMillion: 15.0, outputPerMillion: 75.0)),
+        .init(match: { $0.contains("claude-3-5-haiku") || $0.contains("claude-3.5-haiku") }, pricing: .init(inputPerMillion: 0.80, outputPerMillion: 4.0)),
+        .init(match: { $0.contains("claude-3-haiku") }, pricing: .init(inputPerMillion: 0.25, outputPerMillion: 1.25)),
+        .init(match: { $0.contains("claude-3-5-sonnet") || $0.contains("claude-3.5-sonnet") }, pricing: .init(inputPerMillion: 3.0, outputPerMillion: 15.0)),
+        // OpenAI (specific models before general to avoid substring conflicts)
+        .init(match: { $0.contains("gpt-4o-mini") }, pricing: .init(inputPerMillion: 0.15, outputPerMillion: 0.60)),
+        .init(match: { $0.contains("gpt-4o") }, pricing: .init(inputPerMillion: 2.50, outputPerMillion: 10.0)),
+        .init(match: { $0.contains("gpt-4.1-mini") }, pricing: .init(inputPerMillion: 0.40, outputPerMillion: 1.60)),
+        .init(match: { $0.contains("gpt-4.1") }, pricing: .init(inputPerMillion: 2.0, outputPerMillion: 8.0)),
+        .init(match: { $0.contains("o3-mini") }, pricing: .init(inputPerMillion: 1.10, outputPerMillion: 4.40)),
+        .init(match: { $0.contains("o3") }, pricing: .init(inputPerMillion: 10.0, outputPerMillion: 40.0)),
+        .init(match: { $0.contains("o1") }, pricing: .init(inputPerMillion: 15.0, outputPerMillion: 60.0)),
+        // DeepSeek (specific variants before general)
+        .init(match: { $0.contains("deepseek-v3") || $0.contains("deepseek-chat") }, pricing: .init(inputPerMillion: 0.27, outputPerMillion: 1.10)),
+        .init(match: { $0.contains("deepseek-r1") || $0.contains("deepseek-reasoner") }, pricing: .init(inputPerMillion: 0.55, outputPerMillion: 2.19)),
+        .init(match: { $0.contains("deepseek") }, pricing: .init(inputPerMillion: 0.44, outputPerMillion: 0.87)),
+        // Gemini
+        .init(match: { $0.contains("gemini-2.5-flash") || $0.contains("gemini-3-flash") }, pricing: .init(inputPerMillion: 0.50, outputPerMillion: 3.0)),
+        .init(match: { $0.contains("gemini-2.5-pro") || $0.contains("gemini-3.1-pro") }, pricing: .init(inputPerMillion: 1.25, outputPerMillion: 10.0)),
+        .init(match: { $0.contains("gemini-2.0-flash") }, pricing: .init(inputPerMillion: 0.10, outputPerMillion: 0.40)),
+        .init(match: { $0.contains("gemini-1.5-pro") }, pricing: .init(inputPerMillion: 1.25, outputPerMillion: 5.0)),
+        .init(match: { $0.contains("gemini-1.5-flash") }, pricing: .init(inputPerMillion: 0.075, outputPerMillion: 0.30)),
+        // Qwen
+        .init(match: { $0.contains("qwen-max") || $0.contains("qwen2.5-72b") }, pricing: .init(inputPerMillion: 1.60, outputPerMillion: 4.80)),
+        .init(match: { $0.contains("qwen-plus") }, pricing: .init(inputPerMillion: 0.40, outputPerMillion: 1.20)),
+        .init(match: { $0.contains("qwen-turbo") || $0.contains("qwen3.6-flash") }, pricing: .init(inputPerMillion: 0.05, outputPerMillion: 0.20)),
+        // Kimi
+        .init(match: { $0.contains("kimi-k2") || $0.contains("moonshot") }, pricing: .init(inputPerMillion: 0.95, outputPerMillion: 4.0)),
+        // GLM
+        .init(match: { $0.contains("glm-4") || $0.contains("glm-5") }, pricing: .init(inputPerMillion: 0.70, outputPerMillion: 2.80)),
+    ]
+    
     /// Get pricing information for a model (USD per million tokens)
     /// Based on publicly available pricing as of June 2026
     static func pricing(for model: String) -> ModelPricing {
-        let lowercased = model.lowercased()
-        
-        // Claude Models
-        if lowercased.contains("claude-sonnet-4") || lowercased.contains("claude-4") {
-            return ModelPricing(inputPerMillion: 3.0, outputPerMillion: 15.0)
+        let lower = model.lowercased()
+        for pattern in pricingPatterns {
+            if pattern.match(lower) { return pattern.pricing }
         }
-        if lowercased.contains("claude-3-opus") || lowercased.contains("claude-3.5-opus") || lowercased.contains("opus-4") {
-            return ModelPricing(inputPerMillion: 15.0, outputPerMillion: 75.0)
-        }
-        if lowercased.contains("claude-3-5-haiku") || lowercased.contains("claude-3.5-haiku") {
-            return ModelPricing(inputPerMillion: 0.80, outputPerMillion: 4.0)
-        }
-        if lowercased.contains("claude-3-haiku") {
-            return ModelPricing(inputPerMillion: 0.25, outputPerMillion: 1.25)
-        }
-        if lowercased.contains("claude-3-5-sonnet") || lowercased.contains("claude-3.5-sonnet") {
-            return ModelPricing(inputPerMillion: 3.0, outputPerMillion: 15.0)
-        }
-        
-        // OpenAI Models
-        if lowercased.contains("gpt-4o-mini") {
-            return ModelPricing(inputPerMillion: 0.15, outputPerMillion: 0.60)
-        }
-        if lowercased.contains("gpt-4o") {
-            return ModelPricing(inputPerMillion: 2.50, outputPerMillion: 10.0)
-        }
-        if lowercased.contains("gpt-4.1-mini") {
-            return ModelPricing(inputPerMillion: 0.40, outputPerMillion: 1.60)
-        }
-        if lowercased.contains("gpt-4.1") {
-            return ModelPricing(inputPerMillion: 2.0, outputPerMillion: 8.0)
-        }
-        if lowercased.contains("o3-mini") {
-            return ModelPricing(inputPerMillion: 1.10, outputPerMillion: 4.40)
-        }
-        if lowercased.contains("o3") {
-            return ModelPricing(inputPerMillion: 10.0, outputPerMillion: 40.0)
-        }
-        if lowercased.contains("o1") {
-            return ModelPricing(inputPerMillion: 15.0, outputPerMillion: 60.0)
-        }
-        
-        // DeepSeek Models (permanently reduced pricing)
-        if lowercased.contains("deepseek-v3") || lowercased.contains("deepseek-chat") {
-            return ModelPricing(inputPerMillion: 0.27, outputPerMillion: 1.10)
-        }
-        if lowercased.contains("deepseek-r1") || lowercased.contains("deepseek-reasoner") {
-            return ModelPricing(inputPerMillion: 0.55, outputPerMillion: 2.19)
-        }
-        if lowercased.contains("deepseek") {
-            return ModelPricing(inputPerMillion: 0.44, outputPerMillion: 0.87)
-        }
-        
-        // Gemini Models
-        if lowercased.contains("gemini-2.5-flash") || lowercased.contains("gemini-3-flash") {
-            return ModelPricing(inputPerMillion: 0.50, outputPerMillion: 3.0)
-        }
-        if lowercased.contains("gemini-2.5-pro") || lowercased.contains("gemini-3.1-pro") {
-            return ModelPricing(inputPerMillion: 1.25, outputPerMillion: 10.0)
-        }
-        if lowercased.contains("gemini-2.0-flash") {
-            return ModelPricing(inputPerMillion: 0.10, outputPerMillion: 0.40)
-        }
-        if lowercased.contains("gemini-1.5-pro") {
-            return ModelPricing(inputPerMillion: 1.25, outputPerMillion: 5.0)
-        }
-        if lowercased.contains("gemini-1.5-flash") {
-            return ModelPricing(inputPerMillion: 0.075, outputPerMillion: 0.30)
-        }
-        
-        // Qwen Models
-        if lowercased.contains("qwen-max") || lowercased.contains("qwen2.5-72b") {
-            return ModelPricing(inputPerMillion: 1.60, outputPerMillion: 4.80)
-        }
-        if lowercased.contains("qwen-plus") {
-            return ModelPricing(inputPerMillion: 0.40, outputPerMillion: 1.20)
-        }
-        if lowercased.contains("qwen-turbo") || lowercased.contains("qwen3.6-flash") {
-            return ModelPricing(inputPerMillion: 0.05, outputPerMillion: 0.20)
-        }
-        
-        // Kimi Models
-        if lowercased.contains("kimi-k2") || lowercased.contains("moonshot") {
-            return ModelPricing(inputPerMillion: 0.95, outputPerMillion: 4.0)
-        }
-        
-        // GLM Models
-        if lowercased.contains("glm-4") || lowercased.contains("glm-5") {
-            return ModelPricing(inputPerMillion: 0.70, outputPerMillion: 2.80)
-        }
-        
-        // Default (conservative estimate)
-        return ModelPricing(inputPerMillion: 2.0, outputPerMillion: 8.0)
+        return defaultPricing
     }
 }
 

@@ -67,6 +67,10 @@ class MultiAgentEngine: ObservableObject {
         setupServices()
     }
 
+    var currentConfig: MultiAgentConfig {
+        config
+    }
+
     // MARK: - Main Processing Pipeline
 
     func processTask(_ task: String) async -> String {

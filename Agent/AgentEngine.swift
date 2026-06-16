@@ -5,6 +5,14 @@ import UniformTypeIdentifiers
 
 @MainActor
 class AgentEngine: ObservableObject {
+    struct RuntimeModelRole: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let providerName: String
+        let modelName: String
+        let isActive: Bool
+    }
+
     @Published var messages: [Message] = []
     @Published var isProcessing = false
     @Published var error: String?
@@ -82,6 +90,10 @@ class AgentEngine: ObservableObject {
         return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
     }
 
+    private func configSet(for id: UUID?) -> ConfigSet? {
+        ConfigSetManager.shared.configSet(for: id)
+    }
+
     private func missingServiceMessage(role: String, provider: AIProvider) -> String {
         if provider == .openAICompatible {
             return "\(role)未配置 API 端点。请前往 设置 → AI 配置 → 自定义端点填写服务地址。"
@@ -117,7 +129,123 @@ class AgentEngine: ObservableObject {
         saveMultiAgentConfig()
     }
 
+    var usesMultiAgentForCurrentPlan: Bool {
+        currentTaskPlan != nil
+    }
+
+    var runtimeModelRoles: [RuntimeModelRole] {
+        if usesMultiAgentForCurrentPlan, let multiAgentEngine {
+            return buildMultiAgentRuntimeRoles(
+                config: multiAgentEngine.currentConfig,
+                plan: currentTaskPlan
+            )
+        }
+        return buildSingleAgentRuntimeRoles()
+    }
+
+    var primaryDisplayModelName: String {
+        runtimeModelRoles.first(where: \.isActive)?.modelName
+            ?? runtimeModelRoles.first?.modelName
+            ?? configuration.executionModel
+    }
+
+    var primaryDisplayProviderName: String {
+        runtimeModelRoles.first(where: \.isActive)?.providerName
+            ?? runtimeModelRoles.first?.providerName
+            ?? configuration.executionProvider.displayName
+    }
+
     // MARK: - Configuration Persistence
+
+    private func buildSingleAgentRuntimeRoles() -> [RuntimeModelRole] {
+        var roles: [RuntimeModelRole] = []
+
+        if multiAgentConfig.router.enabled {
+            let routerConfigSet = configSet(for: multiAgentConfig.router.configSetId)
+            let routerModel = multiAgentConfig.router.model.isEmpty
+                ? configuration.executionModel
+                : multiAgentConfig.router.model
+            let routerProvider = routerConfigSet?.provider.displayName
+                ?? configuration.executionProvider.displayName
+            roles.append(RuntimeModelRole(
+                id: "router",
+                title: "Router",
+                providerName: routerProvider,
+                modelName: routerModel,
+                isActive: isProcessing && messages.last?.role != .assistant
+            ))
+        }
+
+        let planningActive = isProcessing && !usesMultiAgentForCurrentPlan
+        roles.append(RuntimeModelRole(
+            id: "planning",
+            title: "Planning",
+            providerName: configuration.planningProvider.displayName,
+            modelName: configuration.planningModel,
+            isActive: planningActive
+        ))
+
+        roles.append(RuntimeModelRole(
+            id: "execution",
+            title: "Execution",
+            providerName: configuration.executionProvider.displayName,
+            modelName: configuration.executionModel,
+            isActive: isProcessing && !usesMultiAgentForCurrentPlan
+        ))
+
+        return deduplicatedRoles(roles)
+    }
+
+    private func buildMultiAgentRuntimeRoles(
+        config: MultiAgentConfig,
+        plan: TaskPlan?
+    ) -> [RuntimeModelRole] {
+        var activeIds = Set<String>()
+        if let plan {
+            switch plan.status {
+            case .planning, .synthesizing, .verifying:
+                activeIds.insert("orchestrator")
+            case .executing:
+                let runningWorkers = plan.subTasks.compactMap { subTask -> String? in
+                    guard subTask.status == .running, let worker = subTask.assignedWorker else { return nil }
+                    return "worker-\(worker.id.uuidString)"
+                }
+                if runningWorkers.isEmpty {
+                    activeIds.insert("orchestrator")
+                } else {
+                    runningWorkers.forEach { activeIds.insert($0) }
+                }
+            case .completed, .failed:
+                break
+            }
+        }
+
+        var roles: [RuntimeModelRole] = [
+            RuntimeModelRole(
+                id: "orchestrator",
+                title: "Orchestrator",
+                providerName: config.orchestrator.provider.displayName,
+                modelName: config.orchestrator.model,
+                isActive: activeIds.contains("orchestrator")
+            )
+        ]
+
+        for worker in config.workers where worker.isEnabled {
+            roles.append(RuntimeModelRole(
+                id: "worker-\(worker.id.uuidString)",
+                title: worker.name,
+                providerName: worker.provider.displayName,
+                modelName: worker.model,
+                isActive: activeIds.contains("worker-\(worker.id.uuidString)")
+            ))
+        }
+
+        return deduplicatedRoles(roles)
+    }
+
+    private func deduplicatedRoles(_ roles: [RuntimeModelRole]) -> [RuntimeModelRole] {
+        roles.filter { !$0.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
 
     private let configurationKey = "ai_configuration"
     private let multiAgentConfigKey = "multi_agent_configuration"
@@ -489,209 +617,182 @@ class AgentEngine: ObservableObject {
         currentTaskPlan = nil
     }
 
-    // MARK: - Tool Call Loop Limit
+    // MARK: - Tool Call Loop Constants
 
     /// Maximum number of tool call iterations to prevent infinite loops
-    private static let maxToolCallIterations = 9999
+    static let maxIterations = 9999
     /// Maximum consecutive errors before aborting
-    private static let maxConsecutiveErrors = 5
+    static let maxConsecutiveErrors = 5
+
+    // MARK: - Bridge Properties & Methods (for ConversationLoop)
+
+    /// Cancellation flag exposed to ConversationLoop
+    var isCancelledFlag: Bool { isCancelled }
+
+    /// Append a message to the conversation
+    func appendMessage(_ message: Message) { messages.append(message) }
+
+    /// Build context messages for the AI call
+    func buildContextMessages() -> [Message] { getContextMessages() }
+
+    /// Track token usage from an API response
+    func trackTokenUsage(_ usage: AIResponse.Usage?) { trackUsage(usage) }
+
+    /// Advance the active plan step on successful tool execution
+    func advancePlanStep() {
+        if !activePlan.isEmpty {
+            currentPlanStep = min(currentPlanStep + 1, activePlan.count)
+        }
+    }
+
+    /// Clear the active task plan
+    func clearPlan() { clearActivePlan() }
+
+    /// Handle final assistant content when no tool calls are returned
+    func handleFinalContent(_ content: String?) {
+        if let content, !content.isEmpty {
+            messages.append(Message.assistant(content))
+        }
+    }
+
+    /// Build error reflection + optional critic analysis for tool results
+    func buildToolResultReflection(
+        toolCalls: [ToolCall],
+        results: [ToolResult],
+        consecutiveErrors: Int
+    ) async -> String {
+        var reflection = ""
+        for (index, toolCall) in toolCalls.enumerated() {
+            if index < results.count && results[index].status == .error {
+                reflection += generateErrorReflection(toolCall: toolCall, result: results[index])
+            }
+        }
+        if consecutiveErrors >= 2, let criticService {
+            let errorMessages = results.filter { $0.status == .error }.compactMap { $0.error }
+            if !errorMessages.isEmpty {
+                let taskContext = activePlan.first ?? memory.session.currentTask ?? ""
+                let criticFeedback = await criticService.analyze(
+                    task: taskContext, errors: errorMessages,
+                    output: messages.last?.content ?? "", systemPrompt: nil
+                )
+                reflection += "\n\n[Critic Analysis]\n\(criticFeedback)"
+            }
+        }
+        return reflection
+    }
 
     // MARK: - Streaming Single Agent Processing
 
     private func processConversationLoopStreaming(aiService: AIService) async throws {
         let model = configuration.executionModel
-        let toolDefinitions = toolRegistry.getToolDefinitions()
-        var iterationCount = 0
-        var consecutiveErrors = 0
+        var thinkingStartTime: Date?
+        var thinkingEndTime: Date?
+        var hasThinkingContent = false
 
-        while true {
-            // Check for cancellation
-            guard !isCancelled else { break }
-
-            iterationCount += 1
-
-            // Prevent infinite tool call loops
-            guard iterationCount <= Self.maxToolCallIterations else {
-                let warningMsg = Message.system("⚠️ 已达到最大工具调用次数上限（\(Self.maxToolCallIterations) 次），已自动停止。如需继续，请直接描述下一步操作。")
-                messages.append(warningMsg)
-                break
-            }
-            let contextMessages = getContextMessages()
+        try await ConversationLoop.run(engine: self) { contextMessages in
+            // Pre-call setup: add streaming placeholder message
             let streamingMessage = Message.streamingAssistant()
-            messages.append(streamingMessage)
-            let streamingIndex = messages.count - 1
+            self.messages.append(streamingMessage)
+            let streamingIndex = self.messages.count - 1
             let messageId = streamingMessage.id
 
-            var thinkingStartTime: Date?
-            var thinkingEndTime: Date?
-            var hasThinkingContent = false
-            // Buffer to coalesce rapid streaming chunks into fewer UI updates
-            // 使用更大的缓冲区和更长的间隔来减少UI更新频率
-            // 12fps + 500字符批量，大幅减少 SwiftUI 重绘次数
+            // Buffer coalesces rapid streaming chunks into fewer UI updates (~12fps)
             let buffer = StreamBuffer(interval: 0.08, maxCharsBeforeFlush: 500)
+
+            // Unified flush handler — updates streaming message content & thinking
+            let flushHandler: @MainActor @Sendable (String, String) async -> Void = { [weak self] content, thinking in
+                guard let self, streamingIndex < self.messages.count else { return }
+                if !content.isEmpty {
+                    self.messages[streamingIndex].content += content
+                }
+                if !thinking.isEmpty {
+                    let current = self.messages[streamingIndex].thinkingContent ?? ""
+                    self.messages[streamingIndex].thinkingContent = current + thinking
+                    // Update duration during streaming so it displays in real-time
+                    if let start = thinkingStartTime {
+                        self.messages[streamingIndex].thinkingDuration = Date().timeIntervalSince(start)
+                    }
+                }
+            }
 
             let response: AIResponse
             do {
                 response = try await aiService.sendMessageStreaming(
                     contextMessages,
-                    tools: toolDefinitions,
+                    tools: self.toolRegistry.getToolDefinitions(),
                     model: model,
-                    maxTokens: configuration.maxTokens,
-                    onChunk: { [weak self] chunk in
+                    maxTokens: self.configuration.maxTokens,
+                    onChunk: { chunk in
                         buffer.appendContent(chunk)
-                        await buffer.flushIfNeeded { content, thinking in
-                            guard let self = self, streamingIndex < self.messages.count else { return }
-                            if !content.isEmpty {
-                                self.messages[streamingIndex].content += content
-                            }
-                            if !thinking.isEmpty {
-                                let current = self.messages[streamingIndex].thinkingContent ?? ""
-                                self.messages[streamingIndex].thinkingContent = current + thinking
-                                if let start = thinkingStartTime, let end = thinkingEndTime {
-                                    self.messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
-                                }
-                            }
-                        }
+                        await buffer.flushIfNeeded(update: flushHandler)
                     },
-                    onThinkingChunk: { [weak self] chunk in
+                    onThinkingChunk: { chunk in
                         if !hasThinkingContent {
                             hasThinkingContent = true
                             thinkingStartTime = Date()
                         }
                         thinkingEndTime = Date()
                         buffer.appendThinking(chunk)
-                        await buffer.flushIfNeeded { content, thinking in
-                            guard let self = self, streamingIndex < self.messages.count else { return }
-                            if !content.isEmpty {
-                                self.messages[streamingIndex].content += content
-                            }
-                            if !thinking.isEmpty {
-                                let current = self.messages[streamingIndex].thinkingContent ?? ""
-                                self.messages[streamingIndex].thinkingContent = current + thinking
-                                if let start = thinkingStartTime, let end = thinkingEndTime {
-                                    self.messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
-                                }
-                            }
-                        }
+                        await buffer.flushIfNeeded(update: flushHandler)
                     }
                 )
             } catch {
-                if streamingIndex < messages.count {
-                    messages.remove(at: streamingIndex)
+                if streamingIndex < self.messages.count {
+                    self.messages.remove(at: streamingIndex)
                 }
                 throw error
             }
 
-            // Track token usage and cost
-            trackUsage(response.usage)
+            // Flush remaining buffered content
+            await buffer.flush(update: flushHandler)
 
-            // Flush any remaining buffered content
-            await buffer.flush { content, thinking in
-                guard streamingIndex < messages.count else { return }
-                if !content.isEmpty {
-                    messages[streamingIndex].content += content
-                }
-                if !thinking.isEmpty {
-                    let current = messages[streamingIndex].thinkingContent ?? ""
-                    messages[streamingIndex].thinkingContent = current + thinking
-                }
+            guard streamingIndex < self.messages.count else {
+                // Message was removed (shouldn't happen), return empty to break loop
+                return AIResponse(content: nil, reasoningContent: nil, toolCalls: nil, usage: nil)
             }
-
-            guard streamingIndex < messages.count else { break }
 
             if hasThinkingContent, let start = thinkingStartTime, let end = thinkingEndTime {
-                messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
+                self.messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
             }
 
-            let hasReasoning = hasThinkingContent && (messages[streamingIndex].thinkingContent?.isEmpty == false)
+            // Update streaming message with final response
+            let hasReasoning = hasThinkingContent && (self.messages[streamingIndex].thinkingContent?.isEmpty == false)
             if let content = response.content, !content.isEmpty {
-                messages[streamingIndex].content = content
-                messages[streamingIndex].isStreaming = false
+                self.messages[streamingIndex].content = content
+                self.messages[streamingIndex].isStreaming = false
             } else if response.toolCalls == nil {
                 if hasReasoning {
-                    messages[streamingIndex].isStreaming = false
-                    break
-                }
-                if streamingIndex < messages.count {
-                    messages.remove(at: streamingIndex)
+                    self.messages[streamingIndex].isStreaming = false
+                } else if streamingIndex < self.messages.count {
+                    self.messages.remove(at: streamingIndex)
                 }
             }
 
-            guard streamingIndex < messages.count else { break }
-
+            // Attach tool calls to streaming message if present
             if let toolCalls = response.toolCalls, !toolCalls.isEmpty {
                 if let content = response.content, !content.isEmpty {
-                    messages[streamingIndex].content = content
-                    messages[streamingIndex].isStreaming = false
-                    messages[streamingIndex].toolCalls = toolCalls
+                    self.messages[streamingIndex].content = content
+                    self.messages[streamingIndex].isStreaming = false
+                    self.messages[streamingIndex].toolCalls = toolCalls
                 } else {
-                    let existingThinking = messages[streamingIndex].thinkingContent
-                    let existingDuration = messages[streamingIndex].thinkingDuration
-                    messages[streamingIndex] = Message(
-                        id: messageId,
-                        role: .assistant,
+                    let existingThinking = self.messages[streamingIndex].thinkingContent
+                    let existingDuration = self.messages[streamingIndex].thinkingDuration
+                    self.messages[streamingIndex] = Message(
+                        id: messageId, role: .assistant,
                         content: response.content ?? "",
                         thinkingContent: existingThinking,
                         thinkingDuration: existingDuration,
                         toolCalls: toolCalls
                     )
                 }
-
-                let results = await executeToolCalls(toolCalls)
-
-                // Track consecutive errors to abort if stuck
-                let hasErrors = results.contains { $0.status == .error }
-                if hasErrors {
-                    consecutiveErrors += 1
-                    if consecutiveErrors >= Self.maxConsecutiveErrors {
-                        let warningMsg = Message.system("⚠️ 连续 \(consecutiveErrors) 次工具执行错误，已自动停止。请检查错误信息后重试。")
-                        messages.append(warningMsg)
-                        break
-                    }
-                } else {
-                    consecutiveErrors = 0
-                    // Advance task plan progress on successful tool execution
-                    if !activePlan.isEmpty {
-                        currentPlanStep = min(currentPlanStep + 1, activePlan.count)
-                    }
-                }
-
-                // Inject error reflection into tool results for AI to learn from
-                var reflectionContent = ""
-                for (index, toolCall) in toolCalls.enumerated() {
-                    if index < results.count && results[index].status == .error {
-                        reflectionContent += generateErrorReflection(toolCall: toolCall, result: results[index])
-                    }
-                }
-
-                // When consecutive errors accumulate, escalate to Critic for deeper analysis
-                if consecutiveErrors >= 2, let criticService {
-                    let errorMessages = results.filter { $0.status == .error }.compactMap { $0.error }
-                    if !errorMessages.isEmpty {
-                        let taskContext = activePlan.first ?? memory.session.currentTask ?? ""
-                        let criticFeedback = await criticService.analyze(
-                            task: taskContext,
-                            errors: errorMessages,
-                            output: messages.last?.content ?? "",
-                            systemPrompt: nil
-                        )
-                        reflectionContent += "\n\n[Critic Analysis]\n\(criticFeedback)"
-                    }
-                }
-
-                let resultMessage = Message(
-                    role: .user,
-                    content: reflectionContent.isEmpty ? "" : "[Tool Execution Results with Analysis]",
-                    toolResults: results
-                )
-                messages.append(resultMessage)
-
-                continue
             }
 
-            // Task complete — clear active plan
-            clearActivePlan()
-            break
+            return AIResponse(
+                content: nil,
+                reasoningContent: response.reasoningContent,
+                toolCalls: response.toolCalls,
+                usage: response.usage
+            )
         }
     }
 
@@ -699,103 +800,13 @@ class AgentEngine: ObservableObject {
 
     private func processConversationLoop(aiService: AIService) async throws {
         let model = configuration.executionModel
-        let toolDefinitions = toolRegistry.getToolDefinitions()
-        var iterationCount = 0
-        var consecutiveErrors = 0
-
-        while true {
-            // Get context messages inside the loop to reflect new tool results
-            let contextMessages = getContextMessages()
-
-            // Check for cancellation
-            guard !isCancelled else { break }
-
-            iterationCount += 1
-            guard iterationCount <= Self.maxToolCallIterations else {
-                let warningMsg = Message.system("⚠️ 已达到最大工具调用次数上限（\(Self.maxToolCallIterations) 次），已自动停止。如需继续，请直接描述下一步操作。")
-                messages.append(warningMsg)
-                break
-            }
-
-            let response = try await aiService.sendMessage(
+        try await ConversationLoop.run(engine: self) { contextMessages in
+            try await aiService.sendMessage(
                 contextMessages,
-                tools: toolDefinitions,
+                tools: self.toolRegistry.getToolDefinitions(),
                 model: model,
-                maxTokens: configuration.maxTokens
+                maxTokens: self.configuration.maxTokens
             )
-
-            // Track actual token usage from API response
-            trackUsage(response.usage)
-
-            if let toolCalls = response.toolCalls, !toolCalls.isEmpty {
-                let toolCallMessage = Message(
-                    role: .assistant,
-                    content: response.content ?? "",
-                    toolCalls: toolCalls
-                )
-                messages.append(toolCallMessage)
-
-                let results = await executeToolCalls(toolCalls)
-
-                // Track consecutive errors to abort if stuck
-                let hasErrors = results.contains { $0.status == .error }
-                if hasErrors {
-                    consecutiveErrors += 1
-                    if consecutiveErrors >= Self.maxConsecutiveErrors {
-                        let warningMsg = Message.system("⚠️ 连续 \(consecutiveErrors) 次工具执行错误，已自动停止。请检查错误信息后重试。")
-                        messages.append(warningMsg)
-                        break
-                    }
-                } else {
-                    consecutiveErrors = 0
-                    // Advance task plan progress on successful tool execution
-                    if !activePlan.isEmpty {
-                        currentPlanStep = min(currentPlanStep + 1, activePlan.count)
-                    }
-                }
-
-                // Inject error reflection into tool results for AI to learn from
-                var reflectionContent = ""
-                for (index, toolCall) in toolCalls.enumerated() {
-                    if index < results.count && results[index].status == .error {
-                        reflectionContent += generateErrorReflection(toolCall: toolCall, result: results[index])
-                    }
-                }
-
-                // When consecutive errors accumulate, escalate to Critic for deeper analysis
-                if consecutiveErrors >= 2, let criticService {
-                    let errorMessages = results.filter { $0.status == .error }.compactMap { $0.error }
-                    if !errorMessages.isEmpty {
-                        let taskContext = activePlan.first ?? memory.session.currentTask ?? ""
-                        let criticFeedback = await criticService.analyze(
-                            task: taskContext,
-                            errors: errorMessages,
-                            output: messages.last?.content ?? "",
-                            systemPrompt: nil
-                        )
-                        reflectionContent += "\n\n[Critic Analysis]\n\(criticFeedback)"
-                    }
-                }
-
-                let resultMessage = Message(
-                    role: .user,
-                    content: reflectionContent.isEmpty ? "" : "[Tool Execution Results with Analysis]",
-                    toolResults: results
-                )
-                messages.append(resultMessage)
-
-                continue
-            }
-
-            // No tool calls — append assistant content and exit loop
-            if let content = response.content, !content.isEmpty {
-                let assistantMessage = Message.assistant(content)
-                messages.append(assistantMessage)
-            }
-
-            // Task complete — clear active plan
-            clearActivePlan()
-            break
         }
     }
 
@@ -1096,7 +1107,7 @@ RULES:
         return Message.system(prompt)
     }
 
-    // MARK: - Tool Execution
+    // MARK: - Tool Execution (internal for ConversationLoop)
 
     /// Tracks recent tool errors for pattern detection
     private var recentErrors: [(toolName: String, error: String, timestamp: Date)] = []
@@ -1116,7 +1127,7 @@ RULES:
         activePlanAnalysis = nil
     }
     
-    private func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
+    func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
         var results: [ToolResult] = []
 
         for toolCall in toolCalls {

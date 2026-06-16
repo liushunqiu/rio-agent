@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Intelligent task planner that breaks down complex tasks into manageable steps
 class TaskPlanner {
@@ -62,7 +63,7 @@ class TaskPlanner {
         
         // Check for reading needs
         if lowercased.contains("读") || lowercased.contains("read") ||
-           lowercased.contains("查看") || lowercased.contains("查看") ||
+           lowercased.contains("查看") ||
            lowercased.contains("内容") || lowercased.contains("content") {
             complexityScore += 1
             suggestedSteps.append(.read)
@@ -95,7 +96,7 @@ class TaskPlanner {
         
         // Check for documentation needs
         if lowercased.contains("文档") || lowercased.contains("document") ||
-           lowercased.contains("说明") || lowercased.contains("说明") ||
+           lowercased.contains("说明") ||
            lowercased.contains("readme") {
             complexityScore += 1
             suggestedSteps.append(.document)
@@ -437,57 +438,8 @@ class TaskPlanner {
         return guidance
     }
     
-    // MARK: - Adaptive Planning
-    
-    /// Adjust plan based on progress and results
-    static func adjustPlan(
-        originalPlan: [String],
-        completedSteps: [String],
-        currentResults: [String: String]
-    ) -> [String] {
-        // For now, return the original plan
-        // In a more advanced implementation, this would analyze results
-        // and adjust the plan accordingly
-        return originalPlan
-    }
-    
-    // MARK: - Memory Integration
-    
-    /// Learn from task execution
-    static func learnFromExecution(
-        task: String,
-        analysis: TaskAnalysis,
-        success: Bool,
-        executionTime: TimeInterval,
-        memory: AgentMemory?
-    ) {
-        // Record successful patterns
-        if success {
-            // Note: Memory integration will be handled by the caller
-            // due to actor isolation constraints
-        }
-        
-        // Update project knowledge if needed
-        // This could be expanded to learn more about the project
-    }
-    
     // MARK: - AI-Enhanced Task Analysis
-    
-    /// Analyze task using AI to generate a real plan
-    static func analyzeTaskWithAI(_ input: String, memory: AgentMemory?) async -> AITaskPlan? {
-        // First, do a quick check if this task needs planning
-        let quickAnalysis = analyzeTask(input, memory: memory)
-        
-        // For simple tasks, don't bother with AI planning
-        guard quickAnalysis.complexity != .simple else {
-            return nil
-        }
-        
-        // This method is a placeholder - actual AI integration should be done through AgentEngine
-        // which has access to the AI service
-        return nil
-    }
-    
+
     /// Generate a plan using AI (to be called from AgentEngine)
     static func generatePlanWithAI(_ input: String, aiService: AIService, model: String = AIProvider.claude.defaultPlanningModel) async -> AITaskPlan? {
         let planPrompt = """
@@ -527,7 +479,7 @@ class TaskPlanner {
                 }
             }
         } catch {
-            print("Failed to generate AI plan: \(error)")
+            RioLogger.agent.error("AI 规划生成失败: \(error.localizedDescription, privacy: .public)")
         }
         
         return nil
