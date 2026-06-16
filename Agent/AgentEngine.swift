@@ -48,6 +48,20 @@ class AgentEngine: ObservableObject {
         return ConversationCompactor(aiService: planningService, model: configuration.planningModel)
     }()
 
+    /// 上下文构建器（智能管理消息上下文和 Token 预算）
+    private lazy var contextBuilder: ContextBuilder = {
+        return ContextBuilder(tokenTracker: tokenTracker, model: configuration.executionModel, workingDirectory: workingDirectory)
+    }()
+
+    /// 工具执行器（管理工具调用的执行流程）
+    private lazy var toolExecutor: ToolExecutor = {
+        let executor = ToolExecutor(toolRegistry: toolRegistry, memory: memory)
+        executor.onExecutionStateChanged = { [weak self] state in
+            self?.currentToolExecution = state
+        }
+        return executor
+    }()
+
     /// Called when a user message is added to the conversation (for immediate title update)
     var onUserMessageAdded: (() -> Void)?
 
@@ -869,26 +883,7 @@ class AgentEngine: ObservableObject {
     }
 
     private func estimateMessageTokens(_ message: Message) -> Int {
-        // 每条消息有约 4 token 的格式开销 (role, separators)
-        var total = 4
-        total += estimateTokens(message.content)
-        if let thinking = message.thinkingContent {
-            total += estimateTokens(thinking)
-        }
-        if let toolResults = message.toolResults {
-            for tr in toolResults {
-                // tool result 有额外的结构开销
-                total += 6 + estimateTokens(tr.output)
-            }
-        }
-        if let toolCalls = message.toolCalls {
-            for tc in toolCalls {
-                // tool call 的 JSON 结构开销较大
-                total += 8 + estimateTokens(tc.name)
-                total += estimateTokens("\(tc.arguments)")
-            }
-        }
-        return total
+        return contextBuilder.estimateMessageTokens(message)
     }
 
     /// Track usage from an API response and calculate running cost
@@ -917,201 +912,7 @@ class AgentEngine: ObservableObject {
     }
 
     private func getContextMessages() -> [Message] {
-        let systemMsg = buildSystemMessage()
-        
-        let contextWindow = AIProvider.contextWindow(for: configuration.executionModel)
-        let threshold = Int(Double(contextWindow) * 0.85)
-
-        var totalTokens = estimateTokens(systemMsg.content)
-        var keptMessages: [Message] = []
-
-        // 智能保留策略: 从最新到最旧遍历, 但优先保留 user 消息和含错误结果的消息
-        let reversedMessages = messages.reversed()
-        var keepCount = 0
-        var preservedUserMessages = 0  // 至少保留最近的用户消息上下文
-
-        for msg in reversedMessages {
-            let msgTokens = estimateMessageTokens(msg)
-            if totalTokens + msgTokens > threshold, keepCount >= 4 {
-                break
-            }
-            totalTokens += msgTokens
-            keptMessages.append(msg)
-            keepCount += 1
-            
-            if msg.role == .user { preservedUserMessages += 1 }
-        }
-
-        // Restore chronological order and compress old tool outputs
-        return [systemMsg] + compressToolOutputs(keptMessages.reversed())
-    }
-    
-    /// Compress tool outputs in old messages to save tokens, with smart preservation
-    private func compressToolOutputs(_ messages: [Message]) -> [Message] {
-        let maxOutputLength = 1500 // Max chars for tool output in old messages
-        let recentMessageCount = 4 // Keep recent messages uncompressed
-        
-        return messages.enumerated().map { index, message in
-            // Keep recent messages unchanged
-            guard index < messages.count - recentMessageCount else {
-                return message
-            }
-            
-            // Compress old tool results
-            guard let toolResults = message.toolResults, !toolResults.isEmpty else {
-                return message
-            }
-            
-            let compressedResults = toolResults.map { result -> ToolResult in
-                guard result.output.count > maxOutputLength else {
-                    return result
-                }
-                
-                // 保留首尾内容, 中间截断 — 首部通常包含关键信息, 尾部包含总结
-                let prefixLen = maxOutputLength * 2 / 3
-                let suffixLen = maxOutputLength / 3
-                let prefix = String(result.output.prefix(prefixLen))
-                let suffix = String(result.output.suffix(suffixLen))
-                
-                return ToolResult(
-                    toolCallId: result.toolCallId,
-                    status: result.status,
-                    output: "\(prefix)\n\n[... truncated \(result.output.count - maxOutputLength) chars ...]\n\n\(suffix)",
-                    error: result.error
-                )
-            }
-            
-            return Message(
-                id: message.id,
-                role: message.role,
-                content: message.content,
-                thinkingContent: message.thinkingContent,
-                thinkingDuration: message.thinkingDuration,
-                toolCalls: message.toolCalls,
-                toolResults: compressedResults,
-                isStreaming: message.isStreaming
-            )
-        }
-    }
-
-    private func buildSystemMessage() -> Message {
-        var prompt = """
-You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks. Always respond in the same language the user uses.
-
-## Reasoning Strategy (Chain-of-Thought)
-
-**ALWAYS think step-by-step before acting:**
-
-1. **Understand**: Clarify the user's intent. Ask for clarification if ambiguous.
-2. **Plan**: Break complex tasks into concrete steps. Consider edge cases.
-3. **Verify**: Before executing, check if your plan makes sense. Will this actually solve the problem?
-4. **Execute**: Carry out the plan methodically, one step at a time.
-5. **Reflect**: After each tool call, evaluate the result. Did it work as expected? Should you adjust?
-
-For complex tasks, explicitly state your reasoning:
-```
-Thinking: The user wants X. To achieve this, I need to:
-1. First do Y to understand the current state
-2. Then do Z to make the change
-3. Finally verify with W
-```
-
-## Available Tools
-
-- read_file: Read file content. Read-only, no confirmation needed. Always prefer this over execute_command for reading files.
-- write_file: Write file content (complete overwrite, NOT append). Auto-executes within working directory; writes outside working directory require user confirmation.
-- edit_file: Edit a file by searching for specific text and replacing it (search/replace). Safer than write_file for targeted modifications. The old_text must appear exactly once in the file.
-- apply_patch: Apply a multi-file patch using diff format. Supports adding, updating, and deleting files in a single operation. Use for coordinated changes across multiple files.
-- search_files: Search file contents by regex pattern (like grep). Read-only, no confirmation needed. Returns matching lines with file paths and line numbers.
-- find_files: Find files by name pattern (like glob). Read-only, no confirmation needed. Returns matching file paths.
-- list_directory: List directory contents with detailed information. Read-only, no confirmation needed.
-- execute_command: Execute shell commands. Safe commands (ls, cat, grep, git status, etc.) auto-execute; dangerous commands (rm, sudo, curl, etc.) always require confirmation.
-
-## Tool Usage Guidelines
-
-**Strategy for choosing tools:**
-- **Exploration phase**: Use list_directory, find_files, search_files to understand the codebase structure BEFORE making changes
-- **Reading phase**: Use read_file to examine specific files. NEVER use `cat` via execute_command.
-- **Modification phase**: Prefer edit_file for targeted changes. Use apply_patch for multi-file changes. Use write_file only for new files or complete rewrites.
-- **Verification phase**: After changes, use read_file or search_files to verify the result.
-
-**Critical rules:**
-- Each file tool requires ABSOLUTE file paths. When the user mentions a relative path, prepend the working directory.
-- Do NOT call tools unnecessarily. When you have enough information, respond directly.
-- Prefer edit_file over write_file when modifying existing files — it is safer and more precise.
-- For git operations, package management, or other shell tasks → use execute_command
-
-## Error Recovery & Self-Correction
-
-When a tool call fails:
-
-1. **Analyze the error**: What exactly went wrong? Is it a path issue, permission issue, or logic error?
-2. **Consider alternatives**: Is there another way to achieve the same goal?
-3. **Learn from it**: Don't repeat the same mistake. Adjust your approach.
-
-**Common error patterns and fixes:**
-- "File not found" → Check the path, use find_files to locate the correct file
-- "Permission denied" → May need user confirmation, or try a different approach
-- "Tool execution failed" → Read the error message carefully, it often contains the solution
-- If 2-3 attempts fail on the same task, STOP and explain the situation to the user
-
-## Safety & Permissions
-
-Commands are classified into three risk levels:
-- **Safe**: ls, cat, grep, git status/log/diff, version checks → auto-execute, no confirmation
-- **Normal**: most commands → require user confirmation (can be trusted for the session)
-- **Dangerous**: rm, sudo, curl, wget, dd, kill -9 → always require confirmation, cannot be trusted
-
-Writes to files outside the working directory also require user confirmation.
-
-## Behavioral Constraints
-
-- Handle one task at a time. Do not batch unrelated operations.
-- When a tool returns an error, analyze the cause before retrying. Do not retry blindly.
-- After receiving tool results, provide a meaningful response based on the actual output.
-- Do NOT fabricate file contents or command outputs. Only report what the tools actually return.
-- Be concise. Avoid unnecessary preamble or postamble.
-- If you're unsure about something, say so. Don't guess or hallucinate.
-"""
-
-        if let dir = workingDirectory {
-            prompt += """
-
-## Working Directory (CRITICAL)
-
-The working directory is: \(dir)
-
-RULES:
-- read_file and write_file require FULL ABSOLUTE PATHS. Never use relative paths.
-- When the user says "read README.md", use path = "\(dir)/README.md"
-- For execute_command, the working directory context is \(dir)
-"""
-            
-            // 尝试加载 AGENT.md 文件作为项目上下文
-            let agentMDPath = "\(dir)/AGENT.md"
-            if let content = FileManager.default.contents(atPath: agentMDPath),
-               let mdString = String(data: content, encoding: .utf8) {
-                prompt += "\n\n## Project Context (from AGENT.md)\n\n\(mdString)"
-            }
-        }
-        
-        // Inject active task plan (minimal, only when executing)
-        if !activePlan.isEmpty, activePlanAnalysis != nil {
-            prompt += "\n\n## Active Task Execution Plan\n"
-            for (index, step) in activePlan.enumerated() {
-                let marker: String
-                if index < currentPlanStep {
-                    marker = "[DONE]"
-                } else if index == currentPlanStep {
-                    marker = "[CURRENT]"
-                } else {
-                    marker = "[PENDING]"
-                }
-                prompt += "\(index + 1). \(marker) \(step)\n"
-            }
-        }
-
-        return Message.system(prompt)
+        return contextBuilder.buildContextMessages(from: messages)
     }
 
     // MARK: - Tool Execution (internal for ConversationLoop)
@@ -1135,234 +936,14 @@ RULES:
     }
     
     func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
-        var results: [ToolResult] = []
-
-        for toolCall in toolCalls {
-            currentToolExecution = .pending(toolCall: toolCall)
-
-            // Yield to let the UI update before potentially long-running execution
-            await Task.yield()
-
-            currentToolExecution = .executing(toolCall: toolCall)
-
-            let result: ToolResult
-            do {
-                let raw = try await toolRegistry.executeTool(
-                    name: toolCall.name,
-                    arguments: toolCall.arguments.mapValues { $0.value }
-                )
-                result = ToolResult(
-                    toolCallId: toolCall.id,
-                    status: raw.status,
-                    output: raw.output,
-                    error: raw.error
-                )
-            } catch {
-                result = ToolResult.error(toolCallId: toolCall.id, error: error.localizedDescription)
-            }
-
-            // Track errors for pattern detection
-            if result.status == .error {
-                recentErrors.append((
-                    toolName: toolCall.name,
-                    error: result.error ?? "Unknown error",
-                    timestamp: Date()
-                ))
-                // Keep only last 10 errors
-                if recentErrors.count > 10 {
-                    recentErrors.removeFirst()
-                }
-            }
-
-            currentToolExecution = .completed(toolCall: toolCall, result: result)
-            
-            // Record tool usage in memory
-            memory.recordToolUsage(toolCall.name)
-            
-            // Record file access if applicable
-            if let path = toolCall.arguments["path"]?.value as? String {
-                memory.recordFileAccess(path)
-            }
-            
-            // Record successful patterns
-            if result.status == .success {
-                let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
-                memory.recordSuccessfulPattern(taskType: "\(taskType)", tool: toolCall.name)
-            }
-            
-            // Record error patterns for learning
-            if result.status == .error, let error = result.error {
-                memory.recordErrorPattern(
-                    error: error,
-                    context: "Tool: \(toolCall.name), Args: \(toolCall.arguments)",
-                    solution: "" // Will be filled when error is resolved
-                )
-            }
-            
-            // Record in ToolRecommender history for recommendations
-            let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
-            ToolRecommender.recordToolUsage(
-                tool: toolCall.name,
-                taskType: taskType,
-                success: result.status == .success,
-                executionTime: 0 // We don't track execution time yet
-            )
-            
-            results.append(result)
-        }
-
-        currentToolExecution = nil
-        return results
+        return await toolExecutor.executeToolCalls(toolCalls)
     }
 
     /// Generate reflection prompt when errors occur
     private func generateErrorReflection(toolCall: ToolCall, result: ToolResult) -> String {
-        guard result.status == .error else { return "" }
-
-        let errorMsg = result.error ?? "Unknown error"
-        var reflection = "\n\n[Error Analysis for \(toolCall.name)]\n"
-        reflection += "Error: \(errorMsg)\n"
-
-        let errorLowercased = errorMsg.lowercased()
-
-        // Check for similar errors in memory
-        let similarErrors = memory.findSimilarErrors(errorMsg)
-        if !similarErrors.isEmpty {
-            reflection += "💡 Similar errors found in history:\n"
-            for error in similarErrors.prefix(2) {
-                reflection += "- \(error.errorType): \(error.solution)\n"
-            }
-        }
-
-        // Provide specific, actionable suggestions based on error type
-        if errorLowercased.contains("file not found") || errorLowercased.contains("no such file") || errorLowercased.contains("no such file or directory") {
-            reflection += "Cause: 文件路径不存在。\n"
-            // 尝试提取路径信息
-            if let path = toolCall.arguments["path"]?.value as? String {
-                let dir = (path as NSString).deletingLastPathComponent
-                reflection += "Action: 先用 find_files 搜索文件名, 或用 list_directory 检查目录 \(dir) 是否存在。\n"
-            } else {
-                reflection += "Action: 用 find_files 搜索文件名, 确认正确路径后再操作。\n"
-            }
-        } else if errorLowercased.contains("permission denied") {
-            reflection += "Cause: 权限不足。\n"
-            if toolCall.name == "execute_command" {
-                reflection += "Action: 此命令可能需要 sudo, 请与用户确认是否需要提权执行。\n"
-            } else {
-                reflection += "Action: 检查文件权限 (ls -la), 可能需要用 execute_command 执行 chmod 修改权限。\n"
-            }
-        } else if errorLowercased.contains("timeout") {
-            reflection += "Cause: 操作超时。\n"
-            if toolCall.name == "execute_command" {
-                reflection += "Action: 命令执行超时。考虑: (1) 简化命令 (2) 添加 --depth 等限制 (3) 将大任务拆小。\n"
-            } else {
-                reflection += "Action: 尝试更简单的操作, 或将任务拆分为更小的步骤。\n"
-            }
-        } else if errorLowercased.contains("econnrefused") || errorLowercased.contains("connection refused") {
-            reflection += "Cause: 连接被拒绝, 目标服务未启动或端口错误。\n"
-            reflection += "Action: 确认服务是否在运行, 检查端口号是否正确。\n"
-        } else if errorLowercased.contains("network") || errorLowercased.contains("dns") || errorLowercased.contains("resolve") {
-            reflection += "Cause: 网络/DNS 问题。\n"
-            reflection += "Action: 检查网络连接, 确认域名是否正确。\n"
-        } else if errorLowercased.contains("already exists") {
-            reflection += "Cause: 目标已存在。\n"
-            reflection += "Action: 如果需要覆盖, 先删除或使用不同的名称。\n"
-        } else if errorLowercased.contains("old_text") && (errorLowercased.contains("not found") || errorLowercased.contains("no match") || errorLowercased.contains("multiple match")) {
-            reflection += "Cause: edit_file 的 old_text 未匹配到文件内容。\n"
-            reflection += "Action: 先用 read_file 读取文件最新内容, 确认 old_text 精确匹配 (包括缩进和空格)。\n"
-        } else if errorLowercased.contains("command not found") || errorLowercased.contains("not found") {
-            reflection += "Cause: 命令未安装或不在 PATH 中。\n"
-            if let cmd = (toolCall.arguments["command"]?.value as? String)?.split(separator: " ").first {
-                reflection += "Action: 检查 \(cmd) 是否已安装 (which \(cmd)), 如未安装则需先安装。\n"
-            }
-        } else if errorLowercased.contains("syntax error") || errorLowercased.contains("unexpected token") || errorLowercased.contains("parse error") {
-            reflection += "Cause: 语法错误, 上一次写入/编辑的代码可能有问题。\n"
-            reflection += "Action: 用 read_file 检查最近修改的文件, 找到并修复语法错误。\n"
-        } else if errorLowercased.contains("module") && errorLowercased.contains("not found") {
-            reflection += "Cause: 依赖模块未安装。\n"
-            reflection += "Action: 运行包管理器安装依赖 (如 npm install / pip install / cargo build)。\n"
-        }
-
-        // Check for repeated errors with escalating advice
-        let recentSimilarErrors = recentErrors.filter {
-            $0.toolName == toolCall.name &&
-            Date().timeIntervalSince($0.timestamp) < 120
-        }
-
-        if recentSimilarErrors.count >= 2 {
-            reflection += "\n⚠️ WARNING: \(toolCall.name) 已连续失败 \(recentSimilarErrors.count + 1) 次。\n"
-            reflection += "Action: 停止重试。换一种方法, 或向用户说明情况请求帮助。\n"
-        } else if recentSimilarErrors.count == 1 {
-            reflection += "\n⚠️ Note: 这是同一工具的第二次失败, 请仔细分析原因。\n"
-        }
-
-        // Add tool-specific suggestions
-        reflection += generateToolSpecificSuggestion(toolName: toolCall.name, error: errorMsg, arguments: toolCall.arguments)
-
-        return reflection
+        return toolExecutor.generateErrorReflection(toolCall: toolCall, result: result)
     }
-    
-    /// Generate tool-specific suggestions based on error and arguments
-    private func generateToolSpecificSuggestion(toolName: String, error: String, arguments: [String: AnyCodable]) -> String {
-        let errorLowercased = error.lowercased()
-        
-        switch toolName {
-        case "read_file":
-            if errorLowercased.contains("file not found") || errorLowercased.contains("no such file") {
-                if let path = arguments["path"]?.value as? String {
-                    let fileName = URL(fileURLWithPath: path).lastPathComponent
-                    return "\n💡 Try: find_files with pattern \"*\(fileName)*\" to locate it.\n"
-                }
-                return "\n💡 Try: find_files to locate the correct path, then read_file again.\n"
-            }
-            if errorLowercased.contains("permission") {
-                return "\n💡 Try: execute_command with 'ls -la <path>' to check permissions.\n"
-            }
-            
-        case "write_file":
-            if errorLowercased.contains("no such file") || errorLowercased.contains("directory") {
-                return "\n💡 Try: execute_command with 'mkdir -p <parent_dir>' to create the directory first.\n"
-            }
-            if errorLowercased.contains("permission") {
-                return "\n💡 Try: execute_command with 'ls -la <parent_dir>' to check permissions.\n"
-            }
-            
-        case "edit_file":
-            if errorLowercased.contains("not found") || errorLowercased.contains("no match") {
-                return "\n💡 Action: read_file the target, find the exact text (including whitespace), then edit_file again.\n"
-            }
-            if errorLowercased.contains("multiple match") {
-                return "\n💡 Action: Include more surrounding context in old_text to make it unique.\n"
-            }
-            
-        case "execute_command":
-            if errorLowercased.contains("command not found") || errorLowercased.contains("zsh: command not found") {
-                if let cmd = (arguments["command"]?.value as? String)?.split(separator: " ").first {
-                    return "\n💡 Try: which \(cmd) or brew list | grep \(cmd) to check installation.\n"
-                }
-            }
-            if errorLowercased.contains("exit code") || errorLowercased.contains("exit status") {
-                return "\n💡 Check the error output above for details. Common fix: install missing dependencies or fix syntax errors.\n"
-            }
-            
-        case "search_files":
-            if errorLowercased.contains("regex") || errorLowercased.contains("pattern") {
-                return "\n💡 Tip: Use simple text instead of regex, or verify regex syntax at regex101.com.\n"
-            }
-            
-        case "find_files":
-            if errorLowercased.contains("no matches") || errorLowercased.contains("not found") {
-                if let pattern = arguments["pattern"]?.value as? String {
-                    return "\n💡 Try: use broader pattern like '*\(pattern)*' or list_directory to explore the structure.\n"
-                }
-            }
-            
-        default:
-            break
-        }
-        
-        return ""
-    }
+
 
     private func showConfirmation(title: String, message: String) async -> ConfirmationResult {
         return await withCheckedContinuation { continuation in
