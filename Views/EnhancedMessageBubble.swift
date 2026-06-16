@@ -114,77 +114,28 @@ struct EnhancedMessageBubble: View {
     }
 }
 
-// MARK: - Enhanced Chat View (Paginated)
+// MARK: - Enhanced Chat View
 
 struct EnhancedChatView: View {
     let messages: [Message]
     let isProcessing: Bool
     let currentToolCallId: String?
 
-    /// 单页目标渲染重量。短消息会多放，长输出/工具结果会少放。
-    private let targetPageWeight = 9_000
+    /// 自动滚动跟随开关
+    @State private var autoScrollEnabled = true
 
-    /// 防止大量短消息堆在同一页。
-    private let maxMessagesPerPage = 12
+    /// 用户是否正在手动滚动（用于暂时禁用自动跟随）
+    @State private var isUserScrolling = false
 
-    /// 当前页码（0-based）
-    @State private var currentPage: Int = 0
+    /// 上次消息数量（检测新消息）
+    @State private var lastMessageCount = 0
 
-    /// 流式输出时是否自动跟随最后一页
-    @State private var followLatest = true
+    /// 滚动位置追踪
+    @State private var scrollPosition: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    @State private var visibleHeight: CGFloat = 0
 
-    /// 滚动防抖定时器
-    @State private var scrollDebounceTimer: Timer?
-
-    // MARK: - Computed
-
-    /// 总页数
-    private var totalPages: Int {
-        max(1, messagePages.count)
-    }
-
-    /// 是否在最后一页
-    private var isOnLastPage: Bool {
-        currentPage >= totalPages - 1
-    }
-
-    /// 当前页显示的消息
-    private var pagedMessages: [Message] {
-        guard !messagePages.isEmpty else { return [] }
-        return messagePages[min(currentPage, messagePages.count - 1)]
-    }
-
-    /// 按渲染成本分页，而不是固定消息条数。
-    private var messagePages: [[Message]] {
-        guard !messages.isEmpty else { return [] }
-
-        var pages: [[Message]] = []
-        var page: [Message] = []
-        var pageWeight = 0
-
-        for message in messages {
-            let weight = renderWeight(for: message)
-            let shouldStartNewPage = !page.isEmpty
-                && (pageWeight + weight > targetPageWeight || page.count >= maxMessagesPerPage)
-
-            if shouldStartNewPage {
-                pages.append(page)
-                page = []
-                pageWeight = 0
-            }
-
-            page.append(message)
-            pageWeight += weight
-        }
-
-        if !page.isEmpty {
-            pages.append(page)
-        }
-
-        return pages
-    }
-
-    /// 工具结果索引，避免每个消息气泡重复扫描全量消息。
+    /// 工具结果索引
     private var toolResultsById: [String: ToolResult] {
         var index: [String: ToolResult] = [:]
         for result in messages.flatMap({ $0.toolResults ?? [] }) {
@@ -193,20 +144,22 @@ struct EnhancedChatView: View {
         return index
     }
 
-    /// 流式文本变化信号，只比较长度，减少大字符串作为 onChange 值的复制成本。
-    private var streamingContentSignal: Int {
+    /// 流式内容变化信号
+    private var streamingSignal: Int {
         (messages.last?.content.count ?? 0) + (messages.last?.thinkingContent?.count ?? 0)
     }
 
-    // MARK: - Body
+    /// 是否接近底部（距离底部 < 100pt 视为接近）
+    private var isNearBottom: Bool {
+        contentHeight - scrollPosition - visibleHeight < 100
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // 消息列表
+        ZStack(alignment: .bottomTrailing) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(pagedMessages) { message in
+                    LazyVStack(spacing: 6, pinnedViews: []) {
+                        ForEach(messages) { message in
                             EnhancedMessageBubble(
                                 message: message,
                                 isToolExecuting: isProcessing && currentToolCallId != nil,
@@ -214,242 +167,155 @@ struct EnhancedChatView: View {
                                 toolResultsById: toolResultsById
                             )
                             .id(message.id)
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .bottom)),
-                                removal: .opacity.combined(with: .scale)
-                            ))
                         }
-                    }
-                    .padding(.top, 18)
-                    .padding(.bottom, 24)
-                }
-                .onChange(of: messages.count) { _, _ in
-                    let latestPage = max(0, totalPages - 1)
-                    if currentPage > latestPage {
-                        currentPage = latestPage
-                    }
 
-                    // 新消息到达时，自动跳到最后一页
-                    if followLatest || isProcessing {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = latestPage
+                        // 底部锚点（用于滚动）
+                        Color.clear
+                            .frame(height: 1)
+                            .id("bottom")
+                    }
+                    .padding(.top, 20)
+                    .padding(.bottom, 28)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: ScrollOffsetPreferenceKey.self,
+                                value: geo.frame(in: .named("scroll")).minY
+                            )
                         }
+                    )
+                }
+                .coordinateSpace(name: "scroll")
+                .onPreferenceChange(ScrollOffsetPreferenceKey.self) { value in
+                    scrollPosition = -value
+                }
+                // 新消息到达时滚动
+                .onChange(of: messages.count) { oldCount, newCount in
+                    if newCount > oldCount && (autoScrollEnabled || isProcessing) {
+                        scrollToBottom(proxy: proxy, animated: true)
+                    }
+                    lastMessageCount = newCount
+                }
+                // 流式内容更新时滚动
+                .onChange(of: streamingSignal) { _, _ in
+                    if autoScrollEnabled && (messages.last?.isStreaming == true || isProcessing) {
+                        scrollToBottom(proxy: proxy, animated: false)
                     }
                 }
-                .onChange(of: streamingContentSignal) { _, _ in
-                    if followLatest && (messages.last?.isStreaming == true || isProcessing) {
-                        currentPage = max(0, totalPages - 1)
-                        scrollToBottom(proxy: proxy)
-                    }
-                }
+                // 工具调用变化时滚动
                 .onChange(of: currentToolCallId) { _, _ in
-                    if shouldAutoScroll {
-                        scrollToBottom(proxy: proxy)
+                    if autoScrollEnabled && isProcessing {
+                        scrollToBottom(proxy: proxy, animated: true)
+                    }
+                }
+                .onAppear {
+                    // 初始加载滚动到底部
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        scrollToBottom(proxy: proxy, animated: false)
                     }
                 }
             }
 
-            // 分页导航栏
-            if totalPages > 1 {
-                PaginationBar(
-                    currentPage: currentPage,
-                    totalPages: totalPages,
-                    followLatest: followLatest,
-                    isStreaming: messages.last?.isStreaming == true,
-                    onFirstPage: {
-                        followLatest = false
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = 0
-                        }
-                    },
-                    onPrevPage: {
-                        followLatest = false
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = max(0, currentPage - 1)
-                        }
-                    },
-                    onNextPage: {
-                        let nextPage = min(totalPages - 1, currentPage + 1)
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = nextPage
-                        }
-                        followLatest = nextPage >= totalPages - 1
-                    },
-                    onLastPage: {
-                        followLatest = true
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            currentPage = totalPages - 1
-                        }
-                    },
-                    onToggleFollow: {
-                        followLatest.toggle()
-                        if followLatest {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                currentPage = totalPages - 1
-                            }
-                        }
+            // 浮动控制按钮
+            if !messages.isEmpty {
+                VStack(spacing: 10) {
+                    // 自动跟随开关
+                    FloatingButton(
+                        icon: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle",
+                        label: autoScrollEnabled ? "自动跟随" : "手动模式",
+                        isActive: autoScrollEnabled,
+                        badge: !isNearBottom && !autoScrollEnabled ? true : nil
+                    ) {
+                        autoScrollEnabled.toggle()
                     }
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                .padding(.trailing, 24)
+                .padding(.bottom, 24)
             }
-        }
-        .onAppear {
-            // 初始加载时跳到最后一页
-            currentPage = max(0, totalPages - 1)
         }
     }
 
     // MARK: - Helpers
 
-    private func scrollToBottom(proxy: ScrollViewProxy) {
-        guard shouldAutoScroll else { return }
-        scrollDebounceTimer?.invalidate()
-        scrollDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: false) { _ in
-            DispatchQueue.main.async {
-                guard shouldAutoScroll, let lastMessage = pagedMessages.last else { return }
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                }
+    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
+        let action = {
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.25)) {
+                action()
             }
+        } else {
+            action()
         }
-    }
-
-    private var shouldAutoScroll: Bool {
-        followLatest && isOnLastPage && (messages.last?.isStreaming == true || isProcessing)
-    }
-
-    private func renderWeight(for message: Message) -> Int {
-        var weight = 120
-
-        switch message.role {
-        case .user:
-            weight += message.content.count
-        case .system:
-            weight += message.content.count * 2
-        case .assistant:
-            weight += message.content.count * 2
-        }
-
-        if let thinkingContent = message.thinkingContent {
-            weight += thinkingContent.count
-        }
-
-        if let toolCalls = message.toolCalls {
-            weight += toolCalls.reduce(0) { total, toolCall in
-                let argumentsWeight = toolCall.arguments.values.reduce(0) { partial, value in
-                    partial + String(describing: value.value).count
-                }
-                return total + 600 + toolCall.name.count + argumentsWeight
-            }
-        }
-
-        if let toolResults = message.toolResults {
-            weight += toolResults.reduce(0) { total, result in
-                total + 700 + result.output.count + (result.error?.count ?? 0)
-            }
-        }
-
-        return weight
     }
 }
 
-// MARK: - Pagination Bar
+// MARK: - Scroll Offset Preference Key
 
-struct PaginationBar: View {
-    let currentPage: Int
-    let totalPages: Int
-    let followLatest: Bool
-    let isStreaming: Bool
-    let onFirstPage: () -> Void
-    let onPrevPage: () -> Void
-    let onNextPage: () -> Void
-    let onLastPage: () -> Void
-    let onToggleFollow: () -> Void
+struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+// MARK: - Floating Button
+
+struct FloatingButton: View {
+    let icon: String
+    let label: String
+    let isActive: Bool
+    let badge: Bool?
+    let action: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            // 第一页
-            Button(action: onFirstPage) {
-                Image(systemName: "backward.end.fill")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(currentPage > 0 ? Theme.textSecondary : Theme.textTertiary)
-            .disabled(currentPage <= 0)
-            .keyboardShortcut(.leftArrow, modifiers: [.command])
+        Button(action: action) {
+            HStack(spacing: 8) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: .medium))
 
-            // 上一页
-            Button(action: onPrevPage) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(currentPage > 0 ? Theme.textSecondary : Theme.textTertiary)
-            .disabled(currentPage <= 0)
+                    if badge == true {
+                        Circle()
+                            .fill(Theme.accentPrimary)
+                            .frame(width: 8, height: 8)
+                            .offset(x: 4, y: -4)
+                    }
+                }
 
-            // 页码指示
-            Text("\(currentPage + 1) / \(totalPages)")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(Theme.textSecondary)
-                .frame(minWidth: 50)
-
-            // 下一页
-            Button(action: onNextPage) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(currentPage < totalPages - 1 ? Theme.textSecondary : Theme.textTertiary)
-            .disabled(currentPage >= totalPages - 1)
-
-            // 最后一页
-            Button(action: onLastPage) {
-                Image(systemName: "forward.end.fill")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(currentPage < totalPages - 1 ? Theme.textSecondary : Theme.textTertiary)
-            .disabled(currentPage >= totalPages - 1)
-            .keyboardShortcut(.rightArrow, modifiers: [.command])
-
-            Spacer()
-
-            // 跟随最新 / 流式指示
-            if isStreaming {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Theme.accentPrimary)
-                        .frame(width: 6, height: 6)
-                        .opacity(0.8)
-                    Text("输出中")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.accentPrimary)
+                if isHovered {
+                    Text(label)
+                        .font(.system(size: 12, weight: .medium))
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
-
-            Button(action: onToggleFollow) {
-                HStack(spacing: 4) {
-                    Image(systemName: followLatest ? "lock.fill" : "lock.open.fill")
-                        .font(.system(size: 9))
-                    Text(followLatest ? "已锁定" : "已解锁")
-                        .font(.system(size: 10))
-                }
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(followLatest ? Theme.accentPrimary : Theme.textTertiary)
-            .help(followLatest ? "流式输出时自动跳转最新页（点击解锁）" : "已解锁翻页，点击锁定自动跟随")
+            .foregroundColor(isActive ? Theme.accentPrimary : Theme.textSecondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Theme.bgSecondary)
+                    .shadow(color: Theme.shadowStrong.opacity(0.15), radius: 12, x: 0, y: 4)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(isActive ? Theme.accentPrimary.opacity(0.3) : Theme.borderSubtle, lineWidth: 1)
+            )
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 9)
-        .background(Theme.bgSecondary.opacity(0.72))
-        .overlay(
-            Rectangle()
-                .fill(Theme.borderSubtle)
-                .frame(height: 1),
-            alignment: .top
-        )
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.2)) {
+                isHovered = hovering
+            }
+        }
+        .help(isActive ? "点击切换到手动滚动模式" : "点击开启自动跟随最新消息")
     }
 }
+
 
 // MARK: - Processing Animation Overlay
 

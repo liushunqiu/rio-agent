@@ -6,11 +6,20 @@ class TaskPlanner {
     
     // MARK: - Task Types
     
-    enum TaskComplexity {
+    enum TaskComplexity: CustomStringConvertible {
         case simple      // Single step, direct execution
         case moderate    // 2-3 steps, sequential execution
         case complex     // 4+ steps, may need parallel execution
         case veryComplex // 5+ steps, needs decomposition and parallel execution
+
+        var description: String {
+            switch self {
+            case .simple: return "simple"
+            case .moderate: return "moderate"
+            case .complex: return "complex"
+            case .veryComplex: return "veryComplex"
+            }
+        }
     }
     
     enum TaskStep {
@@ -81,7 +90,10 @@ class TaskPlanner {
         if lowercased.contains("修改") || lowercased.contains("modify") ||
            lowercased.contains("改") || lowercased.contains("change") ||
            lowercased.contains("修复") || lowercased.contains("fix") ||
-           lowercased.contains("重构") || lowercased.contains("refactor") {
+           lowercased.contains("重构") || lowercased.contains("refactor") ||
+           lowercased.contains("添加") || lowercased.contains("add") ||
+           lowercased.contains("删除") || lowercased.contains("delete") ||
+           lowercased.contains("更新") || lowercased.contains("update") {
             complexityScore += 2
             suggestedSteps.append(.modify)
         }
@@ -119,24 +131,33 @@ class TaskPlanner {
         // Check for multiple file operations
         if lowercased.contains("所有") || lowercased.contains("all") ||
            lowercased.contains("每个") || lowercased.contains("every") ||
-           lowercased.contains("批量") || lowercased.contains("batch") {
+           lowercased.contains("批量") || lowercased.contains("batch") ||
+           lowercased.contains("多个") || lowercased.contains("multiple") {
             complexityScore += 2
         }
-        
+
         // Check for complex patterns
         if lowercased.contains("系统") || lowercased.contains("system") ||
            lowercased.contains("架构") || lowercased.contains("architecture") ||
-           lowercased.contains("设计") || lowercased.contains("design") {
+           lowercased.contains("设计") || lowercased.contains("design") ||
+           lowercased.contains("整合") || lowercased.contains("integrate") {
             complexityScore += 3
         }
-        
-        // Determine complexity level
+
+        // Check for command execution (commonly overlooked)
+        if lowercased.contains("运行") || lowercased.contains("run") ||
+           lowercased.contains("执行") || lowercased.contains("execute") ||
+           lowercased.contains("命令") || lowercased.contains("command") {
+            complexityScore += 1
+        }
+
+        // Determine complexity level (降低阈值)
         let complexity: TaskComplexity
-        if complexityScore <= 2 {
+        if complexityScore <= 1 {
             complexity = .simple
-        } else if complexityScore <= 4 {
+        } else if complexityScore <= 3 {
             complexity = .moderate
-        } else if complexityScore <= 6 {
+        } else if complexityScore <= 5 {
             complexity = .complex
         } else {
             complexity = .veryComplex

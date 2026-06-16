@@ -328,39 +328,54 @@ class AgentEngine: ObservableObject {
 
         // MARK: - Router interception (本地路由模型前置拦截)
         var routerSkip = false
-        if multiAgentConfig.router.enabled,
-           let configSetId = multiAgentConfig.router.configSetId,
-           let routerService = createService(configSetId: configSetId) {
-            let routerConfig = multiAgentConfig.router
-            let model = routerConfig.model.isEmpty ? configuration.executionModel : routerConfig.model
-            if let decision = await RouterService.route(
-                input: trimmedInput,
-                service: routerService,
-                model: model,
-                config: routerConfig
-            ) {
-                switch decision {
-                case .skip(let reason):
-                    let userMessage = Message.user(input)
-                    messages.append(userMessage)
-                    onUserMessageAdded?()
-                    let response = Message.assistant(reason)
-                    messages.append(response)
-                    routerSkip = true
-                case .routeToTarget(let target, _, let confidence, _):
-                    RioLogger.service.info("路由决策: \(target, privacy: .public) (置信度: \(confidence, privacy: .public))")
+        if multiAgentConfig.router.enabled {
+            RioLogger.service.info("🔀 Router 已启用，开始路由分析...")
+            if let configSetId = multiAgentConfig.router.configSetId,
+               let routerService = createService(configSetId: configSetId) {
+                let routerConfig = multiAgentConfig.router
+                let model = routerConfig.model.isEmpty ? configuration.executionModel : routerConfig.model
+                RioLogger.service.info("🔀 Router 使用模型: \(model, privacy: .public)")
+
+                if let decision = await RouterService.route(
+                    input: trimmedInput,
+                    service: routerService,
+                    model: model,
+                    config: routerConfig
+                ) {
+                    switch decision {
+                    case .skip(let reason):
+                        RioLogger.service.info("🔀 Router 决策: SKIP - \(reason, privacy: .public)")
+                        let userMessage = Message.user(input)
+                        messages.append(userMessage)
+                        onUserMessageAdded?()
+                        let response = Message.assistant(reason)
+                        messages.append(response)
+                        routerSkip = true
+                    case .routeToTarget(let target, _, let confidence, let reasoning):
+                        RioLogger.service.info("🔀 Router 决策: \(target, privacy: .public) (置信度: \(confidence, privacy: .public)) - \(reasoning, privacy: .public)")
+                    }
+                } else {
+                    RioLogger.service.warning("⚠️ Router 调用失败，继续执行标准流程")
                 }
+            } else {
+                RioLogger.service.warning("⚠️ Router 已启用但未配置 configSetId 或 API Key，跳过路由")
             }
+        } else {
+            RioLogger.service.debug("⏭️ Router 未启用，跳过路由阶段")
         }
         guard !routerSkip else { return }
         
         // Analyze task complexity and generate plan if needed
+        RioLogger.agent.info("📊 开始分析任务复杂度...")
         let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: planningService, model: configuration.planningModel)
+        RioLogger.agent.info("📊 任务复杂度: \(taskAnalysis.complexity, privacy: .public), 预计步骤: \(taskAnalysis.estimatedSteps, privacy: .public)")
 
         // For complex tasks, generate a plan and inform the user
         if taskAnalysis.complexity != .simple {
+            RioLogger.agent.info("📝 任务复杂度非 simple，生成执行计划...")
             let plan = TaskPlanner.decomposeTask(trimmedInput, memory: memory)
             let formattedPlan = TaskPlanner.formatPlanForExecution(plan, analysis: taskAnalysis)
+            RioLogger.agent.info("📝 生成计划包含 \(plan.count, privacy: .public) 个步骤")
 
             // Add plan to messages for user to see
             let planMessage = Message.system(formattedPlan)
@@ -380,6 +395,7 @@ class AgentEngine: ObservableObject {
             let guidanceMessage = Message.system(guidance)
             messages.append(guidanceMessage)
         } else {
+            RioLogger.agent.info("⏭️ 任务复杂度为 simple，跳过计划生成")
             clearActivePlan()
         }
 
@@ -398,12 +414,30 @@ class AgentEngine: ObservableObject {
 
         do {
             // Unified pipeline: Planner complexity decides execution strategy
-            let useDAG = taskAnalysis.complexity == .complex || taskAnalysis.complexity == .veryComplex
+            // 降低 Multi-Agent 触发阈值：moderate 及以上都可以使用 Multi-Agent
+            let useDAG = taskAnalysis.complexity == .moderate || taskAnalysis.complexity == .complex || taskAnalysis.complexity == .veryComplex
 
-            if useDAG,
-               let multiAgentEngine = multiAgentEngine {
-                try await processWithMultiAgent(input: input, engine: multiAgentEngine)
+            if useDAG {
+                RioLogger.agent.info("🚀 任务复杂度达到 \(taskAnalysis.complexity, privacy: .public)，启用 Multi-Agent 模式")
+                if let multiAgentEngine = multiAgentEngine {
+                    RioLogger.agent.info("🚀 Multi-Agent 引擎已就绪，开始并行执行")
+                    try await processWithMultiAgent(input: input, engine: multiAgentEngine)
+                } else {
+                    RioLogger.agent.warning("⚠️ Multi-Agent 引擎未初始化，回退到单 Agent 模式")
+                    guard let executionService else {
+                        error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
+                        isProcessing = false
+                        return
+                    }
+
+                    if configuration.isStreaming {
+                        try await processConversationLoopStreaming(aiService: executionService)
+                    } else {
+                        try await processConversationLoop(aiService: executionService)
+                    }
+                }
             } else {
+                RioLogger.agent.info("⚡️ 任务复杂度为 \(taskAnalysis.complexity, privacy: .public)，使用单 Agent 模式")
                 guard let executionService else {
                     error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
                     isProcessing = false
@@ -686,7 +720,6 @@ class AgentEngine: ObservableObject {
     private func processConversationLoopStreaming(aiService: AIService) async throws {
         let model = configuration.executionModel
         var thinkingStartTime: Date?
-        var thinkingEndTime: Date?
         var hasThinkingContent = false
 
         try await ConversationLoop.run(engine: self) { contextMessages in
@@ -731,7 +764,6 @@ class AgentEngine: ObservableObject {
                             hasThinkingContent = true
                             thinkingStartTime = Date()
                         }
-                        thinkingEndTime = Date()
                         buffer.appendThinking(chunk)
                         await buffer.flushIfNeeded(update: flushHandler)
                     }
@@ -751,8 +783,9 @@ class AgentEngine: ObservableObject {
                 return AIResponse(content: nil, reasoningContent: nil, toolCalls: nil, usage: nil)
             }
 
-            if hasThinkingContent, let start = thinkingStartTime, let end = thinkingEndTime {
-                self.messages[streamingIndex].thinkingDuration = end.timeIntervalSince(start)
+            // Record final thinking duration once streaming is complete
+            if hasThinkingContent, let start = thinkingStartTime {
+                self.messages[streamingIndex].thinkingDuration = Date().timeIntervalSince(start)
             }
 
             // Update streaming message with final response

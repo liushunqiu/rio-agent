@@ -27,8 +27,9 @@ enum KeychainManager {
     }
     
     // MARK: - Service Identifier
-    
+
     private static let service = "com.rio-agent.api-keys"
+    private static let accessGroup = "com.rioagent.app"
     
     // MARK: - Public Methods
     
@@ -46,13 +47,17 @@ enum KeychainManager {
         // Delete any existing item first
         try? delete(forKey: key)
         
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
             kSecAttrAccessible as String: accessibility
         ]
+
+        #if !targetEnvironment(simulator)
+        query[kSecAttrAccessGroup as String] = accessGroup
+        #endif
         
         let status = SecItemAdd(query as CFDictionary, nil)
         
@@ -67,13 +72,17 @@ enum KeychainManager {
     /// - Parameter key: The key to look up
     /// - Returns: The stored string value, or nil if not found
     static func load(forKey key: String) -> String? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+
+        #if !targetEnvironment(simulator)
+        query[kSecAttrAccessGroup as String] = accessGroup
+        #endif
         
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -90,11 +99,15 @@ enum KeychainManager {
     /// Delete a value from Keychain
     /// - Parameter key: The key to delete
     static func delete(forKey key: String) throws {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
+
+        #if !targetEnvironment(simulator)
+        query[kSecAttrAccessGroup as String] = accessGroup
+        #endif
         
         let status = SecItemDelete(query as CFDictionary)
         
