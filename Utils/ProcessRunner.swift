@@ -52,6 +52,7 @@ private final class ProcessRunState: @unchecked Sendable {
 
 class ProcessRunner {
     static let shared = ProcessRunner()
+    private let timeoutQueue = DispatchQueue(label: "rio-agent.process-runner.timeout", qos: .utility)
 
     private init() {}
 
@@ -84,7 +85,7 @@ class ProcessRunner {
                 }
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
+            timeoutQueue.asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
 
             outputPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData

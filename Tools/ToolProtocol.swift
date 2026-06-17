@@ -140,6 +140,10 @@ struct CommandClassifier {
         let trimmed = command.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return .normal }
 
+        guard !containsDynamicShellSyntax(trimmed) else {
+            return .normal
+        }
+
         let lowercased = trimmed.lowercased()
 
         // 检查危险模式
@@ -167,9 +171,9 @@ struct CommandClassifier {
         }
 
         // 管道命令：如果包含管道，检查整体是否安全
-        if trimmed.contains("|") {
-            let parts = trimmed.split(separator: "|").map { String($0).trimmingCharacters(in: .whitespaces) }
-            let classifications = parts.map { classify($0, workingDirectory: workingDirectory) }
+        let pipelineParts = splitTopLevel(trimmed, separators: ["|"])
+        if pipelineParts.count > 1 {
+            let classifications = pipelineParts.map { classify($0, workingDirectory: workingDirectory) }
             if classifications.contains(.dangerous) {
                 return .dangerous
             }
@@ -207,35 +211,15 @@ struct CommandClassifier {
     }
 
     private static func containsShellControlOperator(_ command: String) -> Bool {
-        shellControlOperators.contains { command.contains($0) }
+        splitTopLevel(command, separators: shellControlOperators).count > 1
     }
 
     private static func splitShellControlSegments(_ command: String) -> [String] {
-        var segments: [String] = []
-        var current = ""
-        var index = command.startIndex
-
-        while index < command.endIndex {
-            if command[index...].hasPrefix("&&") || command[index...].hasPrefix("||") {
-                segments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
-                current = ""
-                index = command.index(index, offsetBy: 2)
-            } else if command[index] == ";" {
-                segments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
-                current = ""
-                index = command.index(after: index)
-            } else {
-                current.append(command[index])
-                index = command.index(after: index)
-            }
-        }
-
-        segments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
-        return segments
+        splitTopLevel(command, separators: shellControlOperators)
     }
 
     private static func containsRedirection(_ command: String) -> Bool {
-        redirectionPatterns.contains { command.contains($0) }
+        containsTopLevelTokenPrefix(command, prefixes: redirectionPatterns)
     }
 
     private static func classifyRedirectedCommand(_ command: String, workingDirectory: String?) -> CommandRiskLevel {
@@ -269,7 +253,7 @@ struct CommandClassifier {
     }
 
     private static func splitCommandAndRedirectionTargets(_ command: String) -> (baseCommand: String, targets: [String])? {
-        let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        let tokens = shellWords(command)
         guard !tokens.isEmpty else { return nil }
 
         var baseTokens: [String] = []
@@ -295,6 +279,167 @@ struct CommandClassifier {
 
         guard !baseTokens.isEmpty, !targets.isEmpty else { return nil }
         return (baseTokens.joined(separator: " "), targets)
+    }
+
+    private static func containsDynamicShellSyntax(_ command: String) -> Bool {
+        var quote: Character?
+        var escaped = false
+        var index = command.startIndex
+
+        while index < command.endIndex {
+            let char = command[index]
+
+            if escaped {
+                escaped = false
+                index = command.index(after: index)
+                continue
+            }
+
+            if char == "\\" {
+                escaped = true
+                index = command.index(after: index)
+                continue
+            }
+
+            if let currentQuote = quote {
+                if char == currentQuote {
+                    quote = nil
+                }
+                index = command.index(after: index)
+                continue
+            }
+
+            if char == "'" || char == "\"" {
+                quote = char
+                index = command.index(after: index)
+                continue
+            }
+
+            if char == "`" || char == "$" {
+                let next = command.index(after: index)
+                if char == "`" || (next < command.endIndex && (command[next] == "(" || command[next] == "{")) {
+                    return true
+                }
+            }
+
+            index = command.index(after: index)
+        }
+
+        return false
+    }
+
+    private static func splitTopLevel(_ command: String, separators: [String]) -> [String] {
+        var segments: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaped = false
+        var index = command.startIndex
+
+        while index < command.endIndex {
+            let char = command[index]
+
+            if escaped {
+                current.append(char)
+                escaped = false
+                index = command.index(after: index)
+                continue
+            }
+
+            if char == "\\" {
+                current.append(char)
+                escaped = true
+                index = command.index(after: index)
+                continue
+            }
+
+            if let currentQuote = quote {
+                current.append(char)
+                if char == currentQuote {
+                    quote = nil
+                }
+                index = command.index(after: index)
+                continue
+            }
+
+            if char == "'" || char == "\"" {
+                current.append(char)
+                quote = char
+                index = command.index(after: index)
+                continue
+            }
+
+            if let separator = separators.first(where: { command[index...].hasPrefix($0) }) {
+                segments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+                current = ""
+                index = command.index(index, offsetBy: separator.count)
+                continue
+            }
+
+            current.append(char)
+            index = command.index(after: index)
+        }
+
+        segments.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+        return segments
+    }
+
+    private static func containsTopLevelTokenPrefix(_ command: String, prefixes: [String]) -> Bool {
+        shellWords(command).contains { token in
+            prefixes.contains { prefix in
+                token == prefix || token.hasPrefix(prefix)
+            }
+        }
+    }
+
+    private static func shellWords(_ command: String) -> [String] {
+        var words: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaped = false
+
+        for char in command {
+            if escaped {
+                current.append(char)
+                escaped = false
+                continue
+            }
+
+            if char == "\\" {
+                current.append(char)
+                escaped = true
+                continue
+            }
+
+            if let currentQuote = quote {
+                current.append(char)
+                if char == currentQuote {
+                    quote = nil
+                }
+                continue
+            }
+
+            if char == "'" || char == "\"" {
+                current.append(char)
+                quote = char
+                continue
+            }
+
+            if char == " " || char == "\t" || char == "\n" {
+                if !current.isEmpty {
+                    words.append(current)
+                    current = ""
+                }
+                continue
+            }
+
+            current.append(char)
+        }
+
+        if !current.isEmpty {
+            words.append(current)
+        }
+
+        return words
     }
 
     private static func inlineRedirectionTarget(in token: String) -> String? {

@@ -89,6 +89,28 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertEqual(CommandClassifier.classify("pwd && git status --short"), .safe)
     }
 
+    func testCommandClassifierIgnoresShellOperatorsInsideQuotes() {
+        XCTAssertEqual(CommandClassifier.classify("echo 'a; b && c | d'"), .safe)
+        XCTAssertEqual(
+            CommandClassifier.classify(
+                "echo 'hello > output.txt'",
+                workingDirectory: "/Users/test/project"
+            ),
+            .safe
+        )
+    }
+
+    func testCommandClassifierRequiresConfirmationForDynamicShellSyntax() {
+        XCTAssertEqual(CommandClassifier.classify("echo $(pwd)"), .normal)
+        XCTAssertEqual(CommandClassifier.classify("echo `pwd`"), .normal)
+        XCTAssertEqual(CommandClassifier.classify("echo ${HOME}"), .normal)
+    }
+
+    func testCommandClassifierTreatsQuotedPipesAsSingleSafeCommand() {
+        XCTAssertEqual(CommandClassifier.classify("printf 'a|b'"), .safe)
+        XCTAssertNotEqual(CommandClassifier.classify("printf ok | touch created.txt"), .safe)
+    }
+
     func testCommandClassifierTreatsPipeToInterpreterAsDangerous() {
         XCTAssertEqual(CommandClassifier.classify("cat script.sh|sh"), .dangerous)
     }
