@@ -50,6 +50,7 @@ struct SettingsView: View {
     @State private var singleAgentSystemPrompt: String
     @State private var memoryNotes: [AgentMemory.MemoryNote]
     @State private var memoryFilePath: String
+    @State private var showingClearMemoryConfirmation = false
 
     init(
         configuration: Binding<AIConfiguration>,
@@ -122,6 +123,15 @@ struct SettingsView: View {
         .frame(width: 880, height: 660)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+        .alert("清空 MEMORY.md？", isPresented: $showingClearMemoryConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) {
+                memory.clearMemoryMarkdown()
+                memoryNotes = memory.loadMemoryNotes()
+            }
+        } message: {
+            Text("这会删除所有已持久化的长期记忆条目。")
+        }
         .onAppear {
             reconcileSelectedConfigSets()
         }
@@ -397,8 +407,7 @@ struct SettingsView: View {
                         .tint(Theme.accentSecondary)
 
                         Button("清空 MEMORY.md", role: .destructive) {
-                            memory.clearMemoryMarkdown()
-                            memoryNotes = memory.loadMemoryNotes()
+                            showingClearMemoryConfirmation = true
                         }
                         .buttonStyle(.bordered)
                         .tint(Theme.statusError)

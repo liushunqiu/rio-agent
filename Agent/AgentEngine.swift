@@ -1445,7 +1445,7 @@ class AgentEngine: ObservableObject {
         md += "规划模型: \(configuration.planningModel)\n"
         md += "执行模型: \(configuration.executionModel)\n\n---\n\n"
 
-        for message in messages {
+        for message in messages where message.isVisibleInTranscript {
             switch message.role {
             case .user:
                 md += "## 👤 User\n\n\(message.content)\n\n"
@@ -1466,7 +1466,9 @@ class AgentEngine: ObservableObject {
                     }
                 }
             case .system:
-                md += "> ℹ️ \(message.content)\n\n"
+                if !message.content.isEmpty {
+                    md += "> ℹ️ \(message.content)\n\n"
+                }
             }
 
             if let toolResults = message.toolResults {

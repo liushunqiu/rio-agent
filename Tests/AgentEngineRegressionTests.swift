@@ -220,4 +220,28 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(engine.getTotalTokensUsed(), 0)
         XCTAssertFalse(engine.isProcessing)
     }
+
+    func testExportAsMarkdownOmitsInternalOnlyMessages() {
+        let engine = AgentEngine()
+        engine.workingDirectory = "/tmp/project"
+        engine.appendMessage(.user("visible user"))
+        engine.appendMessage(Message.assistant("visible assistant"))
+        engine.appendMessage(Message.system(
+            "[Internal Planning Context]",
+            presentation: .internalOnly
+        ))
+        engine.appendMessage(Message(
+            role: .system,
+            content: "",
+            toolResults: [ToolResult.success(toolCallId: "hidden", output: "secret tool output")],
+            presentation: .internalOnly
+        ))
+
+        let markdown = engine.exportAsMarkdown()
+
+        XCTAssertTrue(markdown.contains("visible user"))
+        XCTAssertTrue(markdown.contains("visible assistant"))
+        XCTAssertFalse(markdown.contains("[Internal Planning Context]"))
+        XCTAssertFalse(markdown.contains("secret tool output"))
+    }
 }
