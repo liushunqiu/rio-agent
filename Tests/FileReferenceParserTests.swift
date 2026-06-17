@@ -1,0 +1,41 @@
+import XCTest
+@testable import RioAgent
+
+final class FileReferenceParserTests: XCTestCase {
+    func testAppendingReferenceUsesOwnLineAndRemovesDanglingAt() {
+        let text = FileReferenceParser.appendingReference(
+            to: "请检查这个文件 @",
+            path: "/tmp/project/App.swift"
+        )
+
+        XCTAssertEqual(text, "请检查这个文件\n@file:/tmp/project/App.swift")
+    }
+
+    func testFileReferencesDeduplicateAndIgnoreInlineMentions() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift
+        这里提到 @file:/tmp/project/Ignored.swift 但不是独立引用
+        @file:/tmp/project/App.swift
+        @file:/tmp/project/Model.swift
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.fileReferences(in: text),
+            ["/tmp/project/App.swift", "/tmp/project/Model.swift"]
+        )
+    }
+
+    func testRemovingReferenceOnlyRemovesMatchingReferenceLine() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift
+        @file:/tmp/project/Model.swift
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.removingReference(from: text, path: "/tmp/project/App.swift"),
+            "请分析\n@file:/tmp/project/Model.swift"
+        )
+    }
+}

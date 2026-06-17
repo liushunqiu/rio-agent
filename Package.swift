@@ -35,16 +35,9 @@ let package = Package(
                 "project.yml",
                 "Rio Agent.app",
                 "Optimizations",
-                "OPTIMIZATION_ANALYSIS.md",
-                "OPTIMIZATION_RECOMMENDATIONS.md",
-                "QUICK_REFERENCE.md",
-                "PHASE2_OPTIMIZATION.md",
-                "PHASE3_OPTIMIZATION.md",
-                "PHASE4_OPTIMIZATION.md",
-                "PIPELINE_IMPROVEMENTS.md",
-                "INTEGRATION_COMPLETE.md",
-                "TOKENTRACKER_INTEGRATION.md",
-                "RioAgent.entitlements"
+                "RioAgent.entitlements",
+                "2.png",
+                "j.png"
             ],
             sources: [
                 "App",

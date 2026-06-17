@@ -208,7 +208,7 @@ struct NewChatPage: View {
 
     private func submitIfPossible() {
         guard viewModel.canSend else { return }
-        let text = viewModel.inputText
+        let text = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         viewModel.clearInput()
         onSubmit(text)
     }
@@ -263,6 +263,11 @@ struct FilePickerView: View {
     
     private let recentFilesKey = "recent_files_picker"
     private let maxRecentFiles = 5
+    private let maxFilesToLoad = 2_000
+    private let excludedDirectoryNames: Set<String> = [
+        ".git", ".build", ".swiftpm", "DerivedData", "node_modules",
+        "dist", "coverage", ".next", ".nuxt", ".venv", "venv", "__pycache__"
+    ]
     
     var body: some View {
         VStack(spacing: 0) {
@@ -358,12 +363,12 @@ struct FilePickerView: View {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 28))
                         .foregroundColor(.secondary)
-                    Text(searchText.isEmpty ? "未找到代码文件" : "未匹配到文件")
+                    Text(emptyStateTitle)
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
                         .padding(.top, 8)
-                    if !searchText.isEmpty {
-                        Text("尝试不同的关键词或检查拼写")
+                    if let subtitle = emptyStateSubtitle {
+                        Text(subtitle)
                             .font(.system(size: 11))
                             .foregroundColor(.secondary.opacity(0.6))
                             .padding(.top, 4)
@@ -417,6 +422,17 @@ struct FilePickerView: View {
             guard let wd = workingDirectory else { return false }
             return path.hasPrefix(wd) && FileManager.default.fileExists(atPath: path)
         }
+    }
+
+    private var emptyStateTitle: String {
+        if workingDirectory == nil { return "先选择工作目录" }
+        return searchText.isEmpty ? "未找到代码文件" : "未匹配到文件"
+    }
+
+    private var emptyStateSubtitle: String? {
+        if workingDirectory == nil { return "选择目录后可添加文件上下文" }
+        if !searchText.isEmpty { return "尝试不同的关键词或检查拼写" }
+        return nil
     }
     
     private func recordRecentFile(_ path: String) {
@@ -478,11 +494,19 @@ struct FilePickerView: View {
             
             for case let fileURL as URL in enumerator {
                 let resourceValues = try? fileURL.resourceValues(forKeys: Set(resourceKeys))
-                if resourceValues?.isDirectory == true { continue }
+                if resourceValues?.isDirectory == true {
+                    if excludedDirectoryNames.contains(fileURL.lastPathComponent) {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
                 
                 let fileExtension = fileURL.pathExtension.lowercased()
                 if fileExtensions.contains(fileExtension) {
                     filePaths.append(fileURL.path)
+                    if filePaths.count >= maxFilesToLoad {
+                        break
+                    }
                 }
             }
             

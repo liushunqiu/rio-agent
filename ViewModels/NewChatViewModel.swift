@@ -18,36 +18,21 @@ final class NewChatViewModel {
     }
     
     func handleInput(_ text: String) {
-        // 检查是否输入了@符号
+        selectedFiles = FileReferenceParser.fileReferences(in: text)
+
         if text.hasSuffix("@") {
             isShowingFilePicker = true
         }
     }
     
     func addFileReference(_ filePath: String) {
-        // 移除末尾的@符号，添加文件引用
-        if inputText.hasSuffix("@") {
-            inputText = String(inputText.dropLast())
-        }
-        
-        // 添加文件引用到输入文本
-        let fileRef = "@file:\(filePath)"
-        inputText += fileRef
-        
-        // 记录选择的文件
-        if !selectedFiles.contains(filePath) {
-            selectedFiles.append(filePath)
-        }
-        
+        inputText = FileReferenceParser.appendingReference(to: inputText, path: filePath)
+        selectedFiles = FileReferenceParser.fileReferences(in: inputText)
         isShowingFilePicker = false
     }
     
     func removeFileReference(_ filePath: String) {
-        // 从输入文本中移除文件引用
-        let fileRef = "@file:\(filePath)"
-        inputText = inputText.replacingOccurrences(of: fileRef, with: "")
-        
-        // 从选择的文件列表中移除
-        selectedFiles.removeAll { $0 == filePath }
+        inputText = FileReferenceParser.removingReference(from: inputText, path: filePath)
+        selectedFiles = FileReferenceParser.fileReferences(in: inputText)
     }
 }

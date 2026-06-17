@@ -556,9 +556,7 @@ struct InputArea: View {
                     .focused($isFocused)
                     .foregroundColor(Theme.textPrimary)
                     .onSubmit {
-                        if !text.isEmpty && !isProcessing {
-                            onSubmit()
-                        }
+                        submitIfPossible()
                     }
                     .onChange(of: text) { oldValue, newValue in
                         // 延迟执行，避免在视图更新期间修改状态
@@ -625,22 +623,20 @@ struct InputArea: View {
                     } else {
                         // Send button
                         Button(action: {
-                            if !text.isEmpty {
-                                onSubmit()
-                            }
+                            submitIfPossible()
                         }) {
                             ZStack {
                                 Circle()
-                                    .fill(text.isEmpty ? AnyShapeStyle(Theme.bgGlass) : AnyShapeStyle(Theme.accentGradient))
+                                    .fill(canSend ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Theme.bgGlass))
                                     .frame(width: 32, height: 32)
 
                                 Image(systemName: "arrow.up")
                                     .font(.system(size: 14, weight: .bold))
-                                    .foregroundColor(text.isEmpty ? Theme.textTertiary : .white)
+                                    .foregroundColor(canSend ? .white : Theme.textTertiary)
                             }
                         }
                         .buttonStyle(.plain)
-                        .disabled(text.isEmpty)
+                        .disabled(!canSend)
                         .keyboardShortcut(.return, modifiers: .command)
                     }
                 }
@@ -672,37 +668,34 @@ struct InputArea: View {
             }
         }
     }
+
+    private var canSend: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isProcessing
+    }
+
+    private func submitIfPossible() {
+        guard canSend else { return }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        onSubmit()
+        selectedFiles.removeAll()
+    }
     
     private func handleInput(_ text: String) {
-        // 检查是否输入了@符号
+        selectedFiles = FileReferenceParser.fileReferences(in: text)
+
         if text.hasSuffix("@") {
             isShowingFilePicker = true
         }
     }
     
     private func addFileReference(_ filePath: String) {
-        // 移除末尾的@符号，添加文件引用
-        if text.hasSuffix("@") {
-            text = String(text.dropLast())
-        }
-        
-        // 添加文件引用到输入文本
-        let fileRef = "@file:\(filePath)"
-        text += fileRef
-        
-        // 记录选择的文件
-        if !selectedFiles.contains(filePath) {
-            selectedFiles.append(filePath)
-        }
+        text = FileReferenceParser.appendingReference(to: text, path: filePath)
+        selectedFiles = FileReferenceParser.fileReferences(in: text)
     }
     
     private func removeFileReference(_ filePath: String) {
-        // 从输入文本中移除文件引用
-        let fileRef = "@file:\(filePath)"
-        text = text.replacingOccurrences(of: fileRef, with: "")
-        
-        // 从选择的文件列表中移除
-        selectedFiles.removeAll { $0 == filePath }
+        text = FileReferenceParser.removingReference(from: text, path: filePath)
+        selectedFiles = FileReferenceParser.fileReferences(in: text)
     }
 }
 
