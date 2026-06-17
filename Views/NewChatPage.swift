@@ -105,6 +105,7 @@ struct NewChatPage: View {
                         ForEach(viewModel.selectedFiles, id: \.self) { filePath in
                             FileTag(filePath: filePath) {
                                 viewModel.removeFileReference(filePath)
+                                inputText = viewModel.inputText
                             }
                         }
                     }
@@ -124,7 +125,7 @@ struct NewChatPage: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 0) {
-                    TextField("", text: $viewModel.inputText, axis: .vertical)
+                    TextField("", text: composerTextBinding, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14))
                         .lineLimit(3...6)
@@ -135,12 +136,6 @@ struct NewChatPage: View {
                         .frame(minHeight: 84, maxHeight: 140)
                         .onSubmit {
                             submitIfPossible()
-                        }
-                        .onChange(of: viewModel.inputText) { _, newValue in
-                            if inputText != newValue {
-                                inputText = newValue
-                            }
-                            viewModel.handleInput(newValue)
                         }
 
                     sendButton
@@ -161,6 +156,7 @@ struct NewChatPage: View {
         .sheet(isPresented: $viewModel.isShowingFilePicker) {
             FilePickerView(workingDirectory: workingDirectory.wrappedValue) { filePath in
                 viewModel.addFileReference(filePath)
+                inputText = viewModel.inputText
             }
         }
     }
@@ -184,47 +180,7 @@ struct NewChatPage: View {
     }
 
     private var workingDirectorySection: some View {
-        Button(action: pickFolder) {
-            HStack(spacing: 6) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(brandGreen)
-
-                Text(folderDisplayName)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.textSecondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Theme.bgGlass)
-            .cornerRadius(7)
-            .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(Theme.borderSubtle, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var folderDisplayName: String {
-        guard let dir = workingDirectory.wrappedValue else { return "选择工作目录" }
-        return URL(fileURLWithPath: dir).lastPathComponent
-    }
-
-    private func pickFolder() {
-        #if os(macOS)
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.message = "选择工作目录"
-        panel.prompt = "选择"
-        if let dir = workingDirectory.wrappedValue {
-            panel.directoryURL = URL(fileURLWithPath: dir)
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        workingDirectory.wrappedValue = url.path
-        #endif
+        FolderSelector(workingDirectory: workingDirectory)
     }
 
     private func submitIfPossible() {
@@ -233,6 +189,16 @@ struct NewChatPage: View {
         viewModel.clearInput()
         inputText = ""
         onSubmit(text)
+    }
+
+    private var composerTextBinding: Binding<String> {
+        Binding(
+            get: { viewModel.inputText },
+            set: { newValue in
+                inputText = newValue
+                viewModel.handleInput(newValue)
+            }
+        )
     }
 }
 

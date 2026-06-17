@@ -1426,7 +1426,7 @@ class AgentEngine: ObservableObject {
     }
 
     func exportConversation() -> Conversation {
-        var conversation = Conversation()
+        var conversation = Conversation(workingDirectory: workingDirectory)
         for message in messages {
             conversation.addMessage(message)
         }

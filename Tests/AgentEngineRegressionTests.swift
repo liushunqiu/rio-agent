@@ -244,4 +244,15 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertFalse(markdown.contains("[Internal Planning Context]"))
         XCTAssertFalse(markdown.contains("secret tool output"))
     }
+
+    func testExportConversationPreservesWorkingDirectory() {
+        let engine = AgentEngine()
+        engine.workingDirectory = "/tmp/exported-project"
+        engine.appendMessage(.user("visible user"))
+
+        let conversation = engine.exportConversation()
+
+        XCTAssertEqual(conversation.workingDirectory, "/tmp/exported-project")
+        XCTAssertEqual(conversation.messages.last?.content, "visible user")
+    }
 }

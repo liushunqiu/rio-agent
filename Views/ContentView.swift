@@ -570,7 +570,7 @@ struct InputArea: View {
                 }
                 
                 // Multi-line text input
-                TextField("描述任务，Cmd+Return 发送，@ 添加上下文", text: $text, axis: .vertical)
+                TextField("描述任务，Cmd+Return 发送，@ 添加上下文", text: composerTextBinding, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .lineLimit(1...8)
@@ -578,9 +578,6 @@ struct InputArea: View {
                     .foregroundColor(Theme.textPrimary)
                     .onSubmit {
                         submitIfPossible()
-                    }
-                    .onChange(of: text) { _, newValue in
-                        composer.updateText(newValue)
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
@@ -692,11 +689,6 @@ struct InputArea: View {
         .onAppear {
             composer.updateText(text)
         }
-        .onChange(of: text) { _, newValue in
-            if composer.text != newValue {
-                composer.updateText(newValue)
-            }
-        }
     }
 
     private var canSend: Bool {
@@ -709,6 +701,16 @@ struct InputArea: View {
         composer.updateText(text)
         onSubmit()
         composer.clearInput()
+    }
+
+    private var composerTextBinding: Binding<String> {
+        Binding(
+            get: { text },
+            set: { newValue in
+                text = newValue
+                composer.updateText(newValue)
+            }
+        )
     }
 }
 
