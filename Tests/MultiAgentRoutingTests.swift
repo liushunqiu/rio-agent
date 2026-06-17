@@ -114,6 +114,85 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertEqual(agent.model, "qwen3.5-4b")
     }
 
+    func testReconcileConfigSetsFallsBackWhenStoredIdsAreMissing() {
+        let fallback = ConfigSet(
+            id: UUID(),
+            name: "Claude Fallback",
+            provider: .claude,
+            baseURL: "",
+            model: "claude-sonnet-4"
+        )
+        let workerFallback = ConfigSet(
+            id: UUID(),
+            name: "Compatible Worker",
+            provider: .openAICompatible,
+            baseURL: "https://example.com/v1",
+            model: "deepseek-chat"
+        )
+
+        var config = MultiAgentConfig(
+            orchestrator: AgentConfig(
+                name: "主 Agent",
+                role: .orchestrator,
+                capability: .general,
+                configSetId: UUID(),
+                provider: .claude,
+                model: "missing-model",
+                systemPrompt: ""
+            ),
+            workers: [
+                AgentConfig(
+                    name: "代码 Agent",
+                    role: .worker,
+                    capability: .code,
+                    configSetId: UUID(),
+                    provider: .openAICompatible,
+                    model: "deepseek-chat",
+                    systemPrompt: ""
+                )
+            ],
+            router: RouterConfig(
+                enabled: true,
+                configSetId: UUID(),
+                model: "deepseek-chat"
+            )
+        )
+
+        config.reconcileConfigSets(with: [fallback, workerFallback])
+
+        XCTAssertEqual(config.orchestrator.configSetId, fallback.id)
+        XCTAssertEqual(config.orchestrator.model, fallback.model)
+        XCTAssertEqual(config.workers.first?.configSetId, workerFallback.id)
+        XCTAssertEqual(config.router.configSetId, workerFallback.id)
+        XCTAssertEqual(config.router.model, "deepseek-chat")
+    }
+
+    func testReconcileConfigSetsUsesFirstAvailableWhenRouterHasNoMatch() {
+        let first = ConfigSet(
+            id: UUID(),
+            name: "First",
+            provider: .claude,
+            baseURL: "",
+            model: "claude-haiku-4"
+        )
+        let second = ConfigSet(
+            id: UUID(),
+            name: "Second",
+            provider: .openAICompatible,
+            baseURL: "https://example.com/v1",
+            model: "gemini-2.0-flash"
+        )
+
+        var config = MultiAgentConfig()
+        config.router.configSetId = UUID()
+        config.router.model = ""
+
+        config.reconcileConfigSets(with: [first, second])
+
+        XCTAssertEqual(config.router.configSetId, first.id)
+        XCTAssertEqual(config.orchestrator.configSetId, first.id)
+    }
+
     func testComplexityAnalysisSimple() {
         let analysis = TaskPlanner.TaskAnalysis(
             complexity: .simple,

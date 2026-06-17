@@ -68,6 +68,8 @@ struct MultiAgentSettingsView: View {
     }
 
     private func syncToConfig() {
+        reconcileSelections()
+
         var orchestrator = config.orchestrator
         let resolvedOrchestratorConfigSet = aiConfig.configSet(for: orchestratorConfigSetId)
             ?? aiConfig.allConfigSets.first
@@ -93,6 +95,53 @@ struct MultiAgentSettingsView: View {
         config.router.topP = qwenTopP
         config.router.topK = qwenTopK
         config.router.presencePenalty = qwenPresencePenalty
+        config.reconcileConfigSets(with: aiConfig.allConfigSets)
+    }
+
+    private func reconcileSelections() {
+        let configSets = aiConfig.allConfigSets
+        let fallbackId = configSets.first?.id
+
+        if orchestratorConfigSetId == nil || aiConfig.configSet(for: orchestratorConfigSetId) == nil {
+            let fallback = config.orchestrator.resolvedConfigSet(from: configSets)
+                ?? aiConfig.primaryConfigSet(for: config.orchestrator.provider)
+                ?? configSets.first
+            orchestratorConfigSetId = fallback?.id ?? fallbackId
+        }
+
+        if routerConfigSetId == nil || aiConfig.configSet(for: routerConfigSetId) == nil {
+            let fallback = resolvedRouterConfigSet(from: configSets)
+            routerConfigSetId = fallback?.id
+            if routerModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                routerModel = fallback?.model ?? ""
+            }
+        }
+
+        workers = workers.map { worker in
+            var updated = worker
+            let fallback = worker.resolvedConfigSet(from: configSets)
+                ?? aiConfig.primaryConfigSet(for: worker.provider)
+                ?? configSets.first
+            updated.applyConfigSet(fallback)
+            return updated
+        }
+    }
+
+    private func resolvedRouterConfigSet(from configSets: [ConfigSet]) -> ConfigSet? {
+        if let routerConfigSetId,
+           let exactConfig = configSets.first(where: { $0.id == routerConfigSetId }) {
+            return exactConfig
+        }
+
+        let trimmedModel = routerModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedModel.isEmpty,
+           let modelMatch = configSets.first(where: {
+               $0.model.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedModel
+           }) {
+            return modelMatch
+        }
+
+        return configSets.first
     }
 
     private var canEnable: Bool {
@@ -571,6 +620,12 @@ struct MultiAgentSettingsView: View {
                     syncToConfig()
                 }
             }
+        }
+        .onAppear {
+            syncToConfig()
+        }
+        .onChange(of: aiConfig.allConfigSets.map(\.id)) { _, _ in
+            syncToConfig()
         }
     }
 

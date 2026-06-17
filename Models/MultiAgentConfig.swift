@@ -259,6 +259,43 @@ struct MultiAgentConfig: Codable {
         return AIProvider.defaultMaxTokens(for: orchestrator.model)
     }
 
+    mutating func reconcileConfigSets(with configSets: [ConfigSet]) {
+        let fallbackOrchestratorConfig = orchestrator.resolvedConfigSet(from: configSets)
+            ?? configSets.first(where: { $0.provider == orchestrator.provider })
+            ?? configSets.first
+        orchestrator.applyConfigSet(fallbackOrchestratorConfig)
+
+        for index in workers.indices {
+            let fallbackWorkerConfig = workers[index].resolvedConfigSet(from: configSets)
+                ?? configSets.first(where: { $0.provider == workers[index].provider })
+                ?? configSets.first
+            workers[index].applyConfigSet(fallbackWorkerConfig)
+        }
+
+        let resolvedRouterConfig = resolveRouterConfigSet(from: configSets)
+        router.configSetId = resolvedRouterConfig?.id
+        if let resolvedRouterConfig, router.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            router.model = resolvedRouterConfig.model
+        }
+    }
+
+    private func resolveRouterConfigSet(from configSets: [ConfigSet]) -> ConfigSet? {
+        if let configSetId = router.configSetId,
+           let exactConfig = configSets.first(where: { $0.id == configSetId }) {
+            return exactConfig
+        }
+
+        let trimmedModel = router.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedModel.isEmpty,
+           let modelMatch = configSets.first(where: {
+               $0.model.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedModel
+           }) {
+            return modelMatch
+        }
+
+        return configSets.first
+    }
+
     mutating func migrateBuiltInPromptsIfNeeded() {
         if orchestrator.systemPrompt == Self.legacyDefaultOrchestratorPrompt {
             orchestrator.systemPrompt = Self.defaultOrchestratorPrompt
