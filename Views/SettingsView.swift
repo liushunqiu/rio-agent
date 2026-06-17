@@ -48,7 +48,6 @@ struct SettingsView: View {
     @State private var enableStreaming: Bool
     @State private var maxContextMessages: Int
     @State private var singleAgentSystemPrompt: String
-    @State private var memoryNotes: [AgentMemory.MemoryNote]
     @State private var memoryFilePath: String
     @State private var showingClearMemoryConfirmation = false
 
@@ -66,7 +65,6 @@ struct SettingsView: View {
         self._enableStreaming = State(initialValue: cfg.enableStreaming)
         self._maxContextMessages = State(initialValue: cfg.maxContextMessages)
         self._singleAgentSystemPrompt = State(initialValue: cfg.singleAgentSystemPrompt)
-        self._memoryNotes = State(initialValue: memory.loadMemoryNotes())
         self._memoryFilePath = State(initialValue: memory.memoryMarkdownPath())
     }
 
@@ -127,7 +125,6 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) {
                 memory.clearMemoryMarkdown()
-                memoryNotes = memory.loadMemoryNotes()
             }
         } message: {
             Text("这会删除所有已持久化的长期记忆条目。")
@@ -400,7 +397,7 @@ struct SettingsView: View {
 
                     HStack(spacing: 10) {
                         Button("刷新") {
-                            memoryNotes = memory.loadMemoryNotes()
+                            memory.refreshPersistedNotes()
                             memoryFilePath = memory.memoryMarkdownPath()
                         }
                         .buttonStyle(.bordered)
@@ -416,16 +413,15 @@ struct SettingsView: View {
             }
 
             DarkSettingsSection(title: "记忆条目", icon: "text.book.closed") {
-                if memoryNotes.isEmpty {
+                if memory.persistedNotes.isEmpty {
                     Text("当前没有持久化记忆条目。只有验证过的正确做法和纠错经验才会写入。")
                         .font(.system(size: 12))
                         .foregroundColor(Theme.textTertiary)
                 } else {
                     VStack(spacing: 10) {
-                        ForEach(memoryNotes) { note in
+                        ForEach(memory.persistedNotes) { note in
                             MemoryNoteCard(note: note) {
                                 memory.deleteMemoryNote(summary: note.summary)
-                                memoryNotes = memory.loadMemoryNotes()
                             }
                         }
                     }

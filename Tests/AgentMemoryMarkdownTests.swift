@@ -18,6 +18,9 @@ final class AgentMemoryMarkdownTests: XCTestCase {
             reason: "更容易审计，且回归风险更低"
         )
 
+        XCTAssertTrue(memory.persistedNotes.contains { $0.summary == "【摘要】任务类型 code_fix 优先使用 apply_patch" })
+        XCTAssertTrue(memory.persistedNotes.contains { $0.summary == "【摘要】用户纠正：直接覆盖整个文件 应改为 优先使用 apply_patch 精确修改" })
+
         let content = memory.loadMemoryMarkdownContent()
 
         XCTAssertTrue(content.contains("【摘要】任务类型 code_fix 优先使用 apply_patch"))
@@ -49,6 +52,7 @@ final class AgentMemoryMarkdownTests: XCTestCase {
         let notes = memory.loadMemoryNotes()
         XCTAssertFalse(notes.contains { $0.summary == "【摘要】任务类型 search 优先使用 read_file" })
         XCTAssertTrue(notes.contains { $0.summary == "【摘要】任务类型 edit 优先使用 apply_patch" })
+        XCTAssertEqual(memory.persistedNotes, notes)
     }
 
     func testClearMemoryMarkdownRemovesPersistedNotes() {
@@ -61,6 +65,7 @@ final class AgentMemoryMarkdownTests: XCTestCase {
         memory.clearMemoryMarkdown()
 
         XCTAssertTrue(memory.loadMemoryNotes().isEmpty)
+        XCTAssertTrue(memory.persistedNotes.isEmpty)
         XCTAssertFalse(memory.loadMemoryMarkdownContent().contains("【摘要】"))
     }
 }

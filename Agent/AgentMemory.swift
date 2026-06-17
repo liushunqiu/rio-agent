@@ -64,6 +64,7 @@ class AgentMemory: ObservableObject {
     // MARK: - Properties
     
     @Published var session: SessionMemory = SessionMemory()
+    @Published private(set) var persistedNotes: [MemoryNote] = []
     private var longTerm: LongTermMemory = LongTermMemory()
     
     private let memoryKey = "agent_long_term_memory"
@@ -76,6 +77,7 @@ class AgentMemory: ObservableObject {
     init() {
         loadLongTermMemory()
         loadMemoryMarkdown()
+        refreshPersistedNotes()
     }
     
     // MARK: - Session Memory Methods
@@ -356,7 +358,7 @@ class AgentMemory: ObservableObject {
             }
         }
 
-        let notes = loadMemoryNotes().prefix(3)
+        let notes = persistedNotes.prefix(3)
         if !notes.isEmpty {
             context += "\n## Verified Memory Notes\n"
             for note in notes {
@@ -401,7 +403,7 @@ class AgentMemory: ObservableObject {
         do {
             longTerm = try JSONDecoder().decode(LongTermMemory.self, from: data)
         } catch {
-            print("Failed to load memory: \(error)")
+            RioLogger.config.error("⚠️ 加载长期记忆失败: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -410,7 +412,7 @@ class AgentMemory: ObservableObject {
             let data = try JSONEncoder().encode(longTerm)
             UserDefaults.standard.set(data, forKey: memoryKey)
         } catch {
-            print("Failed to save memory: \(error)")
+            RioLogger.config.error("⚠️ 保存长期记忆失败: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -429,7 +431,7 @@ class AgentMemory: ObservableObject {
             try ensureMemoryDirectoryExists()
             try initial.write(toFile: path, atomically: true, encoding: .utf8)
         } catch {
-            print("Failed to initialize MEMORY.md: \(error)")
+            RioLogger.config.error("⚠️ 初始化 MEMORY.md 失败: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -455,6 +457,14 @@ class AgentMemory: ObservableObject {
     }
 
     func loadMemoryNotes() -> [MemoryNote] {
+        persistedNotes
+    }
+
+    func refreshPersistedNotes() {
+        persistedNotes = readPersistedNotesFromDisk()
+    }
+
+    private func readPersistedNotesFromDisk() -> [MemoryNote] {
         let content = loadMemoryMarkdownContent()
         let chunks = content
             .components(separatedBy: "\n\n## ")
@@ -471,7 +481,7 @@ class AgentMemory: ObservableObject {
     }
 
     func deleteMemoryNote(summary: String) {
-        let remaining = loadMemoryNotes().filter { $0.summary != summary }
+        let remaining = persistedNotes.filter { $0.summary != summary }
         saveMemoryNotes(remaining)
     }
 
@@ -482,7 +492,7 @@ class AgentMemory: ObservableObject {
     private func upsertMemoryNote(summary: String, body: [String]) {
         guard shouldPersistMemory(summary: summary, body: body) else { return }
 
-        let existing = loadMemoryNotes()
+        let existing = persistedNotes
         var deduped = existing.filter { $0.summary != summary }
         deduped.insert(MemoryNote(summary: summary, body: body), at: 0)
         let limited = Array(deduped.prefix(40))
@@ -519,8 +529,9 @@ class AgentMemory: ObservableObject {
         do {
             try ensureMemoryDirectoryExists()
             try content.write(toFile: memoryMarkdownPath(), atomically: true, encoding: .utf8)
+            persistedNotes = notes
         } catch {
-            print("Failed to save MEMORY.md: \(error)")
+            RioLogger.config.error("⚠️ 保存 MEMORY.md 失败: \(error.localizedDescription, privacy: .public)")
         }
     }
     
