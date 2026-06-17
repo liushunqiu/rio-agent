@@ -62,7 +62,8 @@ class AgentEngine: ObservableObject {
             model: configuration.executionModel,
             workingDirectory: workingDirectory,
             maxContextMessages: configuration.maxContextMessages,
-            systemPrompt: configuration.singleAgentSystemPrompt
+            systemPrompt: configuration.singleAgentSystemPrompt,
+            memoryContext: memory.generateMemoryContext()
         )
     }
 
@@ -146,7 +147,8 @@ class AgentEngine: ObservableObject {
             config: multiAgentConfig,
             toolRegistry: toolRegistry,
             criticService: criticService,
-            verifierService: verifierService
+            verifierService: verifierService,
+            memory: memory
         )
         let configManager = ConfigSetManager.shared
         engine.configureConfigSets(configManager.configSets)

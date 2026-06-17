@@ -10,6 +10,7 @@ class MultiAgentEngine: ObservableObject {
     @Published var error: String?
 
     private let toolRegistry: ToolRegistry
+    private let memory: AgentMemory?
     private var services: [UUID: AIService] = [:]
     private var config: MultiAgentConfig
     private var configSetStore: [ConfigSet] = []
@@ -23,12 +24,14 @@ class MultiAgentEngine: ObservableObject {
         config: MultiAgentConfig,
         toolRegistry: ToolRegistry = .shared,
         criticService: CriticService? = nil,
-        verifierService: VerifierService? = nil
+        verifierService: VerifierService? = nil,
+        memory: AgentMemory? = nil
     ) {
         self.config = config
         self.toolRegistry = toolRegistry
         self.criticService = criticService
         self.verifierService = verifierService
+        self.memory = memory
         setupServices()
     }
 
@@ -189,8 +192,13 @@ class MultiAgentEngine: ObservableObject {
     // MARK: - Layer 2: Planner — Project Context Builder
 
     /// Builds a rich context string injected into every Worker so they are NOT blind.
-    private func buildProjectContext() -> String {
+    func buildProjectContext() -> String {
         var parts: [String] = []
+
+        let memoryContext = memory?.generateMemoryContext().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !memoryContext.isEmpty {
+            parts.append("## Verified Memory\n\(memoryContext)")
+        }
 
         // Working directory
         if let dir = toolRegistry.workingDirectory {
@@ -227,6 +235,7 @@ class MultiAgentEngine: ObservableObject {
         guard let orchestratorService = services[config.orchestrator.id] else {
             throw MultiAgentError.serviceNotAvailable(config.orchestrator.name)
         }
+        let memoryContext = normalizedMemoryContext()
 
         let availableWorkers = config.workers.filter { $0.isEnabled }
         let workerCatalog = availableWorkers.map { worker in
@@ -243,6 +252,9 @@ class MultiAgentEngine: ObservableObject {
         你是一个任务协调专家。请分析以下用户任务，将其拆分为带有依赖关系的子任务 DAG（有向无环图），并从可用子 Agent 中选择最合适的执行者。
 
         用户任务: \(task)
+
+        已验证长期记忆:
+        \(memoryContext)
 
         可用子 Agent:
         \(workerCatalog.isEmpty ? "无可用子 Agent" : workerCatalog)
@@ -696,6 +708,11 @@ class MultiAgentEngine: ObservableObject {
         """
     }
 
+    private func normalizedMemoryContext() -> String {
+        let content = memory?.generateMemoryContext().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return content.isEmpty ? "（无）" : content
+    }
+
     // MARK: - Result Synthesis (enhanced with execution metadata)
 
     private func synthesizeResults(originalTask: String, results: [UUID: ExecutionResult]) async throws -> String {
@@ -704,11 +721,19 @@ class MultiAgentEngine: ObservableObject {
         guard let orchestratorService = services[config.orchestrator.id] else {
             throw MultiAgentError.serviceNotAvailable(config.orchestrator.name)
         }
+        let memoryContext = normalizedMemoryContext()
 
         if results.isEmpty {
             let messages = [
                 Message.system(config.orchestrator.systemPrompt),
-                Message.user("你是一个任务协调者。你判断该任务不需要拆分给子 Agent。请直接回答用户的原始任务。\n\n原始用户任务: \(originalTask)")
+                Message.user("""
+                你是一个任务协调者。你判断该任务不需要拆分给子 Agent。请直接回答用户的原始任务。
+
+                已验证长期记忆:
+                \(memoryContext)
+
+                原始用户任务: \(originalTask)
+                """)
             ]
             let response = try await orchestratorService.sendMessage(
                 messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens
@@ -737,6 +762,9 @@ class MultiAgentEngine: ObservableObject {
         你是一个任务协调者。请根据以下信息，给出最终的完整回答。
 
         原始用户任务: \(originalTask)
+
+        已验证长期记忆:
+        \(memoryContext)
 
         子任务执行结果:
         \(resultsText)

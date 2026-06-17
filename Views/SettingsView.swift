@@ -3,12 +3,14 @@ import SwiftUI
 enum SettingsTab: CaseIterable {
     case ai
     case multiAgent
+    case memory
     case about
 
     var title: String {
         switch self {
         case .ai: return "AI 配置"
         case .multiAgent: return "Multi-Agent"
+        case .memory: return "Memory"
         case .about: return "关于"
         }
     }
@@ -17,6 +19,7 @@ enum SettingsTab: CaseIterable {
         switch self {
         case .ai: return "选择默认模型、端点和上下文行为"
         case .multiAgent: return "配置编排器、子 Agent 和任务拆分策略"
+        case .memory: return "查看和管理持久化 MEMORY.md"
         case .about: return "应用版本与能力概览"
         }
     }
@@ -25,6 +28,7 @@ enum SettingsTab: CaseIterable {
         switch self {
         case .ai: return "cpu"
         case .multiAgent: return "person.3.fill"
+        case .memory: return "externaldrive"
         case .about: return "info.circle"
         }
     }
@@ -33,6 +37,7 @@ enum SettingsTab: CaseIterable {
 struct SettingsView: View {
     @Binding var configuration: AIConfiguration
     @Binding var multiAgentConfig: MultiAgentConfig
+    @ObservedObject var memory: AgentMemory
     @Environment(\.dismiss) var dismiss
     @State private var selectedTab: SettingsTab = .ai
     @ObservedObject private var configSetManager = ConfigSetManager.shared
@@ -43,16 +48,25 @@ struct SettingsView: View {
     @State private var enableStreaming: Bool
     @State private var maxContextMessages: Int
     @State private var singleAgentSystemPrompt: String
+    @State private var memoryNotes: [AgentMemory.MemoryNote]
+    @State private var memoryFilePath: String
 
-    init(configuration: Binding<AIConfiguration>, multiAgentConfig: Binding<MultiAgentConfig>? = nil) {
+    init(
+        configuration: Binding<AIConfiguration>,
+        multiAgentConfig: Binding<MultiAgentConfig>? = nil,
+        memory: AgentMemory
+    ) {
         self._configuration = configuration
         self._multiAgentConfig = multiAgentConfig ?? .constant(MultiAgentConfig())
+        self.memory = memory
         let cfg = configuration.wrappedValue
         self._planningConfigSetId = State(initialValue: cfg.planningConfigSetId)
         self._executionConfigSetId = State(initialValue: cfg.executionConfigSetId)
         self._enableStreaming = State(initialValue: cfg.enableStreaming)
         self._maxContextMessages = State(initialValue: cfg.maxContextMessages)
         self._singleAgentSystemPrompt = State(initialValue: cfg.singleAgentSystemPrompt)
+        self._memoryNotes = State(initialValue: memory.loadMemoryNotes())
+        self._memoryFilePath = State(initialValue: memory.memoryMarkdownPath())
     }
 
     private func saveConfiguration() {
@@ -92,6 +106,8 @@ struct SettingsView: View {
                             darkAIConfigSection
                         case .multiAgent:
                             MultiAgentSettingsView(config: $multiAgentConfig, aiConfig: currentAIConfigInfo)
+                        case .memory:
+                            memoryManagementSection
                         case .about:
                             darkAboutView
                         }
@@ -157,6 +173,7 @@ struct SettingsView: View {
             VStack(spacing: 6) {
                 SettingsSidebarItem(tab: .ai, selectedTab: $selectedTab)
                 SettingsSidebarItem(tab: .multiAgent, selectedTab: $selectedTab)
+                SettingsSidebarItem(tab: .memory, selectedTab: $selectedTab)
                 SettingsSidebarItem(tab: .about, selectedTab: $selectedTab)
             }
 
@@ -339,6 +356,61 @@ struct SettingsView: View {
     // MARK: - About View
 
     @ViewBuilder
+    private var memoryManagementSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            DarkSettingsSection(title: "MEMORY.md", icon: "externaldrive") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("只展示经过验证的长期记忆。这里的条目会进入单 Agent 的 memory context。")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+
+                    Text(memoryFilePath)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(Theme.textSecondary)
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.bgInput)
+                        .cornerRadius(Theme.radiusMD)
+
+                    HStack(spacing: 10) {
+                        Button("刷新") {
+                            memoryNotes = memory.loadMemoryNotes()
+                            memoryFilePath = memory.memoryMarkdownPath()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.accentSecondary)
+
+                        Button("清空 MEMORY.md", role: .destructive) {
+                            memory.clearMemoryMarkdown()
+                            memoryNotes = memory.loadMemoryNotes()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.statusError)
+                    }
+                }
+            }
+
+            DarkSettingsSection(title: "记忆条目", icon: "text.book.closed") {
+                if memoryNotes.isEmpty {
+                    Text("当前没有持久化记忆条目。只有验证过的正确做法和纠错经验才会写入。")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textTertiary)
+                } else {
+                    VStack(spacing: 10) {
+                        ForEach(memoryNotes) { note in
+                            MemoryNoteCard(note: note) {
+                                memory.deleteMemoryNote(summary: note.summary)
+                                memoryNotes = memory.loadMemoryNotes()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var darkAboutView: some View {
         VStack(spacing: 20) {
             VStack(spacing: 12) {
@@ -382,6 +454,43 @@ struct SettingsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 20)
         }
+    }
+}
+
+struct MemoryNoteCard: View {
+    let note: AgentMemory.MemoryNote
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Text(note.summary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(Theme.statusError)
+            }
+
+            ForEach(note.body, id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(12)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.borderSubtle, lineWidth: 1)
+        )
     }
 }
 

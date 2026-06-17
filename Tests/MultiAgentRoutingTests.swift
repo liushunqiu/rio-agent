@@ -188,4 +188,18 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertEqual(engine.currentPlan?.subTasks[1].status, .failed)
         XCTAssertEqual(engine.currentPlan?.subTasks[2].status, .completed)
     }
+
+    @MainActor
+    func testBuildProjectContextIncludesVerifiedMemoryWhenAvailable() {
+        let memory = AgentMemory()
+        memory.clearAllMemory()
+        memory.recordSuccessfulPattern(taskType: "search", tool: "read_file")
+
+        let engine = MultiAgentEngine(config: MultiAgentConfig(), memory: memory)
+
+        let context = engine.buildProjectContext()
+
+        XCTAssertTrue(context.contains("## Verified Memory"))
+        XCTAssertTrue(context.contains("【摘要】任务类型 search 优先使用 read_file"))
+    }
 }

@@ -3,6 +3,11 @@ import Foundation
 /// Manages agent's memory for learning and adaptation
 @MainActor
 class AgentMemory: ObservableObject {
+    struct MemoryNote: Equatable, Identifiable {
+        var id: String { summary }
+        let summary: String
+        let body: [String]
+    }
     
     // MARK: - Memory Types
     
@@ -64,11 +69,13 @@ class AgentMemory: ObservableObject {
     private let memoryKey = "agent_long_term_memory"
     private let maxRecentItems = 20
     private let maxErrorPatterns = 100
+    private let markdownFileName = "MEMORY.md"
     
     // MARK: - Initialization
     
     init() {
         loadLongTermMemory()
+        loadMemoryMarkdown()
     }
     
     // MARK: - Session Memory Methods
@@ -115,6 +122,13 @@ class AgentMemory: ObservableObject {
     func recordSuccessfulPattern(taskType: String, tool: String) {
         longTerm.preferredTools[taskType] = tool
         saveLongTermMemory()
+        upsertMemoryNote(
+            summary: "【摘要】任务类型 \(taskType) 优先使用 \(tool)",
+            body: [
+                "- 验证过的正确做法：在任务类型 \(taskType) 下，\(tool) 是稳定的首选工具。",
+                "- 为什么重要：减少不必要的工具试探，降低重复失败概率。"
+            ]
+        )
     }
     
     /// Get preferred tool for a task type
@@ -143,6 +157,14 @@ class AgentMemory: ObservableObject {
         }
         
         saveLongTermMemory()
+        upsertMemoryNote(
+            summary: "【摘要】用户纠正：\(original) 应改为 \(corrected)",
+            body: [
+                "- 纠错内容：\(original)",
+                "- 验证过的正确做法：\(corrected)",
+                "- 为什么重要：\(reason)"
+            ]
+        )
     }
     
     /// Get relevant user corrections
@@ -188,6 +210,14 @@ class AgentMemory: ObservableObject {
         }) {
             longTerm.errorPatterns[index].successCount += 1
             saveLongTermMemory()
+            upsertMemoryNote(
+                summary: "【摘要】错误 \(pattern.errorType) 的修复路径已验证有效",
+                body: [
+                    "- 错误上下文：\(pattern.context)",
+                    "- 验证过的正确做法：\(pattern.solution.isEmpty ? "按后续成功执行路径修复。" : pattern.solution)",
+                    "- 为什么重要：相同或相似错误再次出现时可直接复用。"
+                ]
+            )
         }
     }
     
@@ -325,6 +355,14 @@ class AgentMemory: ObservableObject {
                 context += "- \(taskType): \(tool)\n"
             }
         }
+
+        let notes = loadMemoryNotes().prefix(3)
+        if !notes.isEmpty {
+            context += "\n## Verified Memory Notes\n"
+            for note in notes {
+                context += "- \(note.summary)\n"
+            }
+        }
         
         return context
     }
@@ -375,6 +413,116 @@ class AgentMemory: ObservableObject {
             print("Failed to save memory: \(error)")
         }
     }
+
+    private func loadMemoryMarkdown() {
+        let fm = FileManager.default
+        let path = memoryMarkdownPath()
+        guard !fm.fileExists(atPath: path) else { return }
+
+        let initial = """
+        # Agent Memory
+
+        只记录经过验证的正确做法、用户纠错和重要原因。不要记录代码库里已经存在的内容，不要记录纯会话噪音。
+        """
+
+        do {
+            try ensureMemoryDirectoryExists()
+            try initial.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            print("Failed to initialize MEMORY.md: \(error)")
+        }
+    }
+
+    func memoryMarkdownPath() -> String {
+        let baseURL: URL
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            baseURL = appSupport.appendingPathComponent("RioAgent", isDirectory: true)
+        } else {
+            baseURL = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".rio-agent", isDirectory: true)
+        }
+        return baseURL.appendingPathComponent(markdownFileName).path
+    }
+
+    private func ensureMemoryDirectoryExists() throws {
+        let path = memoryMarkdownPath()
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    func loadMemoryMarkdownContent() -> String {
+        (try? String(contentsOfFile: memoryMarkdownPath(), encoding: .utf8)) ?? ""
+    }
+
+    func loadMemoryNotes() -> [MemoryNote] {
+        let content = loadMemoryMarkdownContent()
+        let chunks = content
+            .components(separatedBy: "\n\n## ")
+            .enumerated()
+            .compactMap { index, raw -> MemoryNote? in
+                let chunk = index == 0 ? raw : "## " + raw
+                guard chunk.contains("## ") else { return nil }
+                let lines = chunk.components(separatedBy: .newlines)
+                let bodyLines = lines.dropFirst().filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                guard let summary = bodyLines.first else { return nil }
+                return MemoryNote(summary: summary, body: Array(bodyLines.dropFirst()))
+            }
+        return chunks.reversed()
+    }
+
+    func deleteMemoryNote(summary: String) {
+        let remaining = loadMemoryNotes().filter { $0.summary != summary }
+        saveMemoryNotes(remaining)
+    }
+
+    func clearMemoryMarkdown() {
+        saveMemoryNotes([])
+    }
+
+    private func upsertMemoryNote(summary: String, body: [String]) {
+        guard shouldPersistMemory(summary: summary, body: body) else { return }
+
+        let existing = loadMemoryNotes()
+        var deduped = existing.filter { $0.summary != summary }
+        deduped.insert(MemoryNote(summary: summary, body: body), at: 0)
+        let limited = Array(deduped.prefix(40))
+        saveMemoryNotes(limited)
+    }
+
+    private func shouldPersistMemory(summary: String, body: [String]) -> Bool {
+        guard summary.hasPrefix("【摘要】") else { return false }
+        guard !body.isEmpty else { return false }
+        let joined = body.joined(separator: "\n")
+        if joined.contains("solution: ") && !joined.contains("验证过") {
+            return false
+        }
+        return true
+    }
+
+    private func saveMemoryNotes(_ notes: [MemoryNote]) {
+        let header = """
+        # Agent Memory
+
+        只记录经过验证的正确做法、用户纠错和重要原因。不要记录代码库里已经存在的内容，不要记录纯会话噪音。
+        """
+
+        let sections = notes.map { note in
+            """
+            ## Note
+            \(note.summary)
+            \(note.body.joined(separator: "\n"))
+            """
+        }
+
+        let content = ([header] + sections).joined(separator: "\n\n")
+
+        do {
+            try ensureMemoryDirectoryExists()
+            try content.write(toFile: memoryMarkdownPath(), atomically: true, encoding: .utf8)
+        } catch {
+            print("Failed to save MEMORY.md: \(error)")
+        }
+    }
     
     // MARK: - Memory Management
     
@@ -388,6 +536,7 @@ class AgentMemory: ObservableObject {
         session = SessionMemory()
         longTerm = LongTermMemory()
         saveLongTermMemory()
+        saveMemoryNotes([])
     }
     
     /// Get memory statistics

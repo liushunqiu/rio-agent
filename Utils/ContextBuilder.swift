@@ -28,6 +28,7 @@ class ContextBuilder {
     private let workingDirectory: String?
     private let maxContextMessages: Int?
     private let systemPrompt: String
+    private let memoryContext: String?
 
     // MARK: - Initialization
 
@@ -36,13 +37,15 @@ class ContextBuilder {
         model: String,
         workingDirectory: String? = nil,
         maxContextMessages: Int? = nil,
-        systemPrompt: String
+        systemPrompt: String,
+        memoryContext: String? = nil
     ) {
         self.tokenTracker = tokenTracker
         self.model = model
         self.workingDirectory = workingDirectory
         self.maxContextMessages = Self.normalizeMessageLimit(maxContextMessages)
         self.systemPrompt = systemPrompt
+        self.memoryContext = memoryContext
     }
 
     // MARK: - Public Methods
@@ -109,7 +112,7 @@ class ContextBuilder {
 
     /// 构建系统提示消息
     private func buildSystemMessage() -> Message {
-        let cacheKey = "\(workingDirectory ?? "__no_working_directory__")::\(systemPrompt.hashValue)"
+        let cacheKey = "\(workingDirectory ?? "__no_working_directory__")::\(systemPrompt.hashValue)::\((memoryContext ?? "").hashValue)"
         if let cached = Self.systemPromptCache.object(forKey: cacheKey as NSString) {
             return Message.system(String(cached))
         }
@@ -117,6 +120,9 @@ class ContextBuilder {
         var prompt = systemPrompt
         if let dir = workingDirectory {
             prompt += "\n\nWorking directory: \(dir)"
+        }
+        if let memoryContext, !memoryContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            prompt += "\n\nMemory context:\n\(memoryContext)"
         }
         Self.systemPromptCache.setObject(prompt as NSString, forKey: cacheKey as NSString)
         return Message.system(prompt)

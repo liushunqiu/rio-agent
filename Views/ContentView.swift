@@ -103,7 +103,8 @@ struct ContentView: View {
                 multiAgentConfig: Binding(
                     get: { agentEngine.multiAgentConfig },
                     set: { agentEngine.updateMultiAgentConfig($0) }
-                )
+                ),
+                memory: agentEngine.memory
             )
         }
         .alert(confirmationTitle, isPresented: $showingConfirmation) {
