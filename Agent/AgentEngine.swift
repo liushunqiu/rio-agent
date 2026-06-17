@@ -172,8 +172,8 @@ class AgentEngine: ObservableObject {
             return nil
         }
         let provider = configSet.provider
-        let baseURL = configSet.baseURL
-        let apiKey = configSet.loadAPIKey()
+        let baseURL = configSet.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = configSet.loadAPIKey().trimmingCharacters(in: .whitespacesAndNewlines)
         
         if provider == .openAICompatible {
             guard !baseURL.isEmpty else { return nil }

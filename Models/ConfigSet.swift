@@ -24,11 +24,12 @@ struct ConfigSet: Identifiable, Codable {
     }
     
     var isConfigured: Bool {
+        let hasModel = !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         switch provider {
         case .openAICompatible:
-            return !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasModel && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .claude, .openAI:
-            return !loadAPIKey().isEmpty
+            return hasModel && !loadAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
     

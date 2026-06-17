@@ -70,6 +70,8 @@ struct SettingsView: View {
     }
 
     private func saveConfiguration() {
+        reconcileSelectedConfigSets()
+
         // Update configuration
         configuration.planningConfigSetId = planningConfigSetId
         configuration.executionConfigSetId = executionConfigSetId
@@ -121,17 +123,27 @@ struct SettingsView: View {
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
         .onAppear {
-            if executionConfigSetId == nil, let first = configSetManager.configSets.first {
-                executionConfigSetId = first.id
-                planningConfigSetId = first.id
-            }
+            reconcileSelectedConfigSets()
         }
-        .onChange(of: configSetManager.configSets.count) {
-            // Auto-select first config set if current selection is invalid
-            if !configSetManager.configSets.contains(where: { $0.id == executionConfigSetId }) {
-                executionConfigSetId = configSetManager.configSets.first?.id
-                planningConfigSetId = executionConfigSetId
-            }
+        .onChange(of: configSetManager.configSets.map(\.id)) {
+            reconcileSelectedConfigSets()
+        }
+    }
+
+    private func reconcileSelectedConfigSets() {
+        let sets = configSetManager.configSets
+        let fallbackId = sets.first?.id
+
+        if planningConfigSetId == nil || !sets.contains(where: { $0.id == planningConfigSetId }) {
+            planningConfigSetId = executionConfigSetId.flatMap { id in
+                sets.contains(where: { $0.id == id }) ? id : nil
+            } ?? fallbackId
+        }
+
+        if executionConfigSetId == nil || !sets.contains(where: { $0.id == executionConfigSetId }) {
+            executionConfigSetId = planningConfigSetId.flatMap { id in
+                sets.contains(where: { $0.id == id }) ? id : nil
+            } ?? fallbackId
         }
     }
 

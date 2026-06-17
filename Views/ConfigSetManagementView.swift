@@ -6,6 +6,7 @@ struct ConfigSetManagementView: View {
     @ObservedObject var manager: ConfigSetManager
     @State private var editingConfigSet: ConfigSet?
     @State private var isAddingNew = false
+    @State private var pendingDeleteConfigSet: ConfigSet?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -45,6 +46,26 @@ struct ConfigSetManagementView: View {
                 manager.updateConfigSet(updated)
             }
         }
+        .alert("删除模型配置？", isPresented: deleteConfirmationBinding) {
+            Button("取消", role: .cancel) {
+                pendingDeleteConfigSet = nil
+            }
+            Button("删除", role: .destructive) {
+                if let pendingDeleteConfigSet {
+                    manager.deleteConfigSet(id: pendingDeleteConfigSet.id)
+                }
+                pendingDeleteConfigSet = nil
+            }
+        } message: {
+            Text("删除后会同时移除该配置保存的 API Key。")
+        }
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteConfigSet != nil },
+            set: { if !$0 { pendingDeleteConfigSet = nil } }
+        )
     }
     
     private var emptyStateView: some View {
@@ -125,7 +146,7 @@ struct ConfigSetManagementView: View {
             
             if manager.configSets.count > 0 {
                 Button {
-                    manager.deleteConfigSet(id: configSet.id)
+                    pendingDeleteConfigSet = configSet
                 } label: {
                     Image(systemName: "trash.circle.fill")
                         .font(.system(size: 16))
