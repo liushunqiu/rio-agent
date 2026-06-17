@@ -323,6 +323,8 @@ class AgentEngine: ObservableObject {
         var routerSkip = false
         if multiAgentConfig.router.enabled {
             RioLogger.service.info("🔀 Router 已启用，开始路由分析...")
+            RioLogger.service.debug("🔀 RouterConfig - configSetId: \(self.multiAgentConfig.router.configSetId?.uuidString ?? "nil", privacy: .public)")
+            RioLogger.service.debug("🔀 RouterConfig - model: '\(self.multiAgentConfig.router.model, privacy: .public)'")
             if let configSetId = multiAgentConfig.router.configSetId,
                let routerService = createService(configSetId: configSetId) {
                 let routerConfig = multiAgentConfig.router

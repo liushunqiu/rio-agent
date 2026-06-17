@@ -25,6 +25,9 @@ enum RouterService {
         }
         
         // 否则使用原有的通用路由逻辑
+        RioLogger.service.debug("🔀 RouterService 收到模型名称: '\(model, privacy: .public)'")
+        RioLogger.service.debug("🔀 RouterConfig.model: '\(config.model, privacy: .public)'")
+
         let systemPrompt = SystemPromptComposer.compose(
             basePrompt: config.prompt,
             scope: .router,
