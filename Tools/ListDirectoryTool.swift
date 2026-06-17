@@ -11,26 +11,28 @@ class ListDirectoryTool: Tool {
     func execute(arguments: [String: Any]) async throws -> ToolResult {
         let dirPath = (arguments["path"] as? String) ?? ToolRegistry.shared.workingDirectory ?? "."
 
-        // 将目录列表操作移到后台线程，避免阻塞主线程/UI
         return await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/bin/ls")
-            process.arguments = ["-la", dirPath]
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-
             do {
-                try process.run()
-
-                // Read pipe data BEFORE waitUntilExit to prevent deadlock
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                let output = String(data: data, encoding: .utf8) ?? ""
-
-                if process.terminationStatus != 0 {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: dirPath, isDirectory: &isDirectory), isDirectory.boolValue else {
                     return ToolResult.error(toolCallId: "list_directory", error: "Directory not found or cannot be accessed: \(dirPath)")
                 }
+
+                let directory = URL(fileURLWithPath: dirPath)
+                let entries = try FileSystemToolSupport.sortedDirectoryContents(at: directory)
+                let formatter = ByteCountFormatter()
+                formatter.countStyle = .file
+
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+                let output = entries.map { url -> String in
+                    let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                    let kind = values?.isDirectory == true ? "d" : "-"
+                    let size = formatter.string(fromByteCount: Int64(values?.fileSize ?? 0))
+                    let modified = values?.contentModificationDate.map { dateFormatter.string(from: $0) } ?? "unknown"
+                    return "\(kind) \(size.padding(toLength: 10, withPad: " ", startingAt: 0)) \(modified) \(url.lastPathComponent)"
+                }.joined(separator: "\n")
 
                 return ToolResult.success(toolCallId: "list_directory", output: "Directory: \(dirPath)\n\n\(output)")
             } catch {

@@ -18,46 +18,50 @@ class SearchFilesTool: Tool {
         let searchPath = (arguments["path"] as? String) ?? ToolRegistry.shared.workingDirectory ?? "."
         let filePattern = arguments["file_pattern"] as? String
 
-        // 将搜索操作移到后台线程，避免阻塞主线程/UI
         return await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
-            var grepArguments = ["-rn"]
-            if let filePattern = filePattern {
-                grepArguments.append("--include=\(filePattern)")
-            }
-            grepArguments += ["--", pattern, searchPath]
-            process.arguments = grepArguments
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-
             do {
-                try process.run()
+                let regex = try NSRegularExpression(pattern: pattern)
+                let root = URL(fileURLWithPath: searchPath)
+                let files = try FileSystemToolSupport.recursiveFiles(
+                    under: root,
+                    matching: filePattern
+                )
 
-                // CRITICAL: Read pipe data BEFORE waitUntilExit to prevent deadlock.
-                // If grep output exceeds pipe buffer (~16KB), the child process blocks
-                // on write. If we call waitUntilExit() first, we deadlock because the
-                // parent waits for child exit while child waits for pipe drain.
-                // readDataToEndOfFile() blocks until EOF (when process exits and closes pipe).
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
+                var matches: [String] = []
+                let maxLines = 200
 
-                let output = String(data: data, encoding: .utf8) ?? ""
+                for file in files {
+                    guard let content = try? String(contentsOf: file, encoding: .utf8) else {
+                        continue
+                    }
 
-                if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let lines = content.components(separatedBy: .newlines)
+                    for (index, line) in lines.enumerated() {
+                        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+                        if regex.firstMatch(in: line, range: range) != nil {
+                            matches.append("\(file.path):\(index + 1):\(line)")
+                            if matches.count >= maxLines {
+                                break
+                            }
+                        }
+                    }
+
+                    if matches.count >= maxLines {
+                        break
+                    }
+                }
+
+                if matches.isEmpty {
                     return ToolResult.success(toolCallId: "search_files", output: "No matches found for pattern: \(pattern)")
                 }
 
-                // Limit output to prevent token overflow
-                let lines = output.components(separatedBy: .newlines)
-                let maxLines = 200
-                if lines.count > maxLines {
-                    let truncated = lines.prefix(maxLines).joined(separator: "\n")
-                    return ToolResult.success(toolCallId: "search_files", output: "\(truncated)\n\n... (\(lines.count - maxLines) more matches truncated)")
+                var output = matches.joined(separator: "\n")
+                if matches.count == maxLines {
+                    output += "\n\n... (matches truncated at \(maxLines) lines)"
                 }
-
                 return ToolResult.success(toolCallId: "search_files", output: output)
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain {
+                return ToolResult.error(toolCallId: "search_files", error: "Invalid regex pattern: \(pattern)")
             } catch {
                 return ToolResult.error(toolCallId: "search_files", error: "Failed to search files: \(error.localizedDescription)")
             }
