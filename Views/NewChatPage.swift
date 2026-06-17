@@ -4,7 +4,8 @@ private let brandGreen = Theme.accentPrimary
 private let brandGradient = Theme.accentGradient
 
 struct NewChatPage: View {
-    @State private var viewModel = NewChatViewModel()
+    @Binding var inputText: String
+    @State private var viewModel: NewChatViewModel
     let onSubmit: (String) -> Void
     let workingDirectory: Binding<String?>
 
@@ -12,6 +13,17 @@ struct NewChatPage: View {
     @State private var appears = false
 
     private let maxCardWidth: CGFloat = 700
+
+    init(
+        inputText: Binding<String>,
+        onSubmit: @escaping (String) -> Void,
+        workingDirectory: Binding<String?>
+    ) {
+        self._inputText = inputText
+        self._viewModel = State(initialValue: NewChatViewModel(inputText: inputText.wrappedValue))
+        self.onSubmit = onSubmit
+        self.workingDirectory = workingDirectory
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -43,8 +55,14 @@ struct NewChatPage: View {
             withAnimation(.easeOut(duration: 0.4)) {
                 appears = true
             }
+            viewModel.inputText = inputText
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 isInputFocused = true
+            }
+        }
+        .onChange(of: inputText) { _, newValue in
+            if viewModel.inputText != newValue {
+                viewModel.inputText = newValue
             }
         }
     }
@@ -118,7 +136,10 @@ struct NewChatPage: View {
                         .onSubmit {
                             submitIfPossible()
                         }
-                        .onChange(of: viewModel.inputText) { oldValue, newValue in
+                        .onChange(of: viewModel.inputText) { _, newValue in
+                            if inputText != newValue {
+                                inputText = newValue
+                            }
                             viewModel.handleInput(newValue)
                         }
 
@@ -210,6 +231,7 @@ struct NewChatPage: View {
         guard viewModel.canSend else { return }
         let text = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         viewModel.clearInput()
+        inputText = ""
         onSubmit(text)
     }
 }

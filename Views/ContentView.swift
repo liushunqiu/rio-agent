@@ -419,6 +419,7 @@ struct MainContentView: View {
             // Chat area
             if agentEngine.messages.isEmpty {
                 NewChatPage(
+                    inputText: $inputText,
                     onSubmit: { text in
                         onNewChatSubmit?(text)
                     },
