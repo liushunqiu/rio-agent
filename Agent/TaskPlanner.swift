@@ -41,6 +41,26 @@ class TaskPlanner {
         let suggestedSteps: [TaskStep]
         let reasoning: String
         let estimatedTime: TimeInterval // in seconds
+
+        /// Concrete steps returned by the planning model. Empty means the caller
+        /// should fall back to local decomposition.
+        let plannedSteps: [String]
+
+        init(
+            complexity: TaskComplexity,
+            estimatedSteps: Int,
+            suggestedSteps: [TaskStep],
+            reasoning: String,
+            estimatedTime: TimeInterval,
+            plannedSteps: [String] = []
+        ) {
+            self.complexity = complexity
+            self.estimatedSteps = estimatedSteps
+            self.suggestedSteps = suggestedSteps
+            self.reasoning = reasoning
+            self.estimatedTime = estimatedTime
+            self.plannedSteps = plannedSteps
+        }
     }
     
     // MARK: - AI-Generated Task Plan
@@ -536,7 +556,10 @@ class TaskPlanner {
                     estimatedSteps: aiPlan.steps.count,
                     suggestedSteps: quickAnalysis.suggestedSteps, // Keep the suggested steps from quick analysis
                     reasoning: aiPlan.reasoning,
-                    estimatedTime: parseEstimatedTime(aiPlan.estimatedTime)
+                    estimatedTime: parseEstimatedTime(aiPlan.estimatedTime),
+                    plannedSteps: aiPlan.steps
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
                 )
             }
         }

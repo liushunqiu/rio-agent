@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Context Panel - Right sidebar showing session context
 struct ContextPanel: View {
+    let singleAgentPlan: AgentEngine.SingleAgentPlan?
+    let taskPlan: TaskPlan?
     let runtimeRoles: [AgentEngine.RuntimeModelRole]
     let messageCount: Int
     var estimatedTokens: Int = 0
@@ -31,27 +33,14 @@ struct ContextPanel: View {
 
             ScrollView {
                 VStack(spacing: 14) {
-                    // Recent Files
-                    if !recentFiles.isEmpty {
-                        ContextSection(title: "最近文件") {
-                            ForEach(recentFiles.prefix(5), id: \.self) { file in
-                                HStack(spacing: 6) {
-                                    Image(systemName: "doc.text")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(Theme.textTertiary)
-                                    
-                                    Text(URL(fileURLWithPath: file).lastPathComponent)
-                                        .font(.system(size: 11))
-                                        .foregroundColor(Theme.textSecondary)
-                                        .lineLimit(1)
-                                    
-                                    Spacer()
-                                }
-                            }
-                        }
+                    if let singleAgentPlan {
+                        SingleAgentPlanPanel(plan: singleAgentPlan)
+                    } else if let taskPlan {
+                        TaskPlanView(plan: taskPlan)
+                    } else {
+                        EmptyPlanPanel()
                     }
 
-                    // Session Info
                     ContextSection(title: "Session") {
                         ContextRow(label: "模型数", value: "\(runtimeRoles.count)")
                         ContextRow(label: "消息数", value: "\(messageCount)")
@@ -75,7 +64,24 @@ struct ContextPanel: View {
                         ContextRow(label: "已用", value: "\(usedPercent)%")
                     }
 
+                    if !recentFiles.isEmpty {
+                        ContextSection(title: "最近文件") {
+                            ForEach(recentFiles.prefix(5), id: \.self) { file in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "doc.text")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.textTertiary)
 
+                                    Text(URL(fileURLWithPath: file).lastPathComponent)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(Theme.textSecondary)
+                                        .lineLimit(1)
+
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 16)
@@ -103,6 +109,203 @@ struct ContextPanel: View {
             return String(format: "%.1fK", Double(count) / 1_000)
         }
         return "\(count)"
+    }
+}
+
+// MARK: - Plan Panels
+
+struct SingleAgentPlanPanel: View {
+    let plan: AgentEngine.SingleAgentPlan
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.clipboard")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.accentPrimary)
+
+                Text("执行计划")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+
+                Spacer()
+
+                DarkStatusBadge(status: plan.status)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("任务")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Theme.textTertiary)
+                    .textCase(.uppercase)
+
+                Text(plan.originalTask)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .lineLimit(4)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.bgInput)
+                    .cornerRadius(Theme.radiusSM)
+            }
+
+            HStack(spacing: 8) {
+                PlanMetric(label: "复杂度", value: complexityText)
+                PlanMetric(label: "步骤", value: "\(plan.steps.count)")
+            }
+
+            if !plan.steps.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("步骤")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                        .textCase(.uppercase)
+
+                    ForEach(Array(plan.steps.enumerated()), id: \.offset) { index, step in
+                        SingleAgentPlanStepRow(
+                            index: index,
+                            step: step,
+                            status: status(for: index)
+                        )
+                    }
+                }
+            }
+
+            if !plan.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(plan.reasoning)
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.textTertiary)
+                    .lineLimit(5)
+            }
+        }
+        .padding(12)
+        .background(Theme.bgGlass)
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.accentPrimary.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private var complexityText: String {
+        switch plan.complexity {
+        case .simple: return "简单"
+        case .moderate: return "中等"
+        case .complex: return "复杂"
+        case .veryComplex: return "很复杂"
+        }
+    }
+
+    private func status(for index: Int) -> PipelineStageStatus {
+        switch plan.status {
+        case .completed:
+            return .completed
+        case .failed:
+            return index < plan.currentStep ? .completed : .failed
+        case .executing, .verifying, .synthesizing:
+            if index < plan.currentStep { return .completed }
+            if index == plan.currentStep { return .running }
+            return .pending
+        case .planning:
+            return .pending
+        }
+    }
+}
+
+struct SingleAgentPlanStepRow: View {
+    let index: Int
+    let step: String
+    let status: PipelineStageStatus
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(status == .pending ? 0.14 : 0.22))
+                    .frame(width: 20, height: 20)
+
+                if status == .completed {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(statusColor)
+                } else {
+                    Text("\(index + 1)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(statusColor)
+                }
+            }
+            .frame(width: 20, height: 20)
+
+            Text(step)
+                .font(.system(size: 11))
+                .foregroundColor(status == .pending ? Theme.textSecondary : Theme.textPrimary)
+                .lineLimit(4)
+
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Theme.bgTertiary.opacity(status == .running ? 0.9 : 0.55))
+        .cornerRadius(Theme.radiusSM)
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .completed: return Theme.statusSuccess
+        case .running: return Theme.statusInfo
+        case .failed: return Theme.statusError
+        case .skipped: return Theme.textTertiary
+        case .pending: return Theme.textTertiary
+        }
+    }
+}
+
+struct PlanMetric: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+                .textCase(.uppercase)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Theme.textPrimary)
+                .lineLimit(1)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusSM)
+    }
+}
+
+struct EmptyPlanPanel: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.textTertiary)
+                Text("执行计划")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+            }
+
+            Text("当前没有活动计划。复杂任务会在这里展示规划步骤和执行进度。")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.bgGlass)
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.borderSubtle, lineWidth: 1)
+        )
     }
 }
 

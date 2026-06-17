@@ -81,6 +81,8 @@ struct ContentView: View {
 
             // Context panel (right sidebar)
             ContextPanel(
+                singleAgentPlan: agentEngine.currentSingleAgentPlan,
+                taskPlan: agentEngine.currentTaskPlan,
                 runtimeRoles: agentEngine.runtimeModelRoles,
                 messageCount: agentEngine.messages.count,
                 estimatedTokens: agentEngine.getTotalTokensUsed(),
@@ -394,14 +396,6 @@ struct MainContentView: View {
                 currentProvider: agentEngine.configuration.executionProvider
             )
 
-            // Multi-Agent task plan
-            if let taskPlan = agentEngine.currentTaskPlan {
-                TaskPlanView(plan: taskPlan)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             // Chat area
             if agentEngine.messages.isEmpty {
                 NewChatPage(
@@ -417,7 +411,7 @@ struct MainContentView: View {
                     isProcessing: agentEngine.isProcessing,
                     currentToolCallId: agentEngine.currentToolCallId,
                     currentPipeline: agentEngine.currentPipeline,
-                    currentTaskPlan: agentEngine.currentTaskPlan
+                    currentTaskPlan: nil
                 )
                 .transition(.opacity)
             }

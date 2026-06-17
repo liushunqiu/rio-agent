@@ -23,7 +23,39 @@ class AgentEngine: ObservableObject {
     @Published var error: String?
     @Published var currentToolExecution: ToolExecutionState?
     @Published var currentTaskPlan: TaskPlan?
+    @Published var currentSingleAgentPlan: SingleAgentPlan?
     @Published var currentPipeline: ExecutionPipeline?
+
+    struct SingleAgentPlan: Identifiable {
+        let id: UUID
+        var originalTask: String
+        var steps: [String]
+        var currentStep: Int
+        var complexity: TaskPlanner.TaskComplexity
+        var reasoning: String
+        var estimatedTime: TimeInterval
+        var status: TaskPlanStatus
+
+        init(
+            id: UUID = UUID(),
+            originalTask: String,
+            steps: [String],
+            currentStep: Int = 0,
+            complexity: TaskPlanner.TaskComplexity,
+            reasoning: String,
+            estimatedTime: TimeInterval,
+            status: TaskPlanStatus = .planning
+        ) {
+            self.id = id
+            self.originalTask = originalTask
+            self.steps = steps
+            self.currentStep = currentStep
+            self.complexity = complexity
+            self.reasoning = reasoning
+            self.estimatedTime = estimatedTime
+            self.status = status
+        }
+    }
 
     /// 当前正在执行的工具调用 ID，用于驱动文件操作动画
     var currentToolCallId: String? {
@@ -448,7 +480,9 @@ class AgentEngine: ObservableObject {
         // For complex tasks, generate a plan and inform the user
         if taskAnalysis.complexity != .simple {
             RioLogger.agent.info("📝 任务复杂度非 simple，生成执行计划...")
-            let plan = TaskPlanner.decomposeTask(trimmedInput, memory: memory)
+            let plan = taskAnalysis.plannedSteps.isEmpty
+                ? TaskPlanner.decomposeTask(trimmedInput, memory: memory)
+                : taskAnalysis.plannedSteps
             let formattedPlan = TaskPlanner.formatPlanForExecution(plan, analysis: taskAnalysis)
             RioLogger.agent.info("📝 生成计划包含 \(plan.count, privacy: .public) 个步骤")
 
@@ -485,6 +519,9 @@ class AgentEngine: ObservableObject {
         }
 
         let useDAG = shouldUseMultiAgent(for: taskAnalysis)
+        if useDAG {
+            currentSingleAgentPlan = nil
+        }
         RioLogger.agent.info("🚦 执行模式决策: useDAG=\(useDAG, privacy: .public), taskSplitStrategy=\(String(describing: self.multiAgentConfig.taskSplitStrategy), privacy: .public)")
         if useDAG, multiAgentConfig.taskSplitStrategy == .manual {
             isProcessing = false
@@ -558,6 +595,8 @@ class AgentEngine: ObservableObject {
                 }
             } else {
                 RioLogger.agent.info("⚡️ 任务复杂度为 \(taskAnalysis.complexity, privacy: .public)，使用单 Agent 模式")
+                publishSingleAgentPlanIfNeeded(input: input, analysis: taskAnalysis)
+                currentSingleAgentPlan?.status = .executing
                 guard let executionService else {
                     error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
                     isProcessing = false
@@ -574,9 +613,16 @@ class AgentEngine: ObservableObject {
             RioLogger.agent.info("⏹️ 用户取消了当前任务")
         } catch {
             self.error = error.localizedDescription
+            if !useDAG {
+                currentSingleAgentPlan?.status = .failed
+            }
         }
 
         completeExecutionStage()
+        if !useDAG, currentSingleAgentPlan?.status != .failed {
+            currentSingleAgentPlan?.status = .completed
+            currentSingleAgentPlan?.currentStep = currentSingleAgentPlan?.steps.count ?? 0
+        }
 
         // Auto-compact if too many messages (save tokens)
         await autoCompactIfNeeded()
@@ -604,6 +650,7 @@ class AgentEngine: ObservableObject {
         multiAgentEngine?.cancelProcessing()
         isProcessing = false
         currentToolExecution = nil
+        currentSingleAgentPlan?.status = .failed
         failActivePipelineStage()
         pipelineBuilder?.finish()
         currentPipeline = pipelineBuilder?.build()
@@ -798,8 +845,6 @@ class AgentEngine: ObservableObject {
 
         let assistantMessage = Message.assistant(result, source: multiAgentMessageSource)
         messages.append(assistantMessage)
-
-        currentTaskPlan = nil
     }
 
     // MARK: - Tool Call Loop Constants
@@ -827,6 +872,10 @@ class AgentEngine: ObservableObject {
     func advancePlanStep() {
         if !activePlan.isEmpty {
             currentPlanStep = min(currentPlanStep + 1, activePlan.count)
+            currentSingleAgentPlan?.currentStep = currentPlanStep
+            if currentPlanStep > 0 {
+                currentSingleAgentPlan?.status = .executing
+            }
         }
     }
 
@@ -1136,6 +1185,23 @@ class AgentEngine: ObservableObject {
         activePlan = []
         currentPlanStep = 0
         activePlanAnalysis = nil
+        currentSingleAgentPlan = nil
+    }
+
+    private func publishSingleAgentPlanIfNeeded(
+        input: String,
+        analysis: TaskPlanner.TaskAnalysis
+    ) {
+        guard currentSingleAgentPlan == nil, !activePlan.isEmpty else { return }
+        currentSingleAgentPlan = SingleAgentPlan(
+            originalTask: input,
+            steps: activePlan,
+            currentStep: currentPlanStep,
+            complexity: analysis.complexity,
+            reasoning: analysis.reasoning,
+            estimatedTime: analysis.estimatedTime,
+            status: .planning
+        )
     }
 
     private var composedSingleAgentSystemPrompt: String {
@@ -1295,6 +1361,7 @@ class AgentEngine: ObservableObject {
         error = nil
         currentToolExecution = nil
         currentTaskPlan = nil
+        currentSingleAgentPlan = nil
         resetPipelineState(clearVisiblePipeline: true)
         pendingInitConfirmation = false
         pendingExecutionStrategyConfirmation = nil
@@ -1334,6 +1401,7 @@ class AgentEngine: ObservableObject {
         workingDirectory = conversation.workingDirectory
         error = nil
         currentTaskPlan = nil
+        currentSingleAgentPlan = nil
         resetPipelineState(clearVisiblePipeline: true)
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
