@@ -222,10 +222,10 @@ struct MultiAgentSettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Toggle(isOn: $routerEnabled) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("启用本地路由模型")
+                                Text("启用路由配置")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundColor(Theme.textPrimary)
-                                Text("使用轻量模型前置判断任务类型，拦截寒暄、分配单/多 Agent 模式，降低 API 成本")
+                                Text("使用配置的路由模型前置判断任务类型，拦截寒暄、分配单/多 Agent 模式，降低 API 成本")
                                     .font(.system(size: 11))
                                     .foregroundColor(Theme.textTertiary)
                             }
@@ -236,113 +236,150 @@ struct MultiAgentSettingsView: View {
 
                         if routerEnabled {
                             VStack(alignment: .leading, spacing: 10) {
-                                let configSets = ConfigSetManager.shared.configSets
-                                if configSets.isEmpty {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(Theme.statusWarning)
-                                        Text("暂无可用模型端点，请先在 AI 配置中添加")
-                                            .font(.system(size: 11))
-                                            .foregroundColor(Theme.textTertiary)
-                                    }
-                                    .padding(8)
-                                    .background(Theme.statusWarning.opacity(0.08))
-                                    .cornerRadius(Theme.radiusSM)
-                                } else {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("模型端点")
-                                            .font(.system(size: 11, weight: .medium))
-                                            .foregroundColor(Theme.textTertiary)
-                                        ForEach(configSets) { cs in
-                                            HStack(spacing: 8) {
-                                                Button {
-                                                    routerConfigSetId = cs.id
-                                                    syncToConfig()
-                                                } label: {
-                                                    HStack(spacing: 8) {
-                                                        Image(systemName: routerConfigSetId == cs.id ? "circle.fill" : "circle")
-                                                            .font(.system(size: 10))
-                                                            .foregroundColor(routerConfigSetId == cs.id ? Theme.accentPrimary : Theme.textTertiary)
-                                                        Text(cs.name)
-                                                            .font(.system(size: 12))
-                                                            .foregroundColor(Theme.textPrimary)
-                                                        Text(cs.model)
-                                                            .font(.system(size: 10, design: .monospaced))
-                                                            .foregroundColor(Theme.textTertiary)
-                                                    }
-                                                    .padding(.horizontal, 10)
-                                                    .padding(.vertical, 7)
-                                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                                    .background(routerConfigSetId == cs.id ? Theme.bgTertiary : Theme.bgInput)
-                                                    .cornerRadius(Theme.radiusSM)
-                                                    .overlay(
-                                                        RoundedRectangle(cornerRadius: Theme.radiusSM)
-                                                            .stroke(routerConfigSetId == cs.id ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
-                                                    )
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
-                                    }
-                                }
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("模型名称")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(Theme.textTertiary)
-                                    TextField("例如: qwen3.5:4b 或 qwen3.5-4b", text: $routerModel)
-                                        .textFieldStyle(.plain)
-                                        .font(.system(size: 12, design: .monospaced))
-                                        .foregroundColor(Theme.textPrimary)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 7)
-                                        .background(Theme.bgInput)
-                                        .cornerRadius(Theme.radiusMD)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                                .stroke(Theme.borderSubtle, lineWidth: 1)
-                                        )
-                                        .onChange(of: routerModel) { _, _ in syncToConfig() }
-                                }
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("路由提示词")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(Theme.textTertiary)
-                                    TextEditor(text: $routerPrompt)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundColor(Theme.textPrimary)
-                                        .scrollContentBackground(.hidden)
-                                        .frame(height: 100)
-                                        .padding(8)
-                                        .background(Theme.bgInput)
-                                        .cornerRadius(Theme.radiusMD)
-                                        .onChange(of: routerPrompt) { _, _ in syncToConfig() }
-                                }
-
+                                // Qwen 专用路由优先级提示
                                 HStack(spacing: 6) {
                                     Image(systemName: "info.circle.fill")
                                         .font(.system(size: 10))
                                         .foregroundColor(Theme.accentSecondary)
-                                    Text("推荐使用 Ollama + Qwen3.5-4B 作为路由模型，兼顾速度与准确率")
+                                    Text("支持两种路由模式：① 通用路由（使用已配置的模型端点）；② Qwen3.5-4B 专用路由（需单独部署 vLLM 服务）")
                                         .font(.system(size: 10))
                                         .foregroundColor(Theme.textTertiary)
                                 }
                                 .padding(8)
                                 .background(Theme.accentSecondary.opacity(0.06))
                                 .cornerRadius(Theme.radiusSM)
-                                
+
+                                // 通用路由配置
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Text("通用路由配置")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(Theme.textPrimary)
+                                        if enableQwenRouter {
+                                            Text("（已禁用，当前使用 Qwen 专用路由）")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(Theme.statusWarning)
+                                        }
+                                    }
+
+                                    let configSets = ConfigSetManager.shared.configSets
+                                    if configSets.isEmpty {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Theme.statusWarning)
+                                            Text("暂无可用模型端点，请先在 AI 配置中添加")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Theme.textTertiary)
+                                        }
+                                        .padding(8)
+                                        .background(Theme.statusWarning.opacity(0.08))
+                                        .cornerRadius(Theme.radiusSM)
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("模型端点")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(enableQwenRouter ? Theme.textTertiary.opacity(0.5) : Theme.textTertiary)
+                                            ForEach(configSets) { cs in
+                                                HStack(spacing: 8) {
+                                                    Button {
+                                                        if !enableQwenRouter {
+                                                            routerConfigSetId = cs.id
+                                                            routerModel = cs.model  // 自动填充模型名称
+                                                            syncToConfig()
+                                                        }
+                                                    } label: {
+                                                        HStack(spacing: 8) {
+                                                            Image(systemName: routerConfigSetId == cs.id ? "circle.fill" : "circle")
+                                                                .font(.system(size: 10))
+                                                                .foregroundColor(routerConfigSetId == cs.id ? Theme.accentPrimary : Theme.textTertiary)
+                                                            Text(cs.name)
+                                                                .font(.system(size: 12))
+                                                                .foregroundColor(Theme.textPrimary)
+                                                            Text(cs.model)
+                                                                .font(.system(size: 10, design: .monospaced))
+                                                                .foregroundColor(Theme.textTertiary)
+                                                        }
+                                                        .padding(.horizontal, 10)
+                                                        .padding(.vertical, 7)
+                                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                                        .background(routerConfigSetId == cs.id ? Theme.bgTertiary : Theme.bgInput)
+                                                        .cornerRadius(Theme.radiusSM)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                                                .stroke(routerConfigSetId == cs.id ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+                                                        )
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .disabled(enableQwenRouter)
+                                                    .opacity(enableQwenRouter ? 0.5 : 1.0)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        HStack(spacing: 4) {
+                                            Text("模型名称")
+                                                .font(.system(size: 11, weight: .medium))
+                                                .foregroundColor(enableQwenRouter ? Theme.textTertiary.opacity(0.5) : Theme.textTertiary)
+                                            Text("（可选，自动从端点读取）")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(Theme.textTertiary.opacity(0.7))
+                                        }
+                                        TextField("选择端点后自动填充，也可手动覆盖", text: $routerModel)
+                                            .textFieldStyle(.plain)
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .foregroundColor(Theme.textPrimary)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 7)
+                                            .background(Theme.bgInput)
+                                            .cornerRadius(Theme.radiusMD)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                                    .stroke(Theme.borderSubtle, lineWidth: 1)
+                                            )
+                                            .disabled(enableQwenRouter)
+                                            .opacity(enableQwenRouter ? 0.5 : 1.0)
+                                            .onChange(of: routerModel) { _, _ in syncToConfig() }
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("路由提示词")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundColor(enableQwenRouter ? Theme.textTertiary.opacity(0.5) : Theme.textTertiary)
+                                        TextEditor(text: $routerPrompt)
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundColor(Theme.textPrimary)
+                                            .scrollContentBackground(.hidden)
+                                            .frame(height: 100)
+                                            .padding(8)
+                                            .background(Theme.bgInput)
+                                            .cornerRadius(Theme.radiusMD)
+                                            .disabled(enableQwenRouter)
+                                            .opacity(enableQwenRouter ? 0.5 : 1.0)
+                                            .onChange(of: routerPrompt) { _, _ in syncToConfig() }
+                                    }
+                                }
+
+
                                 // Qwen3.5-4B 专用配置部分
                                 Divider()
                                     .padding(.vertical, 8)
-                                
+
+                                HStack {
+                                    Text("Qwen3.5-4B 专用路由")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(Theme.textPrimary)
+                                    Spacer()
+                                }
+
                                 Toggle(isOn: $enableQwenRouter) {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("启用 Qwen3.5-4B 专用路由器")
                                             .font(.system(size: 13, weight: .medium))
                                             .foregroundColor(Theme.textPrimary)
-                                        Text("使用 vLLM 部署的 Qwen3.5-4B 作为专用路由层，支持结构化 JSON 输出和多模态路由")
+                                        Text("使用 vLLM 部署的 Qwen3.5-4B 作为专用路由层，支持结构化 JSON 输出和多模态路由。启用后将覆盖上述通用路由配置。")
                                             .font(.system(size: 11))
                                             .foregroundColor(Theme.textTertiary)
                                     }
