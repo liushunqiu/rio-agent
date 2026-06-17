@@ -208,4 +208,16 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(userMessages.first?.content, "你好，帮我看下项目")
         XCTAssertEqual(callbackCount, 1)
     }
+
+    func testClearCommandClearsCurrentConversationStateImmediately() async {
+        let engine = AgentEngine()
+        engine.appendMessage(.user("old"))
+        engine.trackTokenUsage(.init(promptTokens: 10, completionTokens: 5))
+
+        await engine.processUserInput("/clear")
+
+        XCTAssertTrue(engine.messages.isEmpty)
+        XCTAssertEqual(engine.getTotalTokensUsed(), 0)
+        XCTAssertFalse(engine.isProcessing)
+    }
 }

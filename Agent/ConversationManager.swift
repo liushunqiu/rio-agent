@@ -53,9 +53,10 @@ class ConversationManager: ObservableObject {
         // 同步更新 currentConversation，确保 @Published 属性正确触发 UI 刷新
         currentConversation = current
         
-        // 更新 conversations 数组中对应的元素
+        // 更新 conversations 数组中对应的元素，并将最近活跃会话移到顶部
         if let index = conversations.firstIndex(where: { $0.id == current.id }) {
-            conversations[index] = current
+            conversations.remove(at: index)
+            conversations.insert(current, at: 0)
         } else {
             // 如果找不到，可能是新对话，插入到数组开头
             conversations.insert(current, at: 0)
@@ -89,6 +90,7 @@ class ConversationManager: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: saveKey) else { return }
         do {
             conversations = try JSONDecoder().decode([Conversation].self, from: data)
+            conversations.sort { $0.updatedAt > $1.updatedAt }
             currentConversation = conversations.first
         } catch {
             RioLogger.config.error("加载对话失败: \(error.localizedDescription, privacy: .public)")

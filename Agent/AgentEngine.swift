@@ -569,8 +569,12 @@ class AgentEngine: ObservableObject {
             onUserMessageAdded?()
         }
 
-        toolRegistry.setupConfirmationCallbacks { [weak self] title, message in
-            return await self?.showConfirmation(title: title, message: message) ?? .denied
+        toolRegistry.setupConfirmationCallbacks { [weak self] title, message, allowsTrustForSession in
+            return await self?.showConfirmation(
+                title: title,
+                message: message,
+                allowsTrustForSession: allowsTrustForSession
+            ) ?? .denied
         }
 
         do {
@@ -671,6 +675,7 @@ class AgentEngine: ObservableObject {
             await initProject()
         case "/clear":
             clearConversation()
+            NotificationCenter.default.post(name: .createNewConversation, object: nil)
         case "/compact", "/summarize":
             await compactConversation()
         case "/export":
@@ -801,7 +806,7 @@ class AgentEngine: ObservableObject {
                   AI 会自动分析项目结构、配置文件和代码风格，生成精准的项目上下文
         
         /clear   - 清除当前对话历史
-                  开始新的对话
+                  立即新建一个空白对话，保留旧对话历史
         
         /compact - 压缩对话上下文
                   将历史消息压缩为摘要，节省 token 消耗
@@ -1340,7 +1345,11 @@ class AgentEngine: ObservableObject {
     }
 
 
-    private func showConfirmation(title: String, message: String) async -> ConfirmationResult {
+    private func showConfirmation(
+        title: String,
+        message: String,
+        allowsTrustForSession: Bool
+    ) async -> ConfirmationResult {
         return await withCheckedContinuation { continuation in
             NotificationCenter.default.post(
                 name: .showConfirmation,
@@ -1348,6 +1357,7 @@ class AgentEngine: ObservableObject {
                 userInfo: [
                     "title": title,
                     "message": message,
+                    "allowsTrustForSession": allowsTrustForSession,
                     "continuation": continuation
                 ]
             )

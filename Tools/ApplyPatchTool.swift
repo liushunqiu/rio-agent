@@ -56,7 +56,8 @@ class ApplyPatchTool: Tool {
             let pathList = operations.map { "\($0.action.rawValue): \($0.path)" }.joined(separator: "\n")
             let result = await confirm(
                 "Apply Patch Confirmation",
-                "About to apply patch with \(operations.count) operation(s):\n\n\(pathList)\n\nContinue?"
+                "About to apply patch with \(operations.count) operation(s):\n\n\(pathList)\n\nContinue?",
+                false
             )
 
             switch result {

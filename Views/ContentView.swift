@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showingConfirmation = false
     @State private var confirmationTitle = ""
     @State private var confirmationMessage = ""
+    @State private var confirmationAllowsTrustForSession = true
     @State private var confirmationContinuation: CheckedContinuation<ConfirmationResult, Never>?
 
     var body: some View {
@@ -111,26 +112,32 @@ struct ContentView: View {
         }
         .alert(confirmationTitle, isPresented: $showingConfirmation) {
             Button("取消", role: .cancel) {
-                confirmationContinuation?.resume(returning: .denied)
-                confirmationContinuation = nil
+                resolveConfirmation(.denied)
             }
             Button("执行") {
-                confirmationContinuation?.resume(returning: .approved)
-                confirmationContinuation = nil
+                resolveConfirmation(.approved)
             }
-            Button("信任本会话") {
-                confirmationContinuation?.resume(returning: .trustedForSession)
-                confirmationContinuation = nil
+            if confirmationAllowsTrustForSession {
+                Button("信任本会话") {
+                    resolveConfirmation(.trustedForSession)
+                }
             }
         } message: {
             Text(confirmationMessage)
+        }
+        .onChange(of: showingConfirmation) { _, isShowing in
+            if !isShowing {
+                resolveConfirmation(.denied)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .showConfirmation)) { notification in
             if let title = notification.userInfo?["title"] as? String,
                let message = notification.userInfo?["message"] as? String,
                let continuation = notification.userInfo?["continuation"] as? CheckedContinuation<ConfirmationResult, Never> {
+                resolveConfirmation(.denied)
                 confirmationTitle = title
                 confirmationMessage = message
+                confirmationAllowsTrustForSession = notification.userInfo?["allowsTrustForSession"] as? Bool ?? true
                 confirmationContinuation = continuation
                 showingConfirmation = true
             }
@@ -153,6 +160,13 @@ struct ContentView: View {
             agentEngine.workingDirectory = nil
             agentEngine.loadConversation(newConversation)
         }
+    }
+
+    private func resolveConfirmation(_ result: ConfirmationResult) {
+        guard let continuation = confirmationContinuation else { return }
+        confirmationContinuation = nil
+        showingConfirmation = false
+        continuation.resume(returning: result)
     }
 }
 

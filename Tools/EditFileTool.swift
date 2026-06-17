@@ -71,7 +71,8 @@ class EditFileTool: Tool {
             let preview = "OLD:\n\(String(oldText.prefix(200)))\(oldText.count > 200 ? "..." : "")\n\nNEW:\n\(String(newText.prefix(200)))\(newText.count > 200 ? "..." : "")"
             let result = await confirm(
                 "Edit File Confirmation",
-                "About to edit file outside working directory:\n\(path)\n\n\(preview)\n\nContinue?"
+                "About to edit file outside working directory:\n\(path)\n\n\(preview)\n\nContinue?",
+                true
             )
 
             switch result {

@@ -58,7 +58,8 @@ class ShellTool: Tool {
             if let confirm = confirmationCallback {
                 let result = await confirm(
                     "执行命令确认",
-                    "即将执行命令:\n\n\(command)\n\n是否继续？"
+                    "即将执行命令:\n\n\(command)\n\n是否继续？",
+                    true
                 )
 
                 switch result {
@@ -78,12 +79,15 @@ class ShellTool: Tool {
             if let confirm = confirmationCallback {
                 let result = await confirm(
                     "⚠️ 危险命令确认",
-                    "即将执行危险命令:\n\n\(command)\n\n此操作可能不可逆，是否继续？"
+                    "即将执行危险命令:\n\n\(command)\n\n此操作可能不可逆，是否继续？",
+                    false
                 )
 
                 switch result {
-                case .approved, .trustedForSession:
+                case .approved:
                     break
+                case .trustedForSession:
+                    return ToolResult.cancelled(toolCallId: "shell", reason: "危险命令不能信任本会话")
                 case .denied:
                     return ToolResult.cancelled(toolCallId: "shell", reason: "用户取消执行")
                 }

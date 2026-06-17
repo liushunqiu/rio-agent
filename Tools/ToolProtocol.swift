@@ -55,7 +55,7 @@ enum ConfirmationResult {
     case trustedForSession
 }
 
-typealias ConfirmationCallback = (_ title: String, _ message: String) async -> ConfirmationResult
+typealias ConfirmationCallback = (_ title: String, _ message: String, _ allowsTrustForSession: Bool) async -> ConfirmationResult
 
 // MARK: - Command Risk Level
 

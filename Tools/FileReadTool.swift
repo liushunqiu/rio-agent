@@ -53,7 +53,8 @@ class FileReadTool: Tool {
         } else if let confirm = confirmationCallback {
             let result = await confirm(
                 "读取文件确认",
-                "即将读取工作目录外的文件:\n\(path)\n\n是否继续？"
+                "即将读取工作目录外的文件:\n\(path)\n\n是否继续？",
+                true
             )
 
             switch result {

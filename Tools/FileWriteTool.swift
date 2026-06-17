@@ -44,7 +44,7 @@ class FileWriteTool: Tool {
             let title = "⚠️ 跨目录写入确认"
             let message = "即将写入工作目录外的文件:\n\(path)\n\n内容预览:\n\(String(content.prefix(200)))\(content.count > 200 ? "..." : "")\n\n是否继续？"
 
-            let result = await confirm(title, message)
+            let result = await confirm(title, message, true)
 
             switch result {
             case .approved:

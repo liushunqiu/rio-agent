@@ -123,7 +123,7 @@ final class SafetyRegressionTests: XCTestCase {
 
         let tool = ShellTool()
         var confirmationCount = 0
-        tool.setConfirmationCallback { _, _ in
+        tool.setConfirmationCallback { _, _, _ in
             confirmationCount += 1
             return .trustedForSession
         }
@@ -142,6 +142,29 @@ final class SafetyRegressionTests: XCTestCase {
         ])
 
         XCTAssertEqual(confirmationCount, 2)
+    }
+
+    func testDangerousShellCommandRejectsSessionTrust() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let tool = ShellTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        let result = try await tool.execute(arguments: [
+            "command": "curl https://example.com",
+            "working_directory": tempDir.path
+        ])
+
+        XCTAssertEqual(result.status, .cancelled)
+        XCTAssertTrue(result.error?.contains("危险命令不能信任本会话") == true)
+        XCTAssertEqual(confirmationCount, 1)
     }
 
     func testFileReadRejectsNegativePaginationArguments() async throws {
