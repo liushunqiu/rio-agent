@@ -83,4 +83,34 @@ final class AgentEngineRegressionTests: XCTestCase {
             $0.role == .user && $0.content == "请分析这个项目并修改多个文件后再测试"
         })
     }
+
+    func testOlderLargeToolOutputsAreCompressedButRecentOnesStayIntact() {
+        let engine = AgentEngine()
+        let largeOutput = String(repeating: "0123456789", count: 300)
+        var config = engine.configuration
+        config.maxContextMessages = 999
+        engine.updateConfiguration(config)
+
+        engine.appendMessage(Message(
+            role: .user,
+            content: "",
+            toolResults: [ToolResult.success(toolCallId: "older", output: largeOutput)]
+        ))
+        engine.appendMessage(.assistant("filler-1"))
+        engine.appendMessage(.user("filler-2"))
+        engine.appendMessage(.assistant("middle"))
+        engine.appendMessage(Message(
+            role: .user,
+            content: "",
+            toolResults: [ToolResult.success(toolCallId: "recent", output: largeOutput)]
+        ))
+
+        let contextMessages = engine.buildContextMessages()
+        let toolMessages = contextMessages.filter { $0.toolResults != nil }
+
+        XCTAssertEqual(toolMessages.count, 2)
+        guard toolMessages.count == 2 else { return }
+        XCTAssertTrue(toolMessages[0].toolResults?.first?.output.contains("[... truncated") == true)
+        XCTAssertFalse(toolMessages[1].toolResults?.first?.output.contains("[... truncated") == true)
+    }
 }

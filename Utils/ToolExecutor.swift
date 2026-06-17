@@ -55,7 +55,7 @@ class ToolExecutor {
             let result = await executeSingleTool(toolCall)
 
             // 记录结果
-            recordToolExecution(toolCall: toolCall, result: result)
+            await recordToolExecution(toolCall: toolCall, result: result)
 
             notifyStateChange(.completed(toolCall: toolCall, result: result))
 
@@ -112,7 +112,11 @@ class ToolExecutor {
     }
 
     /// 记录工具执行结果
-    private func recordToolExecution(toolCall: ToolCall, result: ToolResult) {
+    private func recordToolExecution(toolCall: ToolCall, result: ToolResult) async {
+        let taskType = await MainActor.run {
+            ToolRecommender.classifyTask(memory.session.currentTask ?? "")
+        }
+
         // 记录错误
         if result.status == .error {
             let error = RecentError(
@@ -127,8 +131,7 @@ class ToolExecutor {
                 recentErrors.removeFirst()
             }
 
-            // 记录到内存 - 需要在 MainActor 上下文中
-            Task { @MainActor in
+            await MainActor.run {
                 memory.recordErrorPattern(
                     error: error.error,
                     context: "Tool: \(toolCall.name), Args: \(toolCall.arguments)",
@@ -137,8 +140,7 @@ class ToolExecutor {
             }
         }
 
-        // 记录工具使用 - 需要在 MainActor 上下文中
-        Task { @MainActor in
+        await MainActor.run {
             memory.recordToolUsage(toolCall.name)
 
             // 记录文件访问
@@ -148,12 +150,10 @@ class ToolExecutor {
 
             // 记录成功模式
             if result.status == .success {
-                let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
                 memory.recordSuccessfulPattern(taskType: "\(taskType)", tool: toolCall.name)
             }
 
             // 记录到 ToolRecommender
-            let taskType = ToolRecommender.classifyTask(memory.session.currentTask ?? "")
             ToolRecommender.recordToolUsage(
                 tool: toolCall.name,
                 taskType: taskType,
