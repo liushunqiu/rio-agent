@@ -42,6 +42,14 @@ class ToolExecutor {
 
     /// 执行工具调用列表
     func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
+        guard !toolCalls.isEmpty else {
+            return []
+        }
+
+        if toolCalls.allSatisfy({ isReadOnlyTool($0.name) }) {
+            return await executeReadOnlyToolCallsConcurrently(toolCalls)
+        }
+
         var results: [ToolResult] = []
 
         for toolCall in toolCalls {
@@ -108,6 +116,44 @@ class ToolExecutor {
             )
         } catch {
             return ToolResult.error(toolCallId: toolCall.id, error: error.localizedDescription)
+        }
+    }
+
+    private func executeReadOnlyToolCallsConcurrently(_ toolCalls: [ToolCall]) async -> [ToolResult] {
+        await withTaskGroup(of: (Int, ToolCall, ToolResult).self) { group in
+            for (index, toolCall) in toolCalls.enumerated() {
+                notifyStateChange(.executing(toolCall: toolCall))
+                group.addTask { [weak self] in
+                    guard let self else {
+                        return (index, toolCall, ToolResult.error(toolCallId: toolCall.id, error: "工具执行器已释放"))
+                    }
+                    let result = await self.executeSingleTool(toolCall)
+                    return (index, toolCall, result)
+                }
+            }
+
+            var indexedResults: [(Int, ToolCall, ToolResult)] = []
+            for await item in group {
+                indexedResults.append(item)
+            }
+
+            indexedResults.sort { $0.0 < $1.0 }
+            for (_, toolCall, result) in indexedResults {
+                await recordToolExecution(toolCall: toolCall, result: result)
+                notifyStateChange(.completed(toolCall: toolCall, result: result))
+            }
+
+            notifyStateChange(nil)
+            return indexedResults.map(\.2)
+        }
+    }
+
+    private func isReadOnlyTool(_ name: String) -> Bool {
+        switch name {
+        case "read_file", "search_files", "find_files", "list_directory":
+            return true
+        default:
+            return false
         }
     }
 

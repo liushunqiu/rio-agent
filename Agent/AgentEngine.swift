@@ -174,12 +174,19 @@ class AgentEngine: ObservableObject {
 
     var runtimeModelRoles: [RuntimeModelRole] {
         if usesMultiAgentForCurrentPlan, let multiAgentEngine {
-            return buildMultiAgentRuntimeRoles(
+            return RuntimeModelRoleBuilder.multiAgentRoles(
                 config: multiAgentEngine.currentConfig,
                 plan: currentTaskPlan
             )
         }
-        return buildSingleAgentRuntimeRoles()
+        return RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: configSet(for: multiAgentConfig.router.configSetId),
+            isProcessing: isProcessing,
+            usesMultiAgent: usesMultiAgentForCurrentPlan,
+            lastMessageRole: messages.last?.role
+        )
     }
 
     var primaryDisplayModelName: String {
@@ -195,96 +202,6 @@ class AgentEngine: ObservableObject {
     }
 
     // MARK: - Configuration Persistence
-
-    private func buildSingleAgentRuntimeRoles() -> [RuntimeModelRole] {
-        var roles: [RuntimeModelRole] = []
-
-        if multiAgentConfig.router.enabled {
-            let routerConfigSet = configSet(for: multiAgentConfig.router.configSetId)
-            let routerModel = multiAgentConfig.router.model.isEmpty
-                ? configuration.executionModel
-                : multiAgentConfig.router.model
-            let routerProvider = routerConfigSet?.provider.displayName
-                ?? configuration.executionProvider.displayName
-            roles.append(RuntimeModelRole(
-                id: "router",
-                title: "Router",
-                providerName: routerProvider,
-                modelName: routerModel,
-                isActive: isProcessing && messages.last?.role != .assistant
-            ))
-        }
-
-        let planningActive = isProcessing && !usesMultiAgentForCurrentPlan
-        roles.append(RuntimeModelRole(
-            id: "planning",
-            title: "Planning",
-            providerName: configuration.planningProvider.displayName,
-            modelName: configuration.planningModel,
-            isActive: planningActive
-        ))
-
-        roles.append(RuntimeModelRole(
-            id: "execution",
-            title: "Execution",
-            providerName: configuration.executionProvider.displayName,
-            modelName: configuration.executionModel,
-            isActive: isProcessing && !usesMultiAgentForCurrentPlan
-        ))
-
-        return deduplicatedRoles(roles)
-    }
-
-    private func buildMultiAgentRuntimeRoles(
-        config: MultiAgentConfig,
-        plan: TaskPlan?
-    ) -> [RuntimeModelRole] {
-        var activeIds = Set<String>()
-        if let plan {
-            switch plan.status {
-            case .planning, .synthesizing, .verifying:
-                activeIds.insert("orchestrator")
-            case .executing:
-                let runningWorkers = plan.subTasks.compactMap { subTask -> String? in
-                    guard subTask.status == .running, let worker = subTask.assignedWorker else { return nil }
-                    return "worker-\(worker.id.uuidString)"
-                }
-                if runningWorkers.isEmpty {
-                    activeIds.insert("orchestrator")
-                } else {
-                    runningWorkers.forEach { activeIds.insert($0) }
-                }
-            case .completed, .failed:
-                break
-            }
-        }
-
-        var roles: [RuntimeModelRole] = [
-            RuntimeModelRole(
-                id: "orchestrator",
-                title: "Orchestrator",
-                providerName: config.orchestrator.provider.displayName,
-                modelName: config.orchestrator.model,
-                isActive: activeIds.contains("orchestrator")
-            )
-        ]
-
-        for worker in config.workers where worker.isEnabled {
-            roles.append(RuntimeModelRole(
-                id: "worker-\(worker.id.uuidString)",
-                title: worker.name,
-                providerName: worker.provider.displayName,
-                modelName: worker.model,
-                isActive: activeIds.contains("worker-\(worker.id.uuidString)")
-            ))
-        }
-
-        return deduplicatedRoles(roles)
-    }
-
-    private func deduplicatedRoles(_ roles: [RuntimeModelRole]) -> [RuntimeModelRole] {
-        roles.filter { !$0.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    }
 
     private let configurationKey = "ai_configuration"
     private let multiAgentConfigKey = "multi_agent_configuration"

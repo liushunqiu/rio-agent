@@ -11,8 +11,6 @@ class ShellTool: Tool {
 
     private var confirmationCallback: ConfirmationCallback?
     private var trustedCommands: Set<String> = []
-    /// 按前缀信任: "git push" 信任后, "git push origin main" 也信任
-    private var trustedPrefixes: Set<String> = []
 
     func setConfirmationCallback(_ callback: @escaping ConfirmationCallback) {
         self.confirmationCallback = callback
@@ -23,23 +21,15 @@ class ShellTool: Tool {
     }
 
     func addTrustedCommand(_ command: String) {
-        trustedCommands.insert(command)
-        // 提取命令前缀用于模糊匹配 (最多前2段)
-        let parts = command.split(separator: " ", maxSplits: 2)
-        if parts.count >= 2 {
-            trustedPrefixes.insert("\(parts[0]) \(parts[1])")
-        }
+        trustedCommands.insert(normalizedTrustedCommand(command))
     }
 
     private func isCommandTrusted(_ command: String) -> Bool {
-        if trustedCommands.contains(command) { return true }
-        // 模糊匹配: 如果 "npm install" 被信任, "npm install lodash" 也信任
-        let parts = command.split(separator: " ", maxSplits: 2)
-        if parts.count >= 2 {
-            let prefix = "\(parts[0]) \(parts[1])"
-            if trustedPrefixes.contains(prefix) { return true }
-        }
-        return false
+        trustedCommands.contains(normalizedTrustedCommand(command))
+    }
+
+    private func normalizedTrustedCommand(_ command: String) -> String {
+        command.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {

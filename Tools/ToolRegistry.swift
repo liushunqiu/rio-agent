@@ -12,6 +12,10 @@ class ToolRegistry {
         registerDefaultTools()
     }
 
+    init(tools: [Tool]) {
+        tools.forEach { register($0) }
+    }
+
     private func registerDefaultTools() {
         let shellTool = ShellTool()
         let fileReadTool = FileReadTool()

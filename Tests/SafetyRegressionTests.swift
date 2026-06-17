@@ -115,6 +115,35 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertEqual(CommandClassifier.classify("cat script.sh|sh"), .dangerous)
     }
 
+    func testShellToolSessionTrustIsExactCommandOnly() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let tool = ShellTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        _ = try await tool.execute(arguments: [
+            "command": "touch first.txt",
+            "working_directory": tempDir.path
+        ])
+        _ = try await tool.execute(arguments: [
+            "command": "touch second.txt",
+            "working_directory": tempDir.path
+        ])
+        _ = try await tool.execute(arguments: [
+            "command": "touch first.txt",
+            "working_directory": tempDir.path
+        ])
+
+        XCTAssertEqual(confirmationCount, 2)
+    }
+
     func testFileReadRejectsNegativePaginationArguments() async throws {
         let tool = FileReadTool()
 

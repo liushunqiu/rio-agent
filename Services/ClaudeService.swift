@@ -171,7 +171,7 @@ class ClaudeService: AIService {
 
     // MARK: - Request Builder
 
-    private func buildRequestBody(messages: [Message], tools: [[String: Any]], model: String, stream: Bool, maxTokens: Int = AppConstants.maxTokens) -> [String: Any] {
+    func buildRequestBody(messages: [Message], tools: [[String: Any]], model: String, stream: Bool, maxTokens: Int = AppConstants.maxTokens) -> [String: Any] {
         var apiMessages: [[String: Any]] = []
         var systemPromptParts: [String] = []
 
@@ -262,7 +262,7 @@ class ClaudeService: AIService {
 
     // MARK: - Response Parser
 
-    private func parseResponse(_ data: Data) throws -> AIResponse {
+    func parseResponse(_ data: Data) throws -> AIResponse {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AIServiceError.invalidResponse
         }

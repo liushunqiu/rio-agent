@@ -112,7 +112,11 @@ class ContextBuilder {
 
     /// 构建系统提示消息
     private func buildSystemMessage() -> Message {
-        let cacheKey = "\(workingDirectory ?? "__no_working_directory__")::\(systemPrompt.hashValue)::\((memoryContext ?? "").hashValue)"
+        let cacheKey = [
+            workingDirectory ?? "__no_working_directory__",
+            systemPrompt,
+            memoryContext ?? ""
+        ].joined(separator: "\u{1F}")
         if let cached = Self.systemPromptCache.object(forKey: cacheKey as NSString) {
             return Message.system(String(cached))
         }

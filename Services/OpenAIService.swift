@@ -1,5 +1,80 @@
 import Foundation
 
+struct OpenAIStreamingState {
+    private(set) var fullContent = ""
+    private(set) var fullReasoning = ""
+    private var toolCallAccumulators: [Int: (id: String, name: String, args: String)] = [:]
+
+    var content: String? {
+        fullContent.isEmpty ? nil : fullContent
+    }
+
+    var reasoningContent: String? {
+        fullReasoning.isEmpty ? nil : fullReasoning
+    }
+
+    var toolCalls: [ToolCall]? {
+        let calls = toolCallAccumulators
+            .sorted(by: { $0.key < $1.key })
+            .compactMap { _, acc -> ToolCall? in
+                guard !acc.id.isEmpty, !acc.name.isEmpty else { return nil }
+                var arguments: [String: AnyCodable] = [:]
+                if let argsData = acc.args.data(using: .utf8),
+                   let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
+                    arguments = argsDict.mapValues { AnyCodable($0) }
+                }
+                return ToolCall(id: acc.id, name: acc.name, arguments: arguments)
+            }
+        return calls.isEmpty ? nil : calls
+    }
+
+    mutating func consumeSSEDataLine(_ jsonStr: String) -> (content: String?, reasoning: String?) {
+        guard let data = jsonStr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let delta = firstChoice["delta"] as? [String: Any] else {
+            return (nil, nil)
+        }
+
+        var contentChunk: String?
+        if let content = delta["content"] as? String, !content.isEmpty {
+            fullContent += content
+            contentChunk = content
+        }
+
+        var reasoningChunk: String?
+        if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
+            fullReasoning += reasoning
+            reasoningChunk = reasoning
+        }
+
+        if let toolCallDeltas = delta["tool_calls"] as? [[String: Any]] {
+            for tcDelta in toolCallDeltas {
+                let index = tcDelta["index"] as? Int ?? 0
+                var acc = toolCallAccumulators[index] ?? (id: "", name: "", args: "")
+
+                if let id = tcDelta["id"] as? String {
+                    acc.id = id
+                }
+
+                if let function = tcDelta["function"] as? [String: Any] {
+                    if let name = function["name"] as? String {
+                        acc.name += name
+                    }
+                    if let args = function["arguments"] as? String {
+                        acc.args += args
+                    }
+                }
+
+                toolCallAccumulators[index] = acc
+            }
+        }
+
+        return (contentChunk, reasoningChunk)
+    }
+}
+
 class OpenAIService: AIService {
     let provider: AIProvider
     private let apiKey: String
@@ -88,9 +163,7 @@ class OpenAIService: AIService {
         let body = buildRequestBody(messages: messages, tools: tools, model: model, stream: true, maxTokens: maxTokens)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        var fullContent = ""
-        var fullReasoning = ""
-        var toolCallAccumulators: [Int: (id: String, name: String, args: String)] = [:]
+        var streamState = OpenAIStreamingState()
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -122,71 +195,28 @@ class OpenAIService: AIService {
             let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
             guard !jsonStr.isEmpty, jsonStr != "[DONE]" else { continue }
 
-            guard let data = jsonStr.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]],
-                  let firstChoice = choices.first,
-                  let delta = firstChoice["delta"] as? [String: Any] else { continue }
-
-            // Handle text content — goes to the main reply
-            if let content = delta["content"] as? String, !content.isEmpty {
-                fullContent += content
+            let chunks = streamState.consumeSSEDataLine(jsonStr)
+            if let content = chunks.content {
                 await onChunk(content)
             }
-
-            // Handle reasoning_content — goes to the thinking channel (separate from reply)
-            if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
-                fullReasoning += reasoning
+            if let reasoning = chunks.reasoning {
                 await onThinkingChunk(reasoning)
             }
-
-            // Handle tool calls
-            if let toolCallDeltas = delta["tool_calls"] as? [[String: Any]] {
-                for tcDelta in toolCallDeltas {
-                    let index = tcDelta["index"] as? Int ?? 0
-
-                    if let id = tcDelta["id"] as? String {
-                        toolCallAccumulators[index] = (id: id, name: "", args: "")
-                    }
-
-                    if let function = tcDelta["function"] as? [String: Any] {
-                        var acc = toolCallAccumulators[index] ?? (id: "", name: "", args: "")
-                        if let name = function["name"] as? String {
-                            acc.name += name
-                        }
-                        if let args = function["arguments"] as? String {
-                            acc.args += args
-                        }
-                        toolCallAccumulators[index] = acc
-                    }
-                }
-            }
         }
 
-        RioLogger.service.apiResponse(provider: "OpenAI", contentLength: fullContent.count, toolCallCount: toolCallAccumulators.count)
-
-        // Build final tool calls
-        var toolCalls: [ToolCall] = []
-        for (_, acc) in toolCallAccumulators.sorted(by: { $0.key < $1.key }) {
-            var arguments: [String: AnyCodable] = [:]
-            if let argsData = acc.args.data(using: .utf8),
-               let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
-                arguments = argsDict.mapValues { AnyCodable($0) }
-            }
-            toolCalls.append(ToolCall(id: acc.id, name: acc.name, arguments: arguments))
-        }
+        RioLogger.service.apiResponse(provider: "OpenAI", contentLength: streamState.fullContent.count, toolCallCount: streamState.toolCalls?.count ?? 0)
 
         return AIResponse(
-            content: fullContent.isEmpty ? nil : fullContent,
-            reasoningContent: fullReasoning.isEmpty ? nil : fullReasoning,
-            toolCalls: toolCalls.isEmpty ? nil : toolCalls,
+            content: streamState.content,
+            reasoningContent: streamState.reasoningContent,
+            toolCalls: streamState.toolCalls,
             usage: nil
         )
     }
 
     // MARK: - Request Builder
 
-    private func buildRequestBody(messages: [Message], tools: [[String: Any]], model: String, stream: Bool, maxTokens: Int = AppConstants.maxTokens) -> [String: Any] {
+    func buildRequestBody(messages: [Message], tools: [[String: Any]], model: String, stream: Bool, maxTokens: Int = AppConstants.maxTokens) -> [String: Any] {
         var apiMessages: [[String: Any]] = []
 
         for message in messages {
@@ -249,7 +279,7 @@ class OpenAIService: AIService {
 
     // MARK: - Response Parser
 
-    private func parseResponse(_ data: Data) throws -> AIResponse {
+    func parseResponse(_ data: Data) throws -> AIResponse {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AIServiceError.invalidResponse
         }

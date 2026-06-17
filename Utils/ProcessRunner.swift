@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 private final class ProcessRunState: @unchecked Sendable {
     private let lock = NSLock()
@@ -81,7 +82,7 @@ class ProcessRunner {
             let timeoutWorkItem = DispatchWorkItem {
                 if process.isRunning {
                     state.markTimedOut()
-                    process.terminate()
+                    self.terminateProcessGroup(for: process)
                 }
             }
 
@@ -145,6 +146,55 @@ class ProcessRunner {
                     continuation.resume(throwing: ProcessError.launchFailed(error.localizedDescription))
                 }
             }
+        }
+    }
+
+    private func terminateProcessGroup(for process: Process) {
+        let pid = process.processIdentifier
+        if pid > 0 {
+            terminateProcessTree(rootPID: pid, signal: SIGTERM)
+        }
+        process.terminate()
+
+        timeoutQueue.asyncAfter(deadline: .now() + 1.0) {
+            guard process.isRunning else { return }
+            if pid > 0 {
+                self.terminateProcessTree(rootPID: pid, signal: SIGKILL)
+            }
+            process.interrupt()
+        }
+    }
+
+    private func terminateProcessTree(rootPID: pid_t, signal: Int32) {
+        for childPID in childProcessIDs(of: rootPID) {
+            terminateProcessTree(rootPID: childPID, signal: signal)
+        }
+        kill(rootPID, signal)
+    }
+
+    private func childProcessIDs(of parentPID: pid_t) -> [pid_t] {
+        var processCount = proc_listallpids(nil, 0)
+        guard processCount > 0 else { return [] }
+
+        var pids = [pid_t](repeating: 0, count: Int(processCount))
+        processCount = proc_listallpids(&pids, Int32(MemoryLayout<pid_t>.stride * pids.count))
+        guard processCount > 0 else { return [] }
+
+        return pids.prefix(Int(processCount)).compactMap { pid in
+            guard pid > 0 else { return nil }
+            var info = proc_bsdinfo()
+            let size = proc_pidinfo(
+                pid,
+                PROC_PIDTBSDINFO,
+                0,
+                &info,
+                Int32(MemoryLayout<proc_bsdinfo>.stride)
+            )
+            guard size == Int32(MemoryLayout<proc_bsdinfo>.stride),
+                  info.pbi_ppid == parentPID else {
+                return nil
+            }
+            return pid
         }
     }
 }
