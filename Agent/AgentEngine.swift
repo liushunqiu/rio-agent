@@ -1397,15 +1397,21 @@ class AgentEngine: ObservableObject {
     }
 
     func loadConversation(_ conversation: Conversation) {
+        currentProcessingTask?.cancel()
+        currentProcessingTask = nil
+        multiAgentEngine?.cancelProcessing()
+        isProcessing = false
+        isCancelled = true
+        currentToolExecution = nil
+
         messages = conversation.messages
         workingDirectory = conversation.workingDirectory
         error = nil
         currentTaskPlan = nil
         currentSingleAgentPlan = nil
         resetPipelineState(clearVisiblePipeline: true)
-        currentProcessingTask?.cancel()
-        currentProcessingTask = nil
         pendingExecutionStrategyConfirmation = nil
+        pendingInitConfirmation = false
         resetUsageTracking()
     }
 

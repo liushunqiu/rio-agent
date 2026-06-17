@@ -9,6 +9,9 @@ final class FileSystemToolTests: XCTestCase {
         try write("keep", to: tempDir.appendingPathComponent("Sources/App/Keep.swift"))
         try write("skip", to: tempDir.appendingPathComponent(".git/Hidden.swift"))
         try write("skip", to: tempDir.appendingPathComponent(".build/Generated.swift"))
+        try write("skip", to: tempDir.appendingPathComponent("DerivedData/App/Generated.swift"))
+        try write("skip", to: tempDir.appendingPathComponent(".venv/lib/Generated.swift"))
+        try write("skip", to: tempDir.appendingPathComponent("dist/Generated.swift"))
         try write("skip", to: tempDir.appendingPathComponent("node_modules/Package.swift"))
 
         let result = try await FindFilesTool().execute(arguments: [

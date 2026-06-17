@@ -176,9 +176,12 @@ class ContextBuilder {
                 content: message.content,
                 thinkingContent: message.thinkingContent,
                 thinkingDuration: message.thinkingDuration,
+                timestamp: message.timestamp,
                 toolCalls: message.toolCalls,
                 toolResults: compressedResults,
-                isStreaming: message.isStreaming
+                isStreaming: message.isStreaming,
+                source: message.source,
+                presentation: message.presentation
             )
         }
     }

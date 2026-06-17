@@ -3,9 +3,18 @@ import Foundation
 
 enum FileSystemToolSupport {
     static let skippedDirectoryNames: Set<String> = [
+        ".next",
         ".build",
         ".git",
-        "node_modules"
+        ".nuxt",
+        ".swiftpm",
+        ".venv",
+        "__pycache__",
+        "coverage",
+        "DerivedData",
+        "dist",
+        "node_modules",
+        "venv"
     ]
 
     static func shouldSkipDirectory(_ url: URL) -> Bool {

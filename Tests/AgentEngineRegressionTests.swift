@@ -35,6 +35,8 @@ final class AgentEngineRegressionTests: XCTestCase {
         let engine = AgentEngine()
 
         engine.trackTokenUsage(.init(promptTokens: 80, completionTokens: 20))
+        engine.isProcessing = true
+        engine.currentToolExecution = .executing(toolCall: ToolCall(id: "tool-1", name: "read_file"))
         XCTAssertGreaterThan(engine.sessionCost, 0)
 
         let conversation = Conversation(
@@ -46,6 +48,8 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(engine.sessionCost, 0)
         XCTAssertEqual(engine.getSessionUsageSummary(), "")
         XCTAssertEqual(engine.workingDirectory, "/tmp/restored")
+        XCTAssertFalse(engine.isProcessing)
+        XCTAssertNil(engine.currentToolExecution)
     }
 
     func testContextMessagesHonorConfiguredMessageLimit() {
@@ -112,6 +116,38 @@ final class AgentEngineRegressionTests: XCTestCase {
         guard toolMessages.count == 2 else { return }
         XCTAssertTrue(toolMessages[0].toolResults?.first?.output.contains("[... truncated") == true)
         XCTAssertFalse(toolMessages[1].toolResults?.first?.output.contains("[... truncated") == true)
+    }
+
+    func testCompressedToolMessagesPreservePresentationAndSourceMetadata() {
+        let engine = AgentEngine()
+        let largeOutput = String(repeating: "0123456789", count: 300)
+        let timestamp = Date(timeIntervalSince1970: 123)
+        let source = MessageSource(providerName: "Provider", modelName: "model", agentName: "Agent")
+        var config = engine.configuration
+        config.maxContextMessages = 999
+        engine.updateConfiguration(config)
+
+        engine.appendMessage(Message(
+            role: .system,
+            content: "internal tool result",
+            timestamp: timestamp,
+            toolResults: [ToolResult.success(toolCallId: "older", output: largeOutput)],
+            source: source,
+            presentation: .internalOnly
+        ))
+        engine.appendMessage(.assistant("filler-1"))
+        engine.appendMessage(.user("filler-2"))
+        engine.appendMessage(.assistant("filler-3"))
+        engine.appendMessage(.user("filler-4"))
+
+        let compressed = engine.buildContextMessages().first {
+            $0.toolResults?.first?.toolCallId == "older"
+        }
+
+        XCTAssertEqual(compressed?.presentation, .internalOnly)
+        XCTAssertEqual(compressed?.source, source)
+        XCTAssertEqual(compressed?.timestamp, timestamp)
+        XCTAssertTrue(compressed?.toolResults?.first?.output.contains("[... truncated") == true)
     }
 
     func testHandleFinalContentSkipsVerificationWhenNoToolEvidenceExists() async {
