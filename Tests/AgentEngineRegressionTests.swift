@@ -153,7 +153,8 @@ final class AgentEngineRegressionTests: XCTestCase {
         let finalized = await engine.handleFinalContent("测试已经通过。")
 
         XCTAssertFalse(finalized)
-        XCTAssertTrue(engine.messages.last?.role == .user)
+        XCTAssertTrue(engine.messages.last?.role == .system)
+        XCTAssertTrue(engine.messages.last?.presentation == .internalOnly)
         XCTAssertTrue(engine.messages.last?.content.contains("[Verification Audit]") == true)
     }
 

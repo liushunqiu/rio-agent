@@ -76,7 +76,11 @@ final class StreamingDedupRegressionTests: XCTestCase {
 
         let allMessages = await MainActor.run { engine.messages }
         let assistantMessages = allMessages.filter { $0.role == .assistant }
-        let correctionMessages = allMessages.filter { $0.role == .user && $0.content.contains("[System Correction]") }
+        let correctionMessages = allMessages.filter {
+            $0.role == .system
+                && $0.presentation == .internalOnly
+                && $0.content.contains("[System Correction]")
+        }
 
         XCTAssertEqual(assistantMessages.count, 1)
         XCTAssertEqual(assistantMessages.first?.content, "我先使用 list_directory 工具查看目录结构。")

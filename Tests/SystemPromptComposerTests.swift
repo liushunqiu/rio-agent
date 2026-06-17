@@ -12,6 +12,7 @@ final class SystemPromptComposerTests: XCTestCase {
         XCTAssertTrue(composed.contains("Evidence policy:"))
         XCTAssertTrue(composed.contains("Available tools"))
         XCTAssertTrue(composed.contains("read_file"))
+        XCTAssertTrue(composed.contains("Markdown fenced code blocks"))
     }
 
     func testCustomPromptRemainsUnchanged() {
@@ -34,6 +35,7 @@ final class SystemPromptComposerTests: XCTestCase {
 
         XCTAssertTrue(composed.contains("证据规则："))
         XCTAssertTrue(composed.contains("可用工具"))
+        XCTAssertTrue(composed.contains("Markdown 代码块"))
     }
 
     func testRouterPromptReceivesStrictJsonReminder() {

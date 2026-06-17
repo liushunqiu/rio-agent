@@ -221,6 +221,30 @@ class AgentEngine: ObservableObject {
             ?? configuration.executionProvider.displayName
     }
 
+    private var planningMessageSource: MessageSource {
+        MessageSource(
+            providerName: configuration.planningProvider.displayName,
+            modelName: configuration.planningModel,
+            agentName: "Planning"
+        )
+    }
+
+    private var executionMessageSource: MessageSource {
+        MessageSource(
+            providerName: configuration.executionProvider.displayName,
+            modelName: configuration.executionModel,
+            agentName: "Execution"
+        )
+    }
+
+    private var multiAgentMessageSource: MessageSource {
+        MessageSource(
+            providerName: multiAgentConfig.orchestrator.provider.displayName,
+            modelName: multiAgentConfig.orchestrator.model,
+            agentName: multiAgentConfig.orchestrator.name
+        )
+    }
+
     // MARK: - Configuration Persistence
 
     private let configurationKey = "ai_configuration"
@@ -314,7 +338,7 @@ class AgentEngine: ObservableObject {
                     await performInit(directory: dir)
                 }
             } else {
-                let cancelMessage = Message.system("已取消重新生成 AGENT.md。")
+                let cancelMessage = Message.system("已取消重新生成 AGENT.md。", source: executionMessageSource)
                 messages.append(cancelMessage)
             }
             return
@@ -327,7 +351,10 @@ class AgentEngine: ObservableObject {
 
             let confirmWords = ["是", "yes", "y", "确认", "ok", "好", "继续", "continue"]
             let useMultiAgent = confirmWords.contains { trimmedInput.lowercased().hasPrefix($0) }
-            let modeMessage = Message.system(useMultiAgent ? "已确认使用 Multi-Agent 模式。" : "已切换为单 Agent 模式。")
+            let modeMessage = Message.system(
+                useMultiAgent ? "已确认使用 Multi-Agent 模式。" : "已切换为单 Agent 模式。",
+                source: planningMessageSource
+            )
             messages.append(modeMessage)
 
             await executePreparedTask(
@@ -379,10 +406,19 @@ class AgentEngine: ObservableObject {
                     model: model,
                     config: routerConfig
                 ) {
-                    currentRouterDecision = decision
-                    trackRouterStage(decision: decision)
+                    // 安全兜底：如果 Router 判断为 skip，但用户消息包含明确的任务关键词，
+                    // 则覆盖 skip 决策，允许执行模型使用工具。
+                    let finalDecision = Self.applySkipSafetyOverride(
+                        input: trimmedInput,
+                        decision: decision
+                    )
+                    if case .skip = decision, case .routeToTarget = finalDecision {
+                        RioLogger.agent.warning("🔀 Router 原始决策为 skip，已被安全兜底覆盖为 process")
+                    }
+                    currentRouterDecision = finalDecision
+                    trackRouterStage(decision: finalDecision)
 
-                    switch decision {
+                    switch finalDecision {
                     case .skip(let reason):
                         RioLogger.service.info("🔀 Router 决策: SKIP - \(reason, privacy: .public)")
                         // skip 意味着无需工具调用，但仍需让 AI 回答问题，因此继续执行但禁用工具
@@ -417,7 +453,13 @@ class AgentEngine: ObservableObject {
             RioLogger.agent.info("📝 生成计划包含 \(plan.count, privacy: .public) 个步骤")
 
             // Add plan to messages for user to see
-            let planMessage = Message.system(formattedPlan)
+            // Use a clear internal-context marker so the model treats this as metadata,
+            // not as additional instructions that override the user's request.
+            let planMessage = Message.system(
+                "[Internal Planning Context — for your reference only, do not repeat to user]\n\(formattedPlan)",
+                source: planningMessageSource,
+                presentation: .internalOnly
+            )
             messages.append(planMessage)
 
             // Store plan for execution guidance in system prompt
@@ -431,7 +473,11 @@ class AgentEngine: ObservableObject {
                 currentStep: nil,
                 totalSteps: plan.count
             )
-            let guidanceMessage = Message.system(guidance)
+            let guidanceMessage = Message.system(
+                "[Internal Execution Guidance — for your reference only, do not repeat to user]\n\(guidance)",
+                source: planningMessageSource,
+                presentation: .internalOnly
+            )
             messages.append(guidanceMessage)
         } else {
             RioLogger.agent.info("⏭️ 任务复杂度为 simple，跳过计划生成")
@@ -439,6 +485,7 @@ class AgentEngine: ObservableObject {
         }
 
         let useDAG = shouldUseMultiAgent(for: taskAnalysis)
+        RioLogger.agent.info("🚦 执行模式决策: useDAG=\(useDAG, privacy: .public), taskSplitStrategy=\(String(describing: self.multiAgentConfig.taskSplitStrategy), privacy: .public)")
         if useDAG, multiAgentConfig.taskSplitStrategy == .manual {
             isProcessing = false
             messages.append(
@@ -562,7 +609,7 @@ class AgentEngine: ObservableObject {
         currentPipeline = pipelineBuilder?.build()
         pipelineBuilder = nil
 
-        let cancelMessage = Message.system("⏹ 已停止当前任务。")
+        let cancelMessage = Message.system("⏹ 已停止当前任务。", source: executionMessageSource)
         messages.append(cancelMessage)
     }
 
@@ -581,20 +628,20 @@ class AgentEngine: ObservableObject {
             await compactConversation()
         case "/export":
             if let path = exportToFile() {
-                let msg = Message.system("✅ 对话已导出到: \(path)")
+                let msg = Message.system("✅ 对话已导出到: \(path)", source: executionMessageSource)
                 messages.append(msg)
             }
         case "/help":
             showHelp()
         default:
-            let errorMessage = Message.system("未知命令: \(cmd)\n输入 /help 查看可用命令")
+            let errorMessage = Message.system("未知命令: \(cmd)\n输入 /help 查看可用命令", source: executionMessageSource)
             messages.append(errorMessage)
         }
     }
 
     private func initProject() async {
         guard let dir = workingDirectory else {
-            let errorMessage = Message.system("请先设置工作目录，然后再执行 /init 命令")
+            let errorMessage = Message.system("请先设置工作目录，然后再执行 /init 命令", source: executionMessageSource)
             messages.append(errorMessage)
             return
         }
@@ -603,7 +650,10 @@ class AgentEngine: ObservableObject {
 
         // 检查 AGENT.md 是否已存在
         if FileManager.default.fileExists(atPath: agentMDPath) {
-            let confirmMessage = Message.system("⚠️ AGENT.md 已存在于 \(dir)\n\n是否要重新生成？这将覆盖现有文件。\n\n回复「是」或「yes」确认重新生成，或回复其他内容取消。")
+            let confirmMessage = Message.system(
+                "⚠️ AGENT.md 已存在于 \(dir)\n\n是否要重新生成？这将覆盖现有文件。\n\n回复「是」或「yes」确认重新生成，或回复其他内容取消。",
+                source: executionMessageSource
+            )
             messages.append(confirmMessage)
 
             // 等待用户确认：将控制权交给对话循环，下一条用户消息会决定是否继续
@@ -720,14 +770,17 @@ class AgentEngine: ObservableObject {
         - 命令不区分大小写
         - 当对话较长时，使用 /compact 可节省 token 消耗
         - 设置工作目录后，/init 会自动分析项目并生成 AGENT.md
-        """)
+        """, source: executionMessageSource)
         messages.append(helpMessage)
     }
 
     // MARK: - Multi-Agent Processing
 
     private func processWithMultiAgent(input: String, engine: MultiAgentEngine) async throws {
-        let systemMessage = Message.system("Multi-Agent 模式已启动，正在分析和拆分任务...")
+        let systemMessage = Message.system(
+            "Multi-Agent 模式已启动，正在分析和拆分任务...",
+            source: multiAgentMessageSource
+        )
         messages.append(systemMessage)
 
         let cancellable = engine.$currentPlan
@@ -743,7 +796,7 @@ class AgentEngine: ObservableObject {
 
         cancellable.cancel()
 
-        let assistantMessage = Message.assistant(result)
+        let assistantMessage = Message.assistant(result, source: multiAgentMessageSource)
         messages.append(assistantMessage)
 
         currentTaskPlan = nil
@@ -806,7 +859,8 @@ class AgentEngine: ObservableObject {
                 }
 
                 isAwaitingSingleAgentVerificationRetry = true
-                let auditMessage = Message.user("""
+                hideDraftAssistantMessage(matching: content)
+                let auditMessage = Message.system("""
                 [Verification Audit]
                 当前答案不能直接视为已完成。
 
@@ -816,7 +870,7 @@ class AgentEngine: ObservableObject {
                 - 只保留能被证据支持的结论
                 - 把未验证部分明确标为“未验证”
                 - 如果任务实际上未完成，直接说明缺什么验证或哪一步失败
-                """)
+                """, source: planningMessageSource, presentation: .internalOnly)
                 messages.append(auditMessage)
                 return false
             }
@@ -872,11 +926,15 @@ class AgentEngine: ObservableObject {
             RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
         } else {
             enableTools = true
+            RioLogger.service.info("🔀 Router 决策为 process（或无 Router），启用工具调用")
         }
+
+        RioLogger.service.debug("📝 系统提示词长度: \(self.composedSingleAgentSystemPrompt.count) 字符，前200字: \(String(self.composedSingleAgentSystemPrompt.prefix(200)), privacy: .public)")
+        RioLogger.service.debug("🔧 可用工具数: \(self.toolRegistry.getToolDefinitions().count)")
 
         try await ConversationLoop.run(engine: self) { contextMessages in
             // Pre-call setup: add streaming placeholder message
-            let streamingMessage = Message.streamingAssistant()
+            let streamingMessage = Message.streamingAssistant(source: self.executionMessageSource)
             self.messages.append(streamingMessage)
             let streamingIndex = self.messages.count - 1
             let messageId = streamingMessage.id
@@ -967,7 +1025,8 @@ class AgentEngine: ObservableObject {
                         content: response.content ?? "",
                         thinkingContent: existingThinking,
                         thinkingDuration: existingDuration,
-                        toolCalls: toolCalls
+                        toolCalls: toolCalls,
+                        source: self.executionMessageSource
                     )
                 }
             }
@@ -993,7 +1052,11 @@ class AgentEngine: ObservableObject {
             RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
         } else {
             enableTools = true
+            RioLogger.service.info("🔀 Router 决策为 process（或无 Router），启用工具调用")
         }
+
+        RioLogger.service.debug("📝 系统提示词长度: \(self.composedSingleAgentSystemPrompt.count) 字符，前200字: \(String(self.composedSingleAgentSystemPrompt.prefix(200)), privacy: .public)")
+        RioLogger.service.debug("🔧 可用工具数: \(self.toolRegistry.getToolDefinitions().count)")
 
         try await ConversationLoop.run(engine: self) { contextMessages in
             try await aiService.sendMessage(
@@ -1159,12 +1222,34 @@ class AgentEngine: ObservableObject {
     }
 
     private func finalizeAssistantMessage(_ content: String) {
-        if let lastIndex = messages.indices.last, messages[lastIndex].role == .assistant {
+        if let lastIndex = messages.indices.reversed().first(where: { index in
+            let message = messages[index]
+            return message.role == .assistant
+                && (message.toolCalls?.isEmpty ?? true)
+                && (message.isStreaming || message.content == content)
+        }) {
             messages[lastIndex].content = content
             messages[lastIndex].isStreaming = false
+            if messages[lastIndex].source == nil {
+                messages[lastIndex].source = executionMessageSource
+            }
         } else {
-            messages.append(Message.assistant(content))
+            messages.append(Message.assistant(content, source: executionMessageSource))
         }
+    }
+
+    private func hideDraftAssistantMessage(matching content: String) {
+        guard let lastIndex = messages.indices.reversed().first(where: { index in
+            let message = messages[index]
+            return message.role == .assistant
+                && (message.toolCalls?.isEmpty ?? true)
+                && (message.isStreaming || message.content == content)
+        }) else {
+            return
+        }
+
+        messages[lastIndex].isStreaming = false
+        messages[lastIndex].presentation = .internalOnly
     }
     
     func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
@@ -1362,6 +1447,44 @@ class AgentEngine: ObservableObject {
         if clearVisiblePipeline {
             currentPipeline = nil
         }
+    }
+
+    /// 安全兜底：如果 Router 错误地将任务型消息判为 skip，
+    /// 根据关键词检测覆盖为 process，防止工具被误禁用。
+    private static func applySkipSafetyOverride(
+        input: String,
+        decision: RoutingDecision
+    ) -> RoutingDecision {
+        guard case .skip = decision else { return decision }
+
+        let lower = input.lowercased()
+        let taskKeywords = [
+            // 中文关键词
+            "项目", "代码", "文件", "目录", "结构", "探索", "分析", "修改",
+            "修复", "重构", "实现", "创建", "删除", "搜索", "查找", "读取",
+            "写入", "运行", "执行", "测试", "构建", "部署", "git",
+            "查看", "检查", "了解", "接手", "业务", "代码库",
+            // 英文关键词
+            "project", "code", "file", "directory", "explore", "analyze",
+            "modify", "fix", "refactor", "implement", "create", "delete",
+            "search", "read", "write", "run", "execute", "test", "build",
+            "deploy", "repository", "codebase"
+        ]
+
+        let matchedKeywords = taskKeywords.filter { lower.contains($0) }
+        if matchedKeywords.count >= 2 {
+            RioLogger.service.warning(
+                "🔀 Router 判为 skip，但检测到 \(matchedKeywords.count) 个任务关键词 \(matchedKeywords.prefix(5).description, privacy: .public)，覆盖为 process"
+            )
+            return .routeToTarget(
+                target: "process",
+                params: [:],
+                confidence: 0.6,
+                reasoning: "skip 被安全兜底覆盖：检测到任务关键词"
+            )
+        }
+
+        return decision
     }
 
     private func trackRouterStage(decision: RoutingDecision?) {

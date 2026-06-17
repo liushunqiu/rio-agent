@@ -10,6 +10,8 @@ struct EnhancedMessageBubble: View {
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 8) {
+            MessageSourceHeader(message: message)
+
             // Thinking card (separate from reply, shown first)
             if let thinking = message.thinkingContent, !thinking.isEmpty {
                 ThinkingCard(
@@ -114,6 +116,81 @@ struct EnhancedMessageBubble: View {
     }
 }
 
+struct MessageSourceHeader: View {
+    let message: Message
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+
+            if let modelLabel {
+                Text(modelLabel)
+                    .font(.system(size: 10, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundColor(Theme.textTertiary)
+            }
+        }
+        .foregroundColor(color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .fill(color.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .stroke(color.opacity(0.18), lineWidth: 1)
+        )
+        .frame(maxWidth: message.role == .user ? 620 : 820, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    private var title: String {
+        if message.role == .user {
+            return "You"
+        }
+        return message.source?.agentName?.isEmpty == false ? message.source!.agentName! : fallbackTitle
+    }
+
+    private var modelLabel: String? {
+        guard message.role != .user else { return nil }
+        let provider = message.source?.providerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = message.source?.modelName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if provider.isEmpty && model.isEmpty { return nil }
+        if provider.isEmpty { return model }
+        if model.isEmpty { return provider }
+        return "\(provider) / \(model)"
+    }
+
+    private var fallbackTitle: String {
+        switch message.role {
+        case .user: return "You"
+        case .assistant: return "Assistant"
+        case .system: return "System"
+        }
+    }
+
+    private var icon: String {
+        switch message.role {
+        case .user: return "person.fill"
+        case .assistant: return "sparkles"
+        case .system: return "gearshape.fill"
+        }
+    }
+
+    private var color: Color {
+        switch message.role {
+        case .user: return Theme.accentPrimary
+        case .assistant: return Theme.statusInfo
+        case .system: return Theme.textTertiary
+        }
+    }
+}
+
 // MARK: - Enhanced Chat View
 
 struct EnhancedChatView: View {
@@ -146,9 +223,17 @@ struct EnhancedChatView: View {
         return index
     }
 
+    private var visibleMessages: [Message] {
+        messages.filter(\.isVisibleInTranscript)
+    }
+
+    private var transcriptEntries: [TranscriptEntry] {
+        TranscriptEntry.make(from: visibleMessages)
+    }
+
     /// 流式内容变化信号
     private var streamingSignal: Int {
-        (messages.last?.content.count ?? 0) + (messages.last?.thinkingContent?.count ?? 0)
+        (visibleMessages.last?.content.count ?? 0) + (visibleMessages.last?.thinkingContent?.count ?? 0)
     }
 
     /// 是否接近底部（距离底部 < 100pt 视为接近）
@@ -161,22 +246,26 @@ struct EnhancedChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 6, pinnedViews: []) {
-                        ForEach(messages) { message in
-                            EnhancedMessageBubble(
-                                message: message,
-                                isToolExecuting: isProcessing && currentToolCallId != nil,
-                                currentToolCallId: currentToolCallId,
-                                toolResultsById: toolResultsById
-                            )
-                            .id(message.id)
-                        }
+                        ForEach(transcriptEntries) { entry in
+                            switch entry {
+                            case .message(let message):
+                                EnhancedMessageBubble(
+                                    message: message,
+                                    isToolExecuting: isProcessing && currentToolCallId != nil,
+                                    currentToolCallId: currentToolCallId,
+                                    toolResultsById: toolResultsById
+                                )
+                                .id(message.id)
 
-                        // Pipeline 流程面板（在消息列表末尾显示）
-                        if let pipeline = currentPipeline, !pipeline.stages.isEmpty {
-                            ExecutionPipelineView(pipeline: pipeline)
-                                .padding(.horizontal, 28)
-                                .padding(.vertical, 12)
-                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                            case .activity(let messages):
+                                AgentActivityGroupView(
+                                    messages: messages,
+                                    isProcessing: isProcessing,
+                                    currentToolCallId: currentToolCallId,
+                                    toolResultsById: toolResultsById
+                                )
+                                .id(messages.first?.id)
+                            }
                         }
 
                         // TaskPlan 面板（Multi-Agent 模式）
@@ -215,7 +304,7 @@ struct EnhancedChatView: View {
                 }
                 // 流式内容更新时滚动
                 .onChange(of: streamingSignal) { _, _ in
-                    if autoScrollEnabled && (messages.last?.isStreaming == true || isProcessing) {
+                    if autoScrollEnabled && (visibleMessages.last?.isStreaming == true || isProcessing) {
                         scrollToBottom(proxy: proxy, animated: false)
                     }
                 }
@@ -234,7 +323,7 @@ struct EnhancedChatView: View {
             }
 
             // 浮动控制按钮
-            if !messages.isEmpty {
+            if !visibleMessages.isEmpty {
                 VStack(spacing: 10) {
                     // 自动跟随开关
                     FloatingButton(
@@ -265,6 +354,369 @@ struct EnhancedChatView: View {
             }
         } else {
             action()
+        }
+    }
+}
+
+private enum TranscriptEntry: Identifiable {
+    case message(Message)
+    case activity([Message])
+
+    var id: UUID {
+        switch self {
+        case .message(let message):
+            return message.id
+        case .activity(let messages):
+            return messages.first?.id ?? UUID()
+        }
+    }
+
+    static func make(from messages: [Message]) -> [TranscriptEntry] {
+        var entries: [TranscriptEntry] = []
+        var activityBuffer: [Message] = []
+
+        func flushActivity() {
+            guard !activityBuffer.isEmpty else { return }
+            entries.append(.activity(activityBuffer))
+            activityBuffer.removeAll()
+        }
+
+        for message in messages {
+            if message.isAgentActivity {
+                activityBuffer.append(message)
+            } else {
+                flushActivity()
+                entries.append(.message(message))
+            }
+        }
+
+        flushActivity()
+        return entries
+    }
+}
+
+private extension Message {
+    var isAgentActivity: Bool {
+        role == .assistant
+            && content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!(thinkingContent?.isEmpty ?? true) || !(toolCalls?.isEmpty ?? true) || !(toolResults?.isEmpty ?? true))
+    }
+}
+
+private struct AgentActivityGroupView: View {
+    let messages: [Message]
+    let isProcessing: Bool
+    let currentToolCallId: String?
+    let toolResultsById: [String: ToolResult]
+
+    @State private var isExpanded = false
+
+    private var toolCalls: [ToolCall] {
+        messages.flatMap { $0.toolCalls ?? [] }
+    }
+
+    private var hasFailure: Bool {
+        toolCalls.contains { tool in
+            toolResultsById[tool.id]?.status == .error
+        }
+    }
+
+    private var isRunning: Bool {
+        isProcessing && currentToolCallId != nil && toolCalls.contains { $0.id == currentToolCallId }
+    }
+
+    private var completedCount: Int {
+        toolCalls.filter { toolResultsById[$0.id]?.status == .success }.count
+    }
+
+    private var failedCount: Int {
+        toolCalls.filter { toolResultsById[$0.id]?.status == .error }.count
+    }
+
+    private var totalThinkingDuration: TimeInterval {
+        messages.compactMap(\.thinkingDuration).reduce(0, +)
+    }
+
+    private var summaryText: String {
+        var parts: [String] = []
+        if !toolCalls.isEmpty {
+            parts.append("\(toolCalls.count) 次工具调用")
+        }
+        if totalThinkingDuration > 0 {
+            parts.append(formatDuration(totalThinkingDuration))
+        }
+        if failedCount > 0 {
+            parts.append("\(failedCount) 个失败")
+        } else if completedCount > 0 {
+            parts.append("\(completedCount) 个完成")
+        }
+        return parts.isEmpty ? "内部处理" : parts.joined(separator: " · ")
+    }
+
+    private var statusColor: Color {
+        if hasFailure { return Theme.statusError }
+        if isRunning { return Theme.statusInfo }
+        return Theme.textTertiary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack(spacing: 10) {
+                    Image(systemName: isRunning ? "arrow.triangle.2.circlepath" : "checkmark.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(statusColor)
+
+                    Text(isRunning ? "正在执行" : "执行摘要")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textSecondary)
+
+                    Text(summaryText)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    if isRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Theme.statusInfo)
+                    }
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.textTertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded || hasFailure || isRunning {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(messages) { message in
+                        if let thinking = message.thinkingContent, !thinking.isEmpty {
+                            ActivityThinkingRow(
+                                content: thinking,
+                                duration: message.thinkingDuration,
+                                isStreaming: message.isStreaming
+                            )
+                        }
+
+                        ForEach(message.toolCalls ?? []) { toolCall in
+                            ActivityToolRow(
+                                toolCall: toolCall,
+                                result: toolResultsById[toolCall.id],
+                                isExecuting: isProcessing && currentToolCallId == toolCall.id
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
+        }
+        .frame(maxWidth: 820, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .fill(Theme.bgSecondary.opacity(0.62))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(hasFailure ? Theme.statusError.opacity(0.28) : Theme.borderSubtle, lineWidth: 1)
+        )
+        .padding(.horizontal, 28)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            isExpanded = hasFailure || isRunning
+        }
+        .onChange(of: isRunning) { _, running in
+            if running {
+                isExpanded = true
+            }
+        }
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        if duration < 1 {
+            return String(format: "%.0fms", duration * 1000)
+        }
+        if duration < 60 {
+            return String(format: "%.1fs", duration)
+        }
+        let minutes = Int(duration / 60)
+        let seconds = Int(duration.truncatingRemainder(dividingBy: 60))
+        return "\(minutes)m \(seconds)s"
+    }
+}
+
+private struct ActivityThinkingRow: View {
+    let content: String
+    let duration: TimeInterval?
+    let isStreaming: Bool
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.thinkingAccent.opacity(0.75))
+
+                    Text("思考")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Theme.textSecondary)
+
+                    if let duration {
+                        Text(String(format: "%.0fms", duration * 1000))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+
+                    if isStreaming {
+                        ThinkingDots()
+                    }
+
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(content)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Theme.textTertiary)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 20)
+            }
+        }
+    }
+}
+
+private struct ActivityToolRow: View {
+    let toolCall: ToolCall
+    let result: ToolResult?
+    let isExecuting: Bool
+
+    @State private var isExpanded = false
+
+    private var statusColor: Color {
+        if isExecuting { return Theme.statusInfo }
+        switch result?.status {
+        case .success: return Theme.statusSuccess
+        case .error: return Theme.statusError
+        case .cancelled: return Theme.textTertiary
+        case .none: return Theme.textTertiary
+        }
+    }
+
+    private var statusIcon: String {
+        if isExecuting { return "arrow.triangle.2.circlepath" }
+        switch result?.status {
+        case .success: return "checkmark.circle.fill"
+        case .error: return "xmark.circle.fill"
+        case .cancelled: return "slash.circle.fill"
+        case .none: return "clock"
+        }
+    }
+
+    private var statusText: String {
+        if isExecuting { return "执行中" }
+        switch result?.status {
+        case .success: return "完成"
+        case .error: return "失败"
+        case .cancelled: return "取消"
+        case .none: return "等待"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(statusColor)
+                        .frame(width: 14)
+
+                    Text(toolCall.name)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(Theme.textSecondary)
+                        .lineLimit(1)
+
+                    Text(statusText)
+                        .font(.system(size: 10))
+                        .foregroundColor(statusColor)
+
+                    Spacer()
+
+                    if !toolCall.arguments.isEmpty || result != nil {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded || result?.status == .error {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !toolCall.arguments.isEmpty {
+                        ForEach(Array(toolCall.arguments.sorted(by: { $0.key < $1.key })), id: \.key) { key, value in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(key)
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(Theme.textTertiary)
+                                    .frame(width: 86, alignment: .leading)
+
+                                Text(String(describing: value.value))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(Theme.textSecondary.opacity(0.85))
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+
+                    if let result {
+                        let text = result.error ?? result.output
+                        if !text.isEmpty {
+                            Text(text)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(result.status == .error ? Theme.statusError : Theme.textTertiary)
+                                .lineLimit(result.status == .error ? nil : 4)
+                                .textSelection(.enabled)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.codeBackground.opacity(0.75))
+                                .cornerRadius(Theme.radiusSM)
+                        }
+                    }
+                }
+                .padding(.leading, 22)
+            }
+        }
+        .onAppear {
+            isExpanded = result?.status == .error || isExecuting
         }
     }
 }

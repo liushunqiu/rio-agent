@@ -6,6 +6,27 @@ enum MessageRole: String, Codable {
     case system
 }
 
+enum MessagePresentation: String, Codable, Hashable {
+    case normal
+    case internalOnly
+}
+
+struct MessageSource: Codable, Hashable {
+    var providerName: String?
+    var modelName: String?
+    var agentName: String?
+
+    init(
+        providerName: String? = nil,
+        modelName: String? = nil,
+        agentName: String? = nil
+    ) {
+        self.providerName = providerName
+        self.modelName = modelName
+        self.agentName = agentName
+    }
+}
+
 struct Message: Identifiable, Codable, Hashable {
     let id: UUID
     let role: MessageRole
@@ -16,6 +37,13 @@ struct Message: Identifiable, Codable, Hashable {
     var toolCalls: [ToolCall]?
     var toolResults: [ToolResult]?
     var isStreaming: Bool
+    var source: MessageSource?
+    var presentation: MessagePresentation
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content, thinkingContent, thinkingDuration, timestamp
+        case toolCalls, toolResults, isStreaming, source, presentation
+    }
 
     init(
         id: UUID = UUID(),
@@ -26,7 +54,9 @@ struct Message: Identifiable, Codable, Hashable {
         timestamp: Date = Date(),
         toolCalls: [ToolCall]? = nil,
         toolResults: [ToolResult]? = nil,
-        isStreaming: Bool = false
+        isStreaming: Bool = false,
+        source: MessageSource? = nil,
+        presentation: MessagePresentation = .normal
     ) {
         self.id = id
         self.role = role
@@ -37,6 +67,23 @@ struct Message: Identifiable, Codable, Hashable {
         self.toolCalls = toolCalls
         self.toolResults = toolResults
         self.isStreaming = isStreaming
+        self.source = source
+        self.presentation = presentation
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        role = try container.decode(MessageRole.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        thinkingContent = try container.decodeIfPresent(String.self, forKey: .thinkingContent)
+        thinkingDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .thinkingDuration)
+        timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date()
+        toolCalls = try container.decodeIfPresent([ToolCall].self, forKey: .toolCalls)
+        toolResults = try container.decodeIfPresent([ToolResult].self, forKey: .toolResults)
+        isStreaming = try container.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
+        source = try container.decodeIfPresent(MessageSource.self, forKey: .source)
+        presentation = try container.decodeIfPresent(MessagePresentation.self, forKey: .presentation) ?? .normal
     }
 
     static func == (lhs: Message, rhs: Message) -> Bool {
@@ -46,7 +93,9 @@ struct Message: Identifiable, Codable, Hashable {
         guard lhs.content.count == rhs.content.count,
               lhs.thinkingContent?.count == rhs.thinkingContent?.count,
               lhs.thinkingDuration == rhs.thinkingDuration,
-              lhs.isStreaming == rhs.isStreaming else { return false }
+              lhs.isStreaming == rhs.isStreaming,
+              lhs.source == rhs.source,
+              lhs.presentation == rhs.presentation else { return false }
         // 长度相同时才做完整字符串比较（流式场景下极少见）
         return lhs.content == rhs.content
             && lhs.thinkingContent == rhs.thinkingContent
@@ -56,20 +105,39 @@ struct Message: Identifiable, Codable, Hashable {
         hasher.combine(id)
     }
 
-    static func user(_ content: String) -> Message {
-        Message(role: .user, content: content)
+    var isVisibleInTranscript: Bool {
+        presentation == .normal
     }
 
-    static func assistant(_ content: String) -> Message {
-        Message(role: .assistant, content: content)
+    static func user(
+        _ content: String,
+        source: MessageSource? = nil,
+        presentation: MessagePresentation = .normal
+    ) -> Message {
+        Message(role: .user, content: content, source: source, presentation: presentation)
     }
 
-    static func system(_ content: String) -> Message {
-        Message(role: .system, content: content)
+    static func assistant(
+        _ content: String,
+        source: MessageSource? = nil,
+        presentation: MessagePresentation = .normal
+    ) -> Message {
+        Message(role: .assistant, content: content, source: source, presentation: presentation)
     }
 
-    static func streamingAssistant() -> Message {
-        Message(role: .assistant, content: "", isStreaming: true)
+    static func system(
+        _ content: String,
+        source: MessageSource? = nil,
+        presentation: MessagePresentation = .normal
+    ) -> Message {
+        Message(role: .system, content: content, source: source, presentation: presentation)
+    }
+
+    static func streamingAssistant(
+        source: MessageSource? = nil,
+        presentation: MessagePresentation = .normal
+    ) -> Message {
+        Message(role: .assistant, content: "", isStreaming: true, source: source, presentation: presentation)
     }
 }
 

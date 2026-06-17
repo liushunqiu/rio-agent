@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - AI Response Fetcher
 
@@ -41,18 +42,22 @@ enum ConversationLoop {
 
             // ── AI Call ──────────────────────────────────────────────
             let contextMessages = engine.buildContextMessages()
+            RioLogger.agent.debug("🔄 ConversationLoop 第 \(iterationCount) 轮迭代，上下文消息数: \(contextMessages.count)")
             let response = try await fetchResponse(contextMessages)
 
             engine.trackTokenUsage(response.usage)
 
             // ── Tool Calls ───────────────────────────────────────────
             if let toolCalls = response.toolCalls, !toolCalls.isEmpty {
+                let toolNames = toolCalls.map { $0.name }.joined(separator: ", ")
+                RioLogger.agent.info("🔧 第 \(iterationCount) 轮: 收到 \(toolCalls.count) 个工具调用 [\(toolNames)]")
                 let results = await engine.executeToolCalls(toolCalls)
 
                 // Error tracking
                 let hasErrors = results.contains { $0.status == .error }
                 if hasErrors {
                     consecutiveErrors += 1
+                    RioLogger.agent.warning("⚠️ 第 \(iterationCount) 轮: 工具执行有错误，连续错误次数: \(consecutiveErrors)")
                     if consecutiveErrors >= AgentEngine.maxConsecutiveErrors {
                         let msg = Message.system(
                             "⚠️ 连续 \(consecutiveErrors) 次工具执行错误，已自动停止。请检查错误信息后重试。"
@@ -73,9 +78,10 @@ enum ConversationLoop {
                 )
 
                 let resultMessage = Message(
-                    role: .user,
+                    role: .system,
                     content: reflection.isEmpty ? "" : "[Tool Execution Results with Analysis]",
-                    toolResults: results
+                    toolResults: results,
+                    presentation: .internalOnly
                 )
                 engine.appendMessage(resultMessage)
                 continue
@@ -86,10 +92,12 @@ enum ConversationLoop {
             // (XML-like tags) instead of using the structured API, and redirect.
             if let content = response.content, !content.isEmpty,
                engine.handleTextToolCallRedirect(content) {
+                RioLogger.agent.warning("⚠️ 第 \(iterationCount) 轮: 检测到文本形式的工具调用，已注入纠正提示")
                 continue
             }
 
             // ── Task complete ────────────────────────────────────────
+            RioLogger.agent.info("✅ 第 \(iterationCount) 轮: 无工具调用，任务完成")
             let finalized = await engine.handleFinalContent(response.content)
             if finalized {
                 engine.clearPlan()

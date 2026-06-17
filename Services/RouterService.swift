@@ -46,9 +46,16 @@ enum RouterService {
                 maxTokens: config.maxTokens
             )
 
-            guard let content = response.content else { return nil }
+            guard let content = response.content else {
+                RioLogger.service.warning("🔀 Router 返回内容为空")
+                return nil
+            }
 
-            return parseRoutingResponse(content)
+            RioLogger.service.debug("🔀 Router 原始响应: \(content, privacy: .public)")
+
+            let decision = parseRoutingResponse(content)
+            RioLogger.service.info("🔀 Router 解析结果: \(decision?.mode ?? "nil (解析失败)", privacy: .public)")
+            return decision
         } catch {
             RioLogger.service.error("路由调用失败: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -118,7 +125,10 @@ enum RouterService {
                 return nil
             }
             
-            return parseQwenRoutingResponse(content)
+            RioLogger.service.debug("🔀 Qwen Router 原始响应: \(content, privacy: .public)")
+            let decision = parseQwenRoutingResponse(content)
+            RioLogger.service.info("🔀 Qwen Router 解析结果: \(decision?.mode ?? "nil (解析失败)", privacy: .public)")
+            return decision
         } catch {
             RioLogger.service.error("Qwen 路由调用失败: \(error.localizedDescription, privacy: .public)")
             return nil

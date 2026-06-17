@@ -151,13 +151,13 @@ class TaskPlanner {
             complexityScore += 1
         }
 
-        // Determine complexity level (降低阈值)
+        // Determine complexity level (适度阈值，避免用户正常描述任务被误判为复杂)
         let complexity: TaskComplexity
-        if complexityScore <= 1 {
+        if complexityScore <= 2 {
             complexity = .simple
-        } else if complexityScore <= 3 {
+        } else if complexityScore <= 4 {
             complexity = .moderate
-        } else if complexityScore <= 5 {
+        } else if complexityScore <= 7 {
             complexity = .complex
         } else {
             complexity = .veryComplex
@@ -196,6 +196,8 @@ class TaskPlanner {
             input: input
         )
         
+        RioLogger.agent.debug("📊 TaskPlanner - 复杂度分数: \(complexityScore), 复杂度: \(complexity, privacy: .public), 步骤类型: \(suggestedSteps.map { "\($0)" }, privacy: .public)")
+
         return TaskAnalysis(
             complexity: complexity,
             estimatedSteps: estimatedSteps,

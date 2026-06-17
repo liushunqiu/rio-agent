@@ -57,4 +57,14 @@ final class TextToolCallSafetyNetTests: XCTestCase {
         XCTAssertFalse(AgentEngine.containsTextBasedToolCalls(longAnswer),
                         "Long answer merely referencing a tool should not trigger")
     }
+
+    func testDetectsStandaloneToolNameBlockInsideLongAnswer() {
+        let content = """
+        我现在要接手别人写的火车票业务，我要怎么入手？你有什么建议
+
+        LIST_DIRECTORY
+        /Users/liushunqiu/Desktop/ota
+        """
+        XCTAssertTrue(AgentEngine.containsTextBasedToolCalls(content))
+    }
 }

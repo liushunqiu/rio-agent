@@ -160,22 +160,37 @@ struct AIConfiguration: Codable {
     Focus on concrete progress, truthful status reporting, and the smallest effective next step.
     """
 
+    static let v1DefaultSingleAgentSystemPrompt = """
+    You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks.
+    Always respond in the same language the user uses.
+    Focus on concrete progress, truthful status reporting, and the smallest effective next step.
+
+    Behavior rules:
+    - NEVER restate, paraphrase, or echo the user's message back to them.
+    - When the user gives you a task, start executing immediately — do not say "I understand you want to..." or "Let me help you with...".
+    - The user's message is always a request for YOU to act on, not a description of their own situation.
+    - If the user provides steps or suggestions, treat them as instructions and follow them directly.
+
+    IMPORTANT — Tool usage rules:
+    - You MUST use the structured tool-calling API (function calling) to invoke any tool.
+    - NEVER output tool calls as plain text, XML tags, JSON blocks, Markdown fenced code blocks, pseudo-syntax like ```list_directory, or any other textual format.
+    - If you need to use a tool, call it through the function-calling mechanism provided by this API.
+    - If no tool is needed, respond with text directly.
+    """
+
     static let defaultSingleAgentSystemPrompt = """
     You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks.
     Always respond in the same language the user uses.
     Focus on concrete progress, truthful status reporting, and the smallest effective next step.
 
-    IMPORTANT — Tool usage rules:
-    - You MUST use the structured tool-calling API (function calling) to invoke any tool.
-    - NEVER output tool calls as plain text, XML tags, JSON blocks, or any other textual format.
-    - If you need to use a tool, call it through the function-calling mechanism provided by this API.
-    - If no tool is needed, respond with text directly.
+    When given a task, start executing immediately. Treat the user's message as instructions for you, not as a description of their own situation. Do not restate their request back to them.
     """
 
     static let builtInSingleAgentPrompts: Set<String> = [
         legacyDefaultSingleAgentSystemPrompt,
         defaultSingleAgentSystemPrompt,
-        previousDefaultSingleAgentSystemPrompt
+        previousDefaultSingleAgentSystemPrompt,
+        v1DefaultSingleAgentSystemPrompt
     ]
 
     init(
@@ -200,7 +215,8 @@ struct AIConfiguration: Codable {
         enableStreaming = try container.decodeIfPresent(Bool.self, forKey: .enableStreaming) ?? true
         let decodedPrompt = try container.decodeIfPresent(String.self, forKey: .singleAgentSystemPrompt)
         if decodedPrompt == Self.legacyDefaultSingleAgentSystemPrompt
-            || decodedPrompt == Self.previousDefaultSingleAgentSystemPrompt {
+            || decodedPrompt == Self.previousDefaultSingleAgentSystemPrompt
+            || decodedPrompt == Self.v1DefaultSingleAgentSystemPrompt {
             singleAgentSystemPrompt = Self.defaultSingleAgentSystemPrompt
         } else {
             singleAgentSystemPrompt = decodedPrompt ?? Self.defaultSingleAgentSystemPrompt

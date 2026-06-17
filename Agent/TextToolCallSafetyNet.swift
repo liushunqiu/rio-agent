@@ -37,6 +37,7 @@ extension AgentEngine {
         for pattern in structuredPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: options),
                regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil {
+                RioLogger.agent.debug("🔍 TextToolCallSafetyNet 匹配 Group A (结构化文本): \(pattern, privacy: .public)")
                 return true
             }
         }
@@ -49,39 +50,74 @@ extension AgentEngine {
             let invocationPattern = #"[<(]\s*"# + tool + #"\b|""# + tool + #""\s*:"#
             if let regex = try? NSRegularExpression(pattern: invocationPattern, options: options),
                regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil {
+                RioLogger.agent.debug("🔍 TextToolCallSafetyNet 匹配 Group B (工具名上下文): \(tool, privacy: .public)")
                 return true
             }
         }
 
-        // ── Group C: Natural language tool-call intent ──────────────────────
-        // Catches cases where the model describes what it wants to do in plain
-        // text (e.g. "使用 list_directory 工具查看目录结构") instead of actually
-        // calling the tool through the API.  Only triggers on relatively short
-        // content (≤800 chars) to avoid false positives in long, substantive
-        // answers that merely reference tools.
-        if content.count <= 800 {
-            let naturalLanguagePatterns = [
-                // Chinese: "使用 X 工具", "调用 X", "让我用 X"
-                #"(使用|调用|让我用|让我使用|先用|首先用)\s*\w*\s*"# + toolNameAlternation() + #"(\s*工具|\s*函数|\s*方法|\s*来|\s*查看|\s*检查|\s*读取|\s*执行)"#,
-                // English: "use X tool", "call X", "let me use X"
-                #"(?i)(use|call|invoke|let me (use|call|invoke)|first (use|call))\s+(the\s+)?"# + toolNameAlternation() + #"\b"#,
-                // Chinese: "X 工具来/查看/读取/执行"
-                toolNameAlternation() + #"\s*(工具|函数|方法)\s*(来|查看|检查|读取|执行|获取)"#,
-            ]
+        // ── Group C: Standalone tool name blocks ────────────────────────────
+        // Catch markdown/code-block style pseudo-calls like:
+        //
+        // LIST_DIRECTORY
+        // /path/to/project
+        //
+        // This is a strong signal even when the overall answer is long.
+        let standaloneToolLinePattern = #"(?m)^\s*"# + toolNameAlternation() + #"\s*$"#
+        if let regex = try? NSRegularExpression(pattern: standaloneToolLinePattern, options: options),
+           regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil {
+            RioLogger.agent.debug("🔍 TextToolCallSafetyNet 匹配 Group C (独立工具名行)")
+            return true
+        }
+
+        // ── Group C2: Markdown code-block pseudo-calls ─────────────────────
+        // Catch patterns like:
+        //   ```list_directory /path
+        //   ```read_file
+        //   ```execute_command ls
+        let codeBlockToolPattern = #"(?m)```\s*"# + toolNameAlternation() + #"\b"#
+        if let regex = try? NSRegularExpression(pattern: codeBlockToolPattern, options: options),
+           regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil {
+            RioLogger.agent.debug("🔍 TextToolCallSafetyNet 匹配 Group C2 (Markdown 代码块)")
+            return true
+        }
+
+        // ── Group D: Natural language tool-call intent ──────────────────────
+        // Evaluate sentence/line-sized segments instead of gating on the whole
+        // response length, so long answers still trigger when a specific
+        // segment clearly describes an attempted tool invocation.
+        let naturalLanguagePatterns = [
+            // Chinese: "使用 X 工具", "调用 X", "让我用 X"
+            #"(使用|调用|让我用|让我使用|先用|首先用)\s*\w*\s*"# + toolNameAlternation() + #"(\s*工具|\s*函数|\s*方法|\s*来|\s*查看|\s*检查|\s*读取|\s*执行)"#,
+            // English: "use X tool", "call X", "let me use X"
+            #"(?i)(use|call|invoke|let me (use|call|invoke)|first (use|call))\s+(the\s+)?"# + toolNameAlternation() + #"\b"#,
+            // Chinese: "X 工具来/查看/读取/执行"
+            toolNameAlternation() + #"\s*(工具|函数|方法)\s*(来|查看|检查|读取|执行|获取)"#,
+        ]
+
+        for segment in toolIntentSegments(from: content) {
             for pattern in naturalLanguagePatterns {
                 if let regex = try? NSRegularExpression(pattern: pattern, options: options),
-                   regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil {
+                   regex.firstMatch(in: segment, range: NSRange(segment.startIndex..., in: segment)) != nil {
+                    RioLogger.agent.debug("🔍 TextToolCallSafetyNet 匹配 Group D (自然语言): segment=\(segment.prefix(80), privacy: .public)")
                     return true
                 }
             }
         }
 
+        RioLogger.agent.debug("🔍 TextToolCallSafetyNet 未检测到文本形式的工具调用")
         return false
     }
 
     /// Build a regex alternation of known tool names for pattern matching.
     nonisolated private static func toolNameAlternation() -> String {
         "(" + knownToolNames.joined(separator: "|") + ")"
+    }
+
+    nonisolated private static func toolIntentSegments(from content: String) -> [String] {
+        content
+            .components(separatedBy: CharacterSet(charactersIn: "\n。！？!?"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= 240 }
     }
 
     /// Check whether the content looks like a text-based tool call attempt,
@@ -93,6 +129,7 @@ extension AgentEngine {
     func handleTextToolCallRedirect(_ content: String) -> Bool {
         guard textToolCallRedirectCount < Self.maxTextToolCallRedirects else {
             // Already redirected enough times; accept the response as-is
+            RioLogger.agent.warning("⚠️ TextToolCallSafetyNet 已达最大重定向次数 (\(Self.maxTextToolCallRedirects))，接受当前响应")
             return false
         }
 
@@ -115,7 +152,7 @@ extension AgentEngine {
         }
 
         // Inject a corrective message
-        let correctionMessage = Message.user("""
+        let correctionMessage = Message.system("""
         [System Correction]
         你在回复中用文字描述了要使用工具（如 "使用 list_directory 工具"），但没有通过 API 的 function calling 接口实际调用它。
         You described using a tool in your text response but did NOT actually invoke it through the function-calling API.
@@ -128,7 +165,7 @@ extension AgentEngine {
 
         请立即通过 function calling 接口重新发起你刚才描述的工具调用。
         Please invoke the tool you described through the function-calling API now.
-        """)
+        """, presentation: .internalOnly)
         messages.append(correctionMessage)
 
         RioLogger.agent.warning("⚠️ 检测到文本形式的工具调用，已注入纠正提示（第 \(self.textToolCallRedirectCount) 次）")

@@ -264,6 +264,11 @@ struct MultiAgentConfig: Codable {
             orchestrator.systemPrompt = Self.defaultOrchestratorPrompt
         }
 
+        // 迁移 Router 提示词
+        if router.prompt == RouterConfig.previousDefaultPrompt {
+            router.prompt = RouterConfig.defaultPrompt
+        }
+
         for index in workers.indices {
             switch workers[index].systemPrompt {
             case Self.legacyDefaultSearchPrompt,
@@ -465,7 +470,7 @@ struct RouterConfig: Codable {
     // 路由目标节点定义
     var routingTargets: [RoutingTarget] = RoutingTarget.defaultTargets
 
-    static let defaultPrompt = """
+    static let previousDefaultPrompt = """
     你是一个任务路由器。分析用户输入，输出 JSON 决定如何处理。
 
     {
@@ -481,7 +486,25 @@ struct RouterConfig: Codable {
     只输出 JSON，不要额外文字。
     """
 
-    static let builtInPrompts: Set<String> = [defaultPrompt]
+    static let defaultPrompt = """
+    你是一个任务路由器。分析用户输入，输出 JSON 决定如何处理。
+
+    {
+      "mode": "skip | process",
+      "confidence": 0.0-1.0,
+      "reasoning": "简短理由"
+    }
+
+    规则：
+    - skip: 仅限纯问候或闲聊（如"你好"、"你是谁"、"谢谢"、"再见"），不涉及任何项目、文件、代码或操作
+    - process: 其他所有情况，包括但不限于：文件操作、代码修改、项目探索、信息查询、命令执行、文档生成、任何提到"项目""代码""文件""目录""结构""探索""分析""修改""修复"的请求
+
+    重要：宁可误判为 process 也不要误判为 skip。如果不确定，选 process。
+
+    只输出 JSON，不要额外文字。
+    """
+
+    static let builtInPrompts: Set<String> = [defaultPrompt, previousDefaultPrompt]
     
     // Qwen3.5-4B 专用路由 Schema
     static let qwenRoutingSchema: [String: Any] = [

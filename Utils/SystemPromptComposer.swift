@@ -99,7 +99,8 @@ enum SystemPromptComposer {
             case .english:
                 return """
                 Tool discipline:
-                - You MUST use the structured tool-calling API (function calling) to invoke tools. NEVER output tool calls as text, XML tags, or any other plain-text format.
+                - You MUST use the structured tool-calling API (function calling) to invoke tools.
+                - NEVER output tool calls as text, XML tags, JSON blocks, Markdown fenced code blocks, pseudo-syntax like ```list_directory, or any other plain-text format.
                 - Explore before editing, and read before writing.
                 - Prefer precise edits over broad rewrites when touching existing files.
                 - After changes, verify with a read-back, test, or command when one is available.
@@ -108,7 +109,8 @@ enum SystemPromptComposer {
             case .chinese:
                 return """
                 工具纪律：
-                - 必须通过 API 的结构化 tool call（function calling）机制调用工具。严禁以文本、XML 标签或任何其他纯文本格式输出工具调用。
+                - 必须通过 API 的结构化 tool call（function calling）机制调用工具。
+                - 严禁以文本、XML 标签、JSON 片段、Markdown 代码块、伪语法（如 ```list_directory）或任何其他纯文本格式输出工具调用。
                 - 先探索后修改，先读取再写入。
                 - 修改现有文件时，优先做精确变更，避免大面积重写。
                 - 改动后尽量通过读回、测试或命令结果做验证。
@@ -143,7 +145,7 @@ enum SystemPromptComposer {
                 """
             case .chinese:
                 return """
-                可用工具（必须通过 function-calling API 调用，禁止以文本形式输出）：
+                可用工具（必须通过 function-calling API 调用；不要写成 Markdown 代码块、伪命令或其他文本形式）：
                 \(toolLines)
                 """
             }
