@@ -4,35 +4,43 @@ import Observation
 @MainActor
 @Observable
 final class NewChatViewModel {
-    var inputText: String = ""
-    var isShowingFilePicker = false
-    var selectedFiles: [String] = []
-    
-    var canSend: Bool {
-        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-    
-    func clearInput() {
-        inputText = ""
-        selectedFiles.removeAll()
-    }
-    
-    func handleInput(_ text: String) {
-        selectedFiles = FileReferenceParser.fileReferences(in: text)
+    var composer: ComposerInputState
 
-        if text.hasSuffix("@") {
-            isShowingFilePicker = true
-        }
+    init(inputText: String = "") {
+        composer = ComposerInputState(text: inputText)
     }
-    
+
+    var inputText: String {
+        get { composer.text }
+        set { composer.updateText(newValue) }
+    }
+
+    var isShowingFilePicker: Bool {
+        get { composer.isShowingFilePicker }
+        set { composer.isShowingFilePicker = newValue }
+    }
+
+    var selectedFiles: [String] {
+        composer.selectedFiles
+    }
+
+    var canSend: Bool {
+        composer.canSend
+    }
+
+    func clearInput() {
+        composer.clearInput()
+    }
+
+    func handleInput(_ text: String) {
+        composer.updateText(text)
+    }
+
     func addFileReference(_ filePath: String) {
-        inputText = FileReferenceParser.appendingReference(to: inputText, path: filePath)
-        selectedFiles = FileReferenceParser.fileReferences(in: inputText)
-        isShowingFilePicker = false
+        composer.addFileReference(filePath)
     }
-    
+
     func removeFileReference(_ filePath: String) {
-        inputText = FileReferenceParser.removingReference(from: inputText, path: filePath)
-        selectedFiles = FileReferenceParser.fileReferences(in: inputText)
+        composer.removeFileReference(filePath)
     }
 }

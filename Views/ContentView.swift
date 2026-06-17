@@ -547,19 +547,19 @@ struct InputArea: View {
     let onSubmit: () -> Void
     var onStop: (() -> Void)? = nil
     
-    @State private var isShowingFilePicker = false
-    @State private var selectedFiles: [String] = []
+    @State private var composer = ComposerInputState()
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
                 // 已选择的文件标签
-                if !selectedFiles.isEmpty {
+                if !composer.selectedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
-                            ForEach(selectedFiles, id: \.self) { filePath in
+                            ForEach(composer.selectedFiles, id: \.self) { filePath in
                                 FileTag(filePath: filePath) {
-                                    removeFileReference(filePath)
+                                    composer.removeFileReference(filePath)
+                                    text = composer.text
                                 }
                             }
                         }
@@ -578,11 +578,8 @@ struct InputArea: View {
                     .onSubmit {
                         submitIfPossible()
                     }
-                    .onChange(of: text) { oldValue, newValue in
-                        // 延迟执行，避免在视图更新期间修改状态
-                        DispatchQueue.main.async {
-                            handleInput(newValue)
-                        }
+                    .onChange(of: text) { _, newValue in
+                        composer.updateText(newValue)
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
@@ -595,7 +592,7 @@ struct InputArea: View {
                     
                     // File picker button
                     Button(action: {
-                        isShowingFilePicker = true
+                        composer.isShowingFilePicker = true
                     }) {
                         HStack(spacing: 5) {
                             Image(systemName: "at")
@@ -682,40 +679,35 @@ struct InputArea: View {
                         .frame(height: 1)
                 }
         )
-        .sheet(isPresented: $isShowingFilePicker) {
+        .sheet(isPresented: Binding(
+            get: { composer.isShowingFilePicker },
+            set: { composer.isShowingFilePicker = $0 }
+        )) {
             FilePickerView(workingDirectory: workingDirectory) { filePath in
-                addFileReference(filePath)
+                composer.addFileReference(filePath)
+                text = composer.text
+            }
+        }
+        .onAppear {
+            composer.updateText(text)
+        }
+        .onChange(of: text) { _, newValue in
+            if composer.text != newValue {
+                composer.updateText(newValue)
             }
         }
     }
 
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isProcessing
+        composer.canSend && !isProcessing
     }
 
     private func submitIfPossible() {
         guard canSend else { return }
-        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        text = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        composer.updateText(text)
         onSubmit()
-        selectedFiles.removeAll()
-    }
-    
-    private func handleInput(_ text: String) {
-        selectedFiles = FileReferenceParser.fileReferences(in: text)
-
-        if text.hasSuffix("@") {
-            isShowingFilePicker = true
-        }
-    }
-    
-    private func addFileReference(_ filePath: String) {
-        text = FileReferenceParser.appendingReference(to: text, path: filePath)
-        selectedFiles = FileReferenceParser.fileReferences(in: text)
-    }
-    
-    private func removeFileReference(_ filePath: String) {
-        text = FileReferenceParser.removingReference(from: text, path: filePath)
-        selectedFiles = FileReferenceParser.fileReferences(in: text)
+        composer.clearInput()
     }
 }
 
