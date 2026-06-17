@@ -62,7 +62,7 @@ class AgentEngine: ObservableObject {
             model: configuration.executionModel,
             workingDirectory: workingDirectory,
             maxContextMessages: configuration.maxContextMessages,
-            systemPrompt: configuration.singleAgentSystemPrompt,
+            systemPrompt: composedSingleAgentSystemPrompt,
             memoryContext: memory.generateMemoryContext()
         )
     }
@@ -1069,6 +1069,14 @@ class AgentEngine: ObservableObject {
         activePlanAnalysis = nil
     }
 
+    private var composedSingleAgentSystemPrompt: String {
+        SystemPromptComposer.compose(
+            basePrompt: configuration.singleAgentSystemPrompt,
+            scope: .singleAgent,
+            availableTools: toolRegistry.getAllTools()
+        )
+    }
+
     private func shouldVerifySingleAgentCompletion(for content: String) -> Bool {
         guard !recentSingleAgentEvidence.isEmpty else { return false }
 
@@ -1087,7 +1095,7 @@ class AgentEngine: ObservableObject {
                 output: output,
                 errors: recentSingleAgentToolErrors,
                 evidence: recentSingleAgentEvidence,
-                systemPrompt: configuration.singleAgentSystemPrompt
+                systemPrompt: composedSingleAgentSystemPrompt
             )
         }
 
@@ -1096,7 +1104,7 @@ class AgentEngine: ObservableObject {
             output: output,
             errors: recentSingleAgentToolErrors,
             evidence: recentSingleAgentEvidence,
-            systemPrompt: configuration.singleAgentSystemPrompt
+            systemPrompt: composedSingleAgentSystemPrompt
         )
     }
 

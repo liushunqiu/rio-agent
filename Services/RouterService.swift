@@ -25,8 +25,13 @@ enum RouterService {
         }
         
         // 否则使用原有的通用路由逻辑
+        let systemPrompt = SystemPromptComposer.compose(
+            basePrompt: config.prompt,
+            scope: .router,
+            availableTools: ToolRegistry.shared.getAllTools()
+        )
         let messages = [
-            Message.system(config.prompt),
+            Message.system(systemPrompt),
             Message.user(input)
         ]
 

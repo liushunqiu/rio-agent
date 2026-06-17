@@ -45,4 +45,16 @@ final class AIConfigurationTests: XCTestCase {
 
         XCTAssertEqual(decoded.singleAgentSystemPrompt, "custom prompt")
     }
+
+    func testDecodingLegacySingleAgentPromptMigratesToLayeredBasePrompt() throws {
+        let data = """
+        {
+          "singleAgentSystemPrompt": \(String(reflecting: AIConfiguration.legacyDefaultSingleAgentSystemPrompt))
+        }
+        """.data(using: .utf8)!
+
+        let configuration = try JSONDecoder().decode(AIConfiguration.self, from: data)
+
+        XCTAssertEqual(configuration.singleAgentSystemPrompt, AIConfiguration.defaultSingleAgentSystemPrompt)
+    }
 }

@@ -401,6 +401,48 @@ extension MultiAgentConfig {
     }
 }
 
+extension MultiAgentConfig {
+    private static let builtInOrchestratorPromptSet: Set<String> = [
+        legacyDefaultOrchestratorPrompt,
+        defaultOrchestratorPrompt
+    ]
+
+    private static let builtInSearchPromptSet: Set<String> = [
+        legacyDefaultSearchPrompt,
+        "你是一个搜索助手。负责查找和整理信息。使用工具高效搜索，优先返回准确、结构化的结果。",
+        defaultSearchPrompt
+    ]
+
+    private static let builtInCodePromptSet: Set<String> = [
+        legacyDefaultCodePrompt,
+        "你是一个代码助手。负责代码分析、实现和调试。写出简洁、可维护的代码，遵循项目已有的代码风格。",
+        defaultCodePrompt
+    ]
+
+    private static let builtInFilePromptSet: Set<String> = [
+        legacyDefaultFilePrompt,
+        "你是一个文件助手。负责文件读写操作。精确匹配文件内容，避免破坏文件结构。",
+        defaultFilePrompt
+    ]
+
+    static func isBuiltInOrchestratorPrompt(_ prompt: String) -> Bool {
+        builtInOrchestratorPromptSet.contains(prompt)
+    }
+
+    static func isBuiltInWorkerPrompt(_ prompt: String, capability: AgentCapability) -> Bool {
+        switch capability {
+        case .search:
+            return builtInSearchPromptSet.contains(prompt)
+        case .code:
+            return builtInCodePromptSet.contains(prompt)
+        case .file:
+            return builtInFilePromptSet.contains(prompt)
+        case .general, .custom:
+            return false
+        }
+    }
+}
+
 // MARK: - Router Configuration
 
 struct RouterConfig: Codable {
@@ -438,6 +480,8 @@ struct RouterConfig: Codable {
 
     只输出 JSON，不要额外文字。
     """
+
+    static let builtInPrompts: Set<String> = [defaultPrompt]
     
     // Qwen3.5-4B 专用路由 Schema
     static let qwenRoutingSchema: [String: Any] = [

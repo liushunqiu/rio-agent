@@ -74,6 +74,17 @@ class MultiAgentEngine: ObservableObject {
         return AIServiceFactory.createService(provider: provider, apiKey: apiKey, baseURL: baseURL)
     }
 
+    private func composedPrompt(for agent: AgentConfig) -> String {
+        let scope: SystemPromptScope = agent.role == .orchestrator
+            ? .orchestrator
+            : .worker(agent.capability)
+        return SystemPromptComposer.compose(
+            basePrompt: agent.systemPrompt,
+            scope: scope,
+            availableTools: toolRegistry.getAllTools()
+        )
+    }
+
     func updateConfig(_ newConfig: MultiAgentConfig) {
         config = newConfig
         setupServices()
@@ -580,7 +591,7 @@ class MultiAgentEngine: ObservableObject {
 
         // Build messages with structured XML context
         var currentMessages: [Message] = [
-            Message.system(worker.systemPrompt),
+            Message.system(composedPrompt(for: worker)),
             Message.user("""
             <project_context>
             \(context)
@@ -657,7 +668,7 @@ class MultiAgentEngine: ObservableObject {
             task: subTask.description,
             errors: errors,
             output: output,
-            systemPrompt: worker.systemPrompt
+            systemPrompt: composedPrompt(for: worker)
         )
     }
 
@@ -674,7 +685,7 @@ class MultiAgentEngine: ObservableObject {
                 output: output,
                 errors: errors,
                 evidence: evidence,
-                systemPrompt: worker.systemPrompt
+                systemPrompt: composedPrompt(for: worker)
             )
         }
 
@@ -683,7 +694,7 @@ class MultiAgentEngine: ObservableObject {
             output: output,
             errors: errors,
             evidence: evidence,
-            systemPrompt: worker.systemPrompt
+            systemPrompt: composedPrompt(for: worker)
         )
     }
 
@@ -725,7 +736,7 @@ class MultiAgentEngine: ObservableObject {
 
         if results.isEmpty {
             let messages = [
-                Message.system(config.orchestrator.systemPrompt),
+                Message.system(composedPrompt(for: config.orchestrator)),
                 Message.user("""
                 你是一个任务协调者。你判断该任务不需要拆分给子 Agent。请直接回答用户的原始任务。
 
@@ -774,7 +785,7 @@ class MultiAgentEngine: ObservableObject {
         """
 
         let messages = [
-            Message.system(config.orchestrator.systemPrompt),
+            Message.system(composedPrompt(for: config.orchestrator)),
             Message.user(synthesizePrompt)
         ]
 

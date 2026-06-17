@@ -120,7 +120,7 @@ struct AIConfiguration: Codable {
         case activeProvider, planningProvider, executionProvider
     }
 
-    static let defaultSingleAgentSystemPrompt = """
+    static let legacyDefaultSingleAgentSystemPrompt = """
     You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks. Always respond in the same language the user uses.
 
     Priorities:
@@ -154,6 +154,17 @@ struct AIConfiguration: Codable {
     - If a command or edit has not been verified, do not present it as done.
     """
 
+    static let defaultSingleAgentSystemPrompt = """
+    You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks.
+    Always respond in the same language the user uses.
+    Focus on concrete progress, truthful status reporting, and the smallest effective next step.
+    """
+
+    static let builtInSingleAgentPrompts: Set<String> = [
+        legacyDefaultSingleAgentSystemPrompt,
+        defaultSingleAgentSystemPrompt
+    ]
+
     init(
         planningConfigSetId: UUID? = nil,
         executionConfigSetId: UUID? = nil,
@@ -174,8 +185,12 @@ struct AIConfiguration: Codable {
         executionConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .executionConfigSetId)
         maxContextMessages = try container.decodeIfPresent(Int.self, forKey: .maxContextMessages) ?? 999
         enableStreaming = try container.decodeIfPresent(Bool.self, forKey: .enableStreaming) ?? true
-        singleAgentSystemPrompt = try container.decodeIfPresent(String.self, forKey: .singleAgentSystemPrompt)
-            ?? Self.defaultSingleAgentSystemPrompt
+        let decodedPrompt = try container.decodeIfPresent(String.self, forKey: .singleAgentSystemPrompt)
+        if decodedPrompt == Self.legacyDefaultSingleAgentSystemPrompt {
+            singleAgentSystemPrompt = Self.defaultSingleAgentSystemPrompt
+        } else {
+            singleAgentSystemPrompt = decodedPrompt ?? Self.defaultSingleAgentSystemPrompt
+        }
     }
 
     func encode(to encoder: Encoder) throws {
