@@ -5,7 +5,7 @@ private let brandGradient = Theme.accentGradient
 
 struct NewChatPage: View {
     @Binding var inputText: String
-    @State private var viewModel: NewChatViewModel
+    @State private var composer: ComposerInputState
     let onSubmit: (String) -> Void
     let workingDirectory: Binding<String?>
 
@@ -20,7 +20,7 @@ struct NewChatPage: View {
         workingDirectory: Binding<String?>
     ) {
         self._inputText = inputText
-        self._viewModel = State(initialValue: NewChatViewModel(inputText: inputText.wrappedValue))
+        self._composer = State(initialValue: ComposerInputState(text: inputText.wrappedValue))
         self.onSubmit = onSubmit
         self.workingDirectory = workingDirectory
     }
@@ -55,14 +55,14 @@ struct NewChatPage: View {
             withAnimation(.easeOut(duration: 0.4)) {
                 appears = true
             }
-            viewModel.inputText = inputText
+            composer.updateText(inputText)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 isInputFocused = true
             }
         }
         .onChange(of: inputText) { _, newValue in
-            if viewModel.inputText != newValue {
-                viewModel.inputText = newValue
+            if composer.text != newValue {
+                composer.updateText(newValue)
             }
         }
     }
@@ -98,24 +98,16 @@ struct NewChatPage: View {
 
     private var inputCard: some View {
         VStack(spacing: 0) {
-            // 已选择的文件标签
-            if !viewModel.selectedFiles.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(viewModel.selectedFiles, id: \.self) { filePath in
-                            FileTag(filePath: filePath) {
-                                viewModel.removeFileReference(filePath)
-                                inputText = viewModel.inputText
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 10)
-                }
+            SelectedFileTags(
+                selectedFiles: composer.selectedFiles,
+                horizontalPadding: 14
+            ) { filePath in
+                composer.removeFileReference(filePath)
+                inputText = composer.text
             }
             
             ZStack(alignment: .topLeading) {
-                if viewModel.inputText.isEmpty {
+                if composer.text.isEmpty {
                     Text("描述任务，/ 快捷调用，@ 添加上下文")
                         .font(.system(size: 14))
                         .foregroundColor(Theme.textTertiary)
@@ -153,29 +145,29 @@ struct NewChatPage: View {
         )
         .shadow(color: Theme.shadowStrong.opacity(0.7), radius: 28, x: 0, y: 18)
         .padding(.horizontal, 24)
-        .sheet(isPresented: $viewModel.isShowingFilePicker) {
-            FilePickerView(workingDirectory: workingDirectory.wrappedValue) { filePath in
-                viewModel.addFileReference(filePath)
-                inputText = viewModel.inputText
-            }
+        .filePickerSheet(
+            composer: composer,
+            workingDirectory: workingDirectory.wrappedValue
+        ) {
+            inputText = composer.text
         }
     }
 
     private var sendButton: some View {
         Button(action: submitIfPossible) {
             Circle()
-                .fill(viewModel.canSend ? brandGreen : Color.primary.opacity(0.08))
+                .fill(composer.canSend ? brandGreen : Color.primary.opacity(0.08))
                 .frame(width: 28, height: 28)
                 .overlay(
                     Image(systemName: "arrow.up")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(viewModel.canSend ? .white : .secondary)
+                        .foregroundColor(composer.canSend ? .white : .secondary)
                 )
         }
         .buttonStyle(.plain)
-        .disabled(!viewModel.canSend)
-        .scaleEffect(viewModel.canSend ? 1 : 0.92)
-        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: viewModel.canSend)
+        .disabled(!composer.canSend)
+        .scaleEffect(composer.canSend ? 1 : 0.92)
+        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: composer.canSend)
         .help("发送")
     }
 
@@ -184,19 +176,19 @@ struct NewChatPage: View {
     }
 
     private func submitIfPossible() {
-        guard viewModel.canSend else { return }
-        let text = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        viewModel.clearInput()
+        guard composer.canSend else { return }
+        let text = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        composer.clearInput()
         inputText = ""
         onSubmit(text)
     }
 
     private var composerTextBinding: Binding<String> {
         Binding(
-            get: { viewModel.inputText },
+            get: { composer.text },
             set: { newValue in
                 inputText = newValue
-                viewModel.handleInput(newValue)
+                composer.updateText(newValue)
             }
         )
     }
@@ -234,6 +226,46 @@ struct FileTag: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(brandGreen.opacity(0.3), lineWidth: 1)
         )
+    }
+}
+
+struct SelectedFileTags: View {
+    let selectedFiles: [String]
+    var horizontalPadding: CGFloat = 16
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        if !selectedFiles.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(selectedFiles, id: \.self) { filePath in
+                        FileTag(filePath: filePath) {
+                            onRemove(filePath)
+                        }
+                    }
+                }
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, 10)
+            }
+        }
+    }
+}
+
+extension View {
+    func filePickerSheet(
+        composer: ComposerInputState,
+        workingDirectory: String?,
+        onSelectionApplied: @escaping () -> Void
+    ) -> some View {
+        sheet(isPresented: Binding(
+            get: { composer.isShowingFilePicker },
+            set: { composer.isShowingFilePicker = $0 }
+        )) {
+            FilePickerView(workingDirectory: workingDirectory) { filePath in
+                composer.addFileReference(filePath)
+                onSelectionApplied()
+            }
+        }
     }
 }
 

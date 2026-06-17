@@ -193,7 +193,7 @@ rio-agent/
 │   ├── ContextPanel.swift        # 上下文面板
 │   └── MessageBubble.swift       # 基础消息气泡
 ├── ViewModels/             # 视图模型
-│   └── NewChatViewModel.swift    # 新建对话 ViewModel
+│   └── ComposerInputState.swift  # 输入状态与文件引用管理
 ├── Utils/                  # 工具类
 │   ├── ProcessRunner.swift       # 进程运行器
 │   ├── PermissionManager.swift   # 权限管理

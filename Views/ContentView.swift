@@ -553,20 +553,9 @@ struct InputArea: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
-                // 已选择的文件标签
-                if !composer.selectedFiles.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(composer.selectedFiles, id: \.self) { filePath in
-                                FileTag(filePath: filePath) {
-                                    composer.removeFileReference(filePath)
-                                    text = composer.text
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 10)
-                    }
+                SelectedFileTags(selectedFiles: composer.selectedFiles) { filePath in
+                    composer.removeFileReference(filePath)
+                    text = composer.text
                 }
                 
                 // Multi-line text input
@@ -677,17 +666,19 @@ struct InputArea: View {
                         .frame(height: 1)
                 }
         )
-        .sheet(isPresented: Binding(
-            get: { composer.isShowingFilePicker },
-            set: { composer.isShowingFilePicker = $0 }
-        )) {
-            FilePickerView(workingDirectory: workingDirectory) { filePath in
-                composer.addFileReference(filePath)
-                text = composer.text
-            }
+        .filePickerSheet(
+            composer: composer,
+            workingDirectory: workingDirectory
+        ) {
+            text = composer.text
         }
         .onAppear {
             composer.updateText(text)
+        }
+        .onChange(of: text) { _, newValue in
+            if composer.text != newValue {
+                composer.updateText(newValue)
+            }
         }
     }
 

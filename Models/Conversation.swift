@@ -49,7 +49,13 @@ struct Conversation: Identifiable, Codable, Hashable {
     }
 
     static func == (lhs: Conversation, rhs: Conversation) -> Bool {
-        lhs.id == rhs.id && lhs.title == rhs.title && lhs.updatedAt == rhs.updatedAt && lhs.messages.count == rhs.messages.count
+        lhs.id == rhs.id &&
+        lhs.title == rhs.title &&
+        lhs.messages == rhs.messages &&
+        lhs.workingDirectory == rhs.workingDirectory &&
+        lhs.draftInput == rhs.draftInput &&
+        lhs.createdAt == rhs.createdAt &&
+        lhs.updatedAt == rhs.updatedAt
     }
 
     func hash(into hasher: inout Hasher) {
