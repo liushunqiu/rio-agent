@@ -407,6 +407,8 @@ struct ToolResultCard: View {
     let result: ToolResult
     @State private var isExpanded = false
 
+    private let collapsedOutputLineLimit = 8
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
@@ -416,7 +418,7 @@ struct ToolResultCard: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(statusColor)
 
-                    Text(result.status == .success ? "执行成功" : "执行失败")
+                    Text(statusText)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(Theme.textPrimary)
 
@@ -437,14 +439,34 @@ struct ToolResultCard: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     if !result.output.isEmpty {
-                        Text(result.output)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(Theme.textSecondary)
-                            .textSelection(.enabled)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Theme.codeBackground)
-                            .cornerRadius(Theme.radiusSM)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("输出")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(Theme.textSecondary)
+
+                                Spacer()
+
+                                if shouldCollapseOutput {
+                                    Button(action: { withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() } }) {
+                                        Text(isExpanded ? "收起" : "展开全部")
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(Theme.textTertiary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            Text(result.output)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(Theme.textSecondary)
+                                .textSelection(.enabled)
+                                .lineLimit(isExpanded || result.status == .error ? nil : collapsedOutputLineLimit)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.codeBackground)
+                                .cornerRadius(Theme.radiusSM)
+                        }
                     }
 
                     if let error = result.error {
@@ -483,5 +505,18 @@ struct ToolResultCard: View {
         case .error: return Theme.statusError
         case .cancelled: return Theme.textTertiary
         }
+    }
+
+    private var statusText: String {
+        switch result.status {
+        case .success: return "执行成功"
+        case .error: return "执行失败"
+        case .cancelled: return "已取消"
+        }
+    }
+
+    private var shouldCollapseOutput: Bool {
+        result.output.components(separatedBy: .newlines).count > collapsedOutputLineLimit
+            || result.output.count > 1000
     }
 }

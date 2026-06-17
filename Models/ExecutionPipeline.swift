@@ -30,6 +30,9 @@ struct ExecutionPipeline: Identifiable {
         if stages.contains(where: { $0.status == .failed }) {
             return .failed
         }
+        if stages.contains(where: { $0.status == .cancelled }) {
+            return .cancelled
+        }
         if stages.contains(where: { $0.status == .running }) {
             return .running
         }
@@ -122,6 +125,12 @@ struct PipelineStage: Identifiable {
         endTime = Date()
         details = details.withSkipReason(reason)
     }
+
+    mutating func cancel(reason: String) {
+        status = .cancelled
+        endTime = Date()
+        details = details.withCancelReason(reason)
+    }
 }
 
 /// 阶段状态
@@ -129,6 +138,7 @@ enum PipelineStageStatus {
     case pending
     case running
     case completed
+    case cancelled
     case failed
     case skipped
 }
@@ -145,6 +155,7 @@ enum StageDetails {
     case synthesis(workerResults: Int)
     case error(message: String)
     case skipped(reason: String)
+    case cancelled(reason: String)
 
     func withError(_ error: String) -> StageDetails {
         .error(message: error)
@@ -152,6 +163,10 @@ enum StageDetails {
 
     func withSkipReason(_ reason: String) -> StageDetails {
         .skipped(reason: reason)
+    }
+
+    func withCancelReason(_ reason: String) -> StageDetails {
+        .cancelled(reason: reason)
     }
 }
 
@@ -220,6 +235,12 @@ class PipelineBuilder {
     func skipStage(_ stageId: UUID, reason: String) {
         if let index = pipeline.stages.firstIndex(where: { $0.id == stageId }) {
             pipeline.stages[index].skip(reason: reason)
+        }
+    }
+
+    func cancelStage(_ stageId: UUID, reason: String) {
+        if let index = pipeline.stages.firstIndex(where: { $0.id == stageId }) {
+            pipeline.stages[index].cancel(reason: reason)
         }
     }
 

@@ -99,11 +99,11 @@ class MultiAgentEngine: ObservableObject {
         error = nil
 
         guard var plan = currentPlan else { return }
-        plan.status = .failed
+        plan.status = .cancelled
         for index in plan.subTasks.indices where plan.subTasks[index].status == .pending || plan.subTasks[index].status == .running {
-            plan.subTasks[index].status = .failed
+            plan.subTasks[index].status = .cancelled
             plan.subTasks[index].result = "已取消"
-            plan.subTasks[index].verificationStatus = .needsRetry
+            plan.subTasks[index].verificationStatus = .unverified
         }
         currentPlan = plan
     }

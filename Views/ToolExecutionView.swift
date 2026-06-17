@@ -49,7 +49,11 @@ struct ToolExecutionView: View {
         case .confirming: return "questionmark.circle.fill"
         case .executing: return "gear.circle.fill"
         case .completed(_, let result):
-            return result.status == .success ? "checkmark.circle.fill" : "xmark.circle.fill"
+            switch result.status {
+            case .success: return "checkmark.circle.fill"
+            case .error: return "xmark.circle.fill"
+            case .cancelled: return "slash.circle.fill"
+            }
         case .failed: return "exclamationmark.triangle.fill"
         }
     }
@@ -60,7 +64,11 @@ struct ToolExecutionView: View {
         case .confirming(let tc): return "确认执行: \(tc.name)"
         case .executing(let tc): return "正在执行: \(tc.name)"
         case .completed(let tc, let result):
-            return result.status == .success ? "执行成功: \(tc.name)" : "执行失败: \(tc.name)"
+            switch result.status {
+            case .success: return "执行成功: \(tc.name)"
+            case .error: return "执行失败: \(tc.name)"
+            case .cancelled: return "已取消: \(tc.name)"
+            }
         case .failed(let tc, _): return "执行错误: \(tc.name)"
         }
     }
@@ -71,7 +79,10 @@ struct ToolExecutionView: View {
         case .confirming: return "请在弹窗中确认是否执行"
         case .executing: return "正在执行命令..."
         case .completed(_, let result):
-            return result.status == .success ? String(result.output.prefix(80)) : result.error ?? "未知错误"
+            switch result.status {
+            case .success: return String(result.output.prefix(80))
+            case .error, .cancelled: return result.error ?? "未知错误"
+            }
         case .failed(_, let error): return error
         }
     }
@@ -82,7 +93,11 @@ struct ToolExecutionView: View {
         case .confirming: return Theme.statusWarning
         case .executing: return Theme.statusInfo
         case .completed(_, let result):
-            return result.status == .success ? Theme.statusSuccess : Theme.statusError
+            switch result.status {
+            case .success: return Theme.statusSuccess
+            case .error: return Theme.statusError
+            case .cancelled: return Theme.textTertiary
+            }
         case .failed: return Theme.statusError
         }
     }

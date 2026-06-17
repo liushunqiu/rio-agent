@@ -90,6 +90,7 @@ struct ExecutionPipelineView: View {
         case .pending: return Theme.textTertiary
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary
         }
@@ -209,6 +210,7 @@ struct StageRow: View {
         case .pending: return Theme.textTertiary
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary.opacity(0.5)
         }
@@ -219,6 +221,7 @@ struct StageRow: View {
         case .pending: return "clock"
         case .running: return "arrow.clockwise"
         case .completed: return "checkmark.circle.fill"
+        case .cancelled: return "slash.circle.fill"
         case .failed: return "xmark.circle.fill"
         case .skipped: return "minus.circle.fill"
         }
@@ -246,6 +249,8 @@ struct StageRow: View {
             return "汇总 \(workerResults) 个结果"
         case .error(let message):
             return "❌ \(message)"
+        case .cancelled(let reason):
+            return "已停止: \(reason)"
         case .skipped(let reason):
             return "已跳过: \(reason)"
         }
@@ -318,6 +323,9 @@ struct StageDetailsView: View {
 
             case .skipped(let reason):
                 DetailRow(icon: "info.circle", label: "跳过原因", value: reason, color: Theme.textTertiary)
+
+            case .cancelled(let reason):
+                DetailRow(icon: "slash.circle", label: "停止原因", value: reason, color: Theme.textTertiary)
             }
         }
     }
@@ -388,6 +396,7 @@ struct SubstepRow: View {
         case .pending: return Theme.textTertiary
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary.opacity(0.5)
         }
@@ -398,6 +407,7 @@ struct SubstepRow: View {
         case .pending: return "clock"
         case .running: return "arrow.clockwise"
         case .completed: return "checkmark"
+        case .cancelled: return "slash"
         case .failed: return "xmark"
         case .skipped: return "minus"
         }
@@ -431,6 +441,7 @@ struct ConnectorLine: View {
         switch fromStatus {
         case .completed: return Theme.statusSuccess.opacity(0.3)
         case .running: return Theme.statusInfo.opacity(0.3)
+        case .cancelled: return Theme.textTertiary.opacity(0.25)
         case .failed: return Theme.statusError.opacity(0.3)
         case .skipped: return Theme.textTertiary.opacity(0.2)
         case .pending: return Theme.borderSubtle
@@ -469,6 +480,7 @@ struct StatusIndicator: View {
         case .pending: return "clock"
         case .running: return "arrow.clockwise"
         case .completed: return "checkmark.circle.fill"
+        case .cancelled: return "slash.circle.fill"
         case .failed: return "xmark.circle.fill"
         case .skipped: return "minus.circle"
         }
@@ -479,6 +491,7 @@ struct StatusIndicator: View {
         case .pending: return "等待中"
         case .running: return "执行中"
         case .completed: return "已完成"
+        case .cancelled: return "已停止"
         case .failed: return "失败"
         case .skipped: return "已跳过"
         }
@@ -489,6 +502,7 @@ struct StatusIndicator: View {
         case .pending: return Theme.textTertiary
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary
         }

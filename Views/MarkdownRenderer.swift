@@ -142,6 +142,9 @@ struct CodeBlockView: View {
     let code: String
     @State private var isCopied = false
     @State private var isHovered = false
+    @State private var isExpanded = false
+
+    private let collapsedLineLimit = 14
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -154,6 +157,29 @@ struct CodeBlockView: View {
                 }
 
                 Spacer()
+
+                if shouldCollapse {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded.toggle()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 11, weight: .medium))
+                            Text(isExpanded ? "收起" : "展开")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(Theme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Theme.bgElevated.opacity(0.6))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 Button(action: copyCode) {
                     HStack(spacing: 4) {
@@ -183,7 +209,7 @@ struct CodeBlockView: View {
             Divider()
                 .overlay(Theme.borderSubtle)
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView([.horizontal, .vertical], showsIndicators: isExpanded) {
                 Text(code)
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundColor(Theme.textPrimary.opacity(0.9))
@@ -191,7 +217,10 @@ struct CodeBlockView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .lineSpacing(3)
+                    .lineLimit(isExpanded ? nil : collapsedLineLimit)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxHeight: isExpanded ? 420 : 260)
         }
         .background(Theme.codeBackground)
         .cornerRadius(Theme.radiusLG)
@@ -212,5 +241,10 @@ struct CodeBlockView: View {
                 isCopied = false
             }
         }
+    }
+
+    private var shouldCollapse: Bool {
+        code.components(separatedBy: .newlines).count > collapsedLineLimit
+            || code.count > 1200
     }
 }

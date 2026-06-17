@@ -56,7 +56,10 @@ struct EnhancedMessageBubble: View {
             if let toolResults = message.toolResults {
                 ForEach(toolResults, id: \.toolCallId) { result in
                     // Only show results that aren't already displayed in tool cards
-                    if !toolCallHasResult(for: result.toolCallId) {
+                    if Self.shouldDisplayStandaloneToolResult(
+                        toolCallId: result.toolCallId,
+                        toolCalls: message.toolCalls
+                    ) {
                         EnhancedToolResultCard(
                             result: result,
                             toolCallName: getToolCallName(for: result.toolCallId)
@@ -94,6 +97,10 @@ struct EnhancedMessageBubble: View {
 
     private func toolCallHasResult(for toolCallId: String) -> Bool {
         return findToolResult(for: toolCallId) != nil
+    }
+
+    static func shouldDisplayStandaloneToolResult(toolCallId: String, toolCalls: [ToolCall]?) -> Bool {
+        !(toolCalls?.contains(where: { $0.id == toolCallId }) ?? false)
     }
 
     private func getToolResult(for toolCall: ToolCall) -> ToolResult? {
@@ -151,7 +158,7 @@ struct MessageSourceHeader: View {
 
     private var title: String {
         if message.role == .user {
-            return "You"
+            return "用户"
         }
         return message.source?.agentName?.isEmpty == false ? message.source!.agentName! : fallbackTitle
     }
@@ -168,9 +175,9 @@ struct MessageSourceHeader: View {
 
     private var fallbackTitle: String {
         switch message.role {
-        case .user: return "You"
-        case .assistant: return "Assistant"
-        case .system: return "System"
+        case .user: return "用户"
+        case .assistant: return "助手"
+        case .system: return "系统"
         }
     }
 
@@ -203,16 +210,9 @@ struct EnhancedChatView: View {
     /// 自动滚动跟随开关
     @State private var autoScrollEnabled = true
 
-    /// 用户是否正在手动滚动（用于暂时禁用自动跟随）
-    @State private var isUserScrolling = false
-
-    /// 上次消息数量（检测新消息）
-    @State private var lastMessageCount = 0
-
-    /// 滚动位置追踪
-    @State private var scrollPosition: CGFloat = 0
-    @State private var contentHeight: CGFloat = 0
-    @State private var visibleHeight: CGFloat = 0
+    /// 距离底部的偏移（越小越接近底部）
+    @State private var bottomOffset: CGFloat = 0
+    @State private var visibleViewportHeight: CGFloat = 0
 
     /// 工具结果索引
     private var toolResultsById: [String: ToolResult] {
@@ -236,14 +236,14 @@ struct EnhancedChatView: View {
         (visibleMessages.last?.content.count ?? 0) + (visibleMessages.last?.thinkingContent?.count ?? 0)
     }
 
-    /// 是否接近底部（距离底部 < 100pt 视为接近）
+    /// 是否接近底部（距离底部 < 120pt 视为接近）
     private var isNearBottom: Bool {
-        contentHeight - scrollPosition - visibleHeight < 100
+        bottomOffset < 120
     }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(spacing: 6, pinnedViews: []) {
                         ForEach(transcriptEntries) { entry in
@@ -285,22 +285,36 @@ struct EnhancedChatView: View {
                     .background(
                         GeometryReader { geo in
                             Color.clear.preference(
-                                key: ScrollOffsetPreferenceKey.self,
-                                value: geo.frame(in: .named("scroll")).minY
+                                key: BottomOffsetPreferenceKey.self,
+                                value: geo.frame(in: .named("scroll")).maxY
                             )
                         }
                     )
                 }
                 .coordinateSpace(name: "scroll")
-                .onPreferenceChange(ScrollOffsetPreferenceKey.self) { value in
-                    scrollPosition = -value
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollViewportHeightPreferenceKey.self,
+                            value: geo.size.height
+                        )
+                    }
+                )
+                .onPreferenceChange(BottomOffsetPreferenceKey.self) { contentBottom in
+                    let newOffset = max(0, visibleViewportHeight - contentBottom)
+                    bottomOffset = newOffset
+                    if autoScrollEnabled && newOffset > 140 && !isProcessing {
+                        autoScrollEnabled = false
+                    }
+                }
+                .onPreferenceChange(ScrollViewportHeightPreferenceKey.self) { height in
+                    visibleViewportHeight = height
                 }
                 // 新消息到达时滚动
                 .onChange(of: messages.count) { oldCount, newCount in
                     if newCount > oldCount && (autoScrollEnabled || isProcessing) {
                         scrollToBottom(proxy: proxy, animated: true)
                     }
-                    lastMessageCount = newCount
                 }
                 // 流式内容更新时滚动
                 .onChange(of: streamingSignal) { _, _ in
@@ -320,23 +334,28 @@ struct EnhancedChatView: View {
                         scrollToBottom(proxy: proxy, animated: false)
                     }
                 }
-            }
-
-            // 浮动控制按钮
-            if !visibleMessages.isEmpty {
-                VStack(spacing: 10) {
-                    // 自动跟随开关
-                    FloatingButton(
-                        icon: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle",
-                        label: autoScrollEnabled ? "自动跟随" : "手动模式",
-                        isActive: autoScrollEnabled,
-                        badge: !isNearBottom && !autoScrollEnabled ? true : nil
-                    ) {
-                        autoScrollEnabled.toggle()
+                
+                // 浮动控制按钮
+                if !visibleMessages.isEmpty {
+                    VStack(spacing: 10) {
+                        // 自动跟随开关
+                        FloatingButton(
+                            icon: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle",
+                            label: autoScrollEnabled ? "自动跟随" : (isNearBottom ? "恢复跟随" : "回到底部"),
+                            isActive: autoScrollEnabled,
+                            badge: !isNearBottom ? true : nil
+                        ) {
+                            if autoScrollEnabled {
+                                autoScrollEnabled = false
+                            } else {
+                                autoScrollEnabled = true
+                                scrollToBottom(proxy: proxy, animated: true)
+                            }
+                        }
                     }
+                    .padding(.trailing, 24)
+                    .padding(.bottom, 24)
                 }
-                .padding(.trailing, 24)
-                .padding(.bottom, 24)
             }
         }
     }
@@ -439,6 +458,11 @@ private struct AgentActivityGroupView: View {
 
     private var summaryText: String {
         var parts: [String] = []
+        if hasFailure {
+            parts.append("有失败项")
+        } else if isRunning {
+            parts.append("持续执行中")
+        }
         if !toolCalls.isEmpty {
             parts.append("\(toolCalls.count) 次工具调用")
         }
@@ -473,7 +497,7 @@ private struct AgentActivityGroupView: View {
 
                     Text(isRunning ? "正在执行" : "执行摘要")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Theme.textSecondary)
+                        .foregroundColor(isRunning ? Theme.statusInfo : Theme.textSecondary)
 
                     Text(summaryText)
                         .font(.system(size: 11))
@@ -497,6 +521,10 @@ private struct AgentActivityGroupView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusMD)
+                    .fill(isRunning ? Theme.statusInfo.opacity(0.06) : Color.clear)
+            )
 
             if isExpanded || hasFailure || isRunning {
                 VStack(alignment: .leading, spacing: 6) {
@@ -638,10 +666,10 @@ private struct ActivityToolRow: View {
     private var statusText: String {
         if isExecuting { return "执行中" }
         switch result?.status {
-        case .success: return "完成"
-        case .error: return "失败"
-        case .cancelled: return "取消"
-        case .none: return "等待"
+        case .success: return "执行成功"
+        case .error: return "执行失败"
+        case .cancelled: return "已取消"
+        case .none: return "等待结果"
         }
     }
 
@@ -723,7 +751,14 @@ private struct ActivityToolRow: View {
 
 // MARK: - Scroll Offset Preference Key
 
-struct ScrollOffsetPreferenceKey: PreferenceKey {
+private struct BottomOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ScrollViewportHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()

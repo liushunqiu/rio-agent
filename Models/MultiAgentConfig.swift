@@ -700,6 +700,7 @@ enum SubTaskStatus: String {
     case pending
     case running
     case completed
+    case cancelled
     case failed
 }
 
@@ -757,5 +758,6 @@ enum TaskPlanStatus: String {
     case verifying
     case synthesizing
     case completed
+    case cancelled
     case failed
 }

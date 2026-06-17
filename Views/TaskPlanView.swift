@@ -88,6 +88,7 @@ struct DarkStatusBadge: View {
         case .synthesizing: return "arrow.triangle.merge"
         case .verifying: return "checkmark.shield"
         case .completed: return "checkmark"
+        case .cancelled: return "slash.circle"
         case .failed: return "xmark"
         }
     }
@@ -99,6 +100,7 @@ struct DarkStatusBadge: View {
         case .synthesizing: return "汇总中"
         case .verifying: return "验证中"
         case .completed: return "已完成"
+        case .cancelled: return "已停止"
         case .failed: return "失败"
         }
     }
@@ -110,6 +112,7 @@ struct DarkStatusBadge: View {
         case .synthesizing: return Theme.accentPrimary
         case .verifying: return Theme.accentSecondary
         case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         }
     }
@@ -227,6 +230,7 @@ struct DarkSubTaskRow: View {
         case .pending: return "clock"
         case .running: return "arrow.triangle.2.circlepath"
         case .completed: return "checkmark.circle.fill"
+        case .cancelled: return "slash.circle.fill"
         case .failed: return "xmark.circle.fill"
         }
     }
@@ -236,6 +240,7 @@ struct DarkSubTaskRow: View {
         case .pending: return Theme.textTertiary
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         }
     }

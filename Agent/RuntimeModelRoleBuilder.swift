@@ -64,7 +64,7 @@ struct RuntimeModelRoleBuilder {
                 } else {
                     runningWorkers.forEach { activeIds.insert($0) }
                 }
-            case .completed, .failed:
+            case .completed, .cancelled, .failed:
                 break
             }
         }

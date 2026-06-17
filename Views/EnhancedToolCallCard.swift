@@ -49,9 +49,9 @@ struct EnhancedToolCallCard: View {
                             .controlSize(.small)
                             .tint(Theme.statusInfo)
                     } else if isCompleted {
-                        Image(systemName: executionResult?.status == .success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        Image(systemName: completedIcon)
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(executionResult?.status == .success ? Theme.statusSuccess : Theme.statusError)
+                            .foregroundColor(completedColor)
                             .transition(.scale.combined(with: .opacity))
                     }
                     
@@ -130,7 +130,7 @@ struct EnhancedToolCallCard: View {
     
     private var toolIcon: String {
         if isCompleted {
-            return executionResult?.status == .success ? "checkmark.circle.fill" : "xmark.circle.fill"
+            return completedIcon
         } else if isExecuting {
             return "gear.circle.fill"
         } else {
@@ -140,7 +140,7 @@ struct EnhancedToolCallCard: View {
     
     private var toolIconColor: Color {
         if isCompleted {
-            return executionResult?.status == .success ? Theme.statusSuccess : Theme.statusError
+            return completedColor
         } else if isExecuting {
             return Theme.statusInfo
         } else {
@@ -154,7 +154,12 @@ struct EnhancedToolCallCard: View {
     
     private var statusText: String {
         if isCompleted {
-            return executionResult?.status == .success ? "执行成功" : "执行失败"
+            switch executionResult?.status {
+            case .success: return "执行成功"
+            case .error: return "执行失败"
+            case .cancelled: return "已取消"
+            case .none: return "已完成"
+            }
         } else if isExecuting {
             return "执行中..."
         } else {
@@ -164,7 +169,7 @@ struct EnhancedToolCallCard: View {
     
     private var statusColor: Color {
         if isCompleted {
-            return executionResult?.status == .success ? Theme.statusSuccess : Theme.statusError
+            return completedColor
         } else if isExecuting {
             return Theme.statusInfo
         } else {
@@ -174,7 +179,12 @@ struct EnhancedToolCallCard: View {
     
     private var cardBackgroundColor: Color {
         if isCompleted {
-            return executionResult?.status == .success ? Theme.statusSuccess.opacity(0.06) : Theme.statusError.opacity(0.06)
+            switch executionResult?.status {
+            case .success: return Theme.statusSuccess.opacity(0.06)
+            case .error: return Theme.statusError.opacity(0.06)
+            case .cancelled: return Theme.textTertiary.opacity(0.06)
+            case .none: return Theme.toolCallBg
+            }
         } else if isExecuting {
             return Theme.statusInfo.opacity(0.06)
         } else {
@@ -184,11 +194,34 @@ struct EnhancedToolCallCard: View {
     
     private var cardBorderColor: Color {
         if isCompleted {
-            return executionResult?.status == .success ? Theme.statusSuccess.opacity(0.3) : Theme.statusError.opacity(0.3)
+            switch executionResult?.status {
+            case .success: return Theme.statusSuccess.opacity(0.3)
+            case .error: return Theme.statusError.opacity(0.3)
+            case .cancelled: return Theme.textTertiary.opacity(0.3)
+            case .none: return Theme.toolCallBorder
+            }
         } else if isExecuting {
             return Theme.statusInfo.opacity(0.3)
         } else {
             return Theme.toolCallBorder
+        }
+    }
+
+    private var completedIcon: String {
+        switch executionResult?.status {
+        case .success: return "checkmark.circle.fill"
+        case .error: return "xmark.circle.fill"
+        case .cancelled: return "slash.circle.fill"
+        case .none: return "checkmark.circle.fill"
+        }
+    }
+
+    private var completedColor: Color {
+        switch executionResult?.status {
+        case .success: return Theme.statusSuccess
+        case .error: return Theme.statusError
+        case .cancelled: return Theme.textTertiary
+        case .none: return Theme.statusSuccess
         }
     }
     
@@ -201,6 +234,8 @@ struct EnhancedToolResultCard: View {
     let toolCallName: String
     
     @State private var isExpanded = false
+
+    private let collapsedOutputLineLimit = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -254,14 +289,32 @@ struct EnhancedToolResultCard: View {
                     // Output
                     if !result.output.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("输出")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(Theme.textSecondary)
+                            HStack {
+                                Text("输出")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(Theme.textSecondary)
+
+                                Spacer()
+
+                                if shouldCollapseOutput {
+                                    Button(action: {
+                                        withAnimation(.easeInOut(duration: 0.18)) {
+                                            isExpanded.toggle()
+                                        }
+                                    }) {
+                                        Text(isExpanded ? "收起" : "展开全部")
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(Theme.textTertiary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                             
                             Text(result.output)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(Theme.textSecondary)
                                 .textSelection(.enabled)
+                                .lineLimit(isExpanded || result.status == .error ? nil : collapsedOutputLineLimit)
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(Theme.codeBackground)
@@ -340,6 +393,11 @@ struct EnhancedToolResultCard: View {
         case .error: return Theme.statusError.opacity(0.3)
         case .cancelled: return Theme.textTertiary.opacity(0.3)
         }
+    }
+
+    private var shouldCollapseOutput: Bool {
+        result.output.components(separatedBy: .newlines).count > collapsedOutputLineLimit
+            || result.output.count > 1000
     }
 }
 

@@ -6,6 +6,7 @@ struct ContextPanel: View {
     let taskPlan: TaskPlan?
     let runtimeRoles: [AgentEngine.RuntimeModelRole]
     let messageCount: Int
+    var workingDirectory: String?
     var estimatedTokens: Int = 0
     var contextWindow: Int = 200000
     var recentFiles: [String] = []
@@ -42,9 +43,12 @@ struct ContextPanel: View {
                     }
 
                     ContextSection(title: "Session") {
-                        ContextRow(label: "模型数", value: "\(runtimeRoles.count)")
-                        ContextRow(label: "消息数", value: "\(messageCount)")
-                        ContextRow(label: "时间", value: formatDate(Date()))
+                        SessionOverviewCard(
+                            modelCount: runtimeRoles.count,
+                            messageCount: messageCount,
+                            recentFileCount: recentFiles.count,
+                            workingDirectory: workingDirectory
+                        )
                     }
 
                     if !runtimeRoles.isEmpty {
@@ -58,27 +62,32 @@ struct ContextPanel: View {
                     // Context Usage
                     ContextSection(title: "Context") {
                         let usedPercent = min(estimatedTokens * 100 / contextWindow, 100)
-                        ContextRow(label: "Tokens", value: "\(estimatedTokens)")
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("累计消耗")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Theme.textTertiary)
+                                Text(formatTokenCount(estimatedTokens))
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                                    .foregroundColor(Theme.textPrimary)
+                            }
+
+                            Spacer()
+
+                            ContextUsageBadge(
+                                label: usedPercent < 70 ? "余量充足" : (usedPercent < 90 ? "接近上限" : "建议压缩"),
+                                tone: usageTone(for: usedPercent)
+                            )
+                        }
                         ContextBar(usedPercent: usedPercent)
-                        ContextRow(label: "窗口", value: formatTokenCount(contextWindow))
-                        ContextRow(label: "已用", value: "\(usedPercent)%")
+                        ContextRow(label: "模型窗口", value: formatTokenCount(contextWindow))
+                        ContextRow(label: "占窗口比例", value: "\(usedPercent)%")
                     }
 
                     if !recentFiles.isEmpty {
                         ContextSection(title: "最近文件") {
                             ForEach(recentFiles.prefix(5), id: \.self) { file in
-                                HStack(spacing: 6) {
-                                    Image(systemName: "doc.text")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(Theme.textTertiary)
-
-                                    Text(URL(fileURLWithPath: file).lastPathComponent)
-                                        .font(.system(size: 11))
-                                        .foregroundColor(Theme.textSecondary)
-                                        .lineLimit(1)
-
-                                    Spacer()
-                                }
+                                RecentFileRow(file: file, workingDirectory: workingDirectory)
                             }
                         }
                     }
@@ -96,12 +105,6 @@ struct ContextPanel: View {
         )
     }
 
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
-    }
-
     private func formatTokenCount(_ count: Int) -> String {
         if count >= 1_000_000 {
             return String(format: "%.1fM", Double(count) / 1_000_000)
@@ -109,6 +112,16 @@ struct ContextPanel: View {
             return String(format: "%.1fK", Double(count) / 1_000)
         }
         return "\(count)"
+    }
+
+    private func usageTone(for usedPercent: Int) -> Color {
+        if usedPercent < 70 {
+            return Theme.statusSuccess
+        } else if usedPercent < 90 {
+            return Theme.statusWarning
+        } else {
+            return Theme.statusError
+        }
     }
 }
 
@@ -200,6 +213,8 @@ struct SingleAgentPlanPanel: View {
         switch plan.status {
         case .completed:
             return .completed
+        case .cancelled:
+            return .skipped
         case .failed:
             return index < plan.currentStep ? .completed : .failed
         case .executing, .verifying, .synthesizing:
@@ -252,6 +267,7 @@ struct SingleAgentPlanStepRow: View {
         switch status {
         case .completed: return Theme.statusSuccess
         case .running: return Theme.statusInfo
+        case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary
         case .pending: return Theme.textTertiary
@@ -449,6 +465,124 @@ struct ContextRow: View {
                 .foregroundColor(Theme.textPrimary)
                 .lineLimit(1)
         }
+    }
+}
+
+struct SessionOverviewCard: View {
+    let modelCount: Int
+    let messageCount: Int
+    let recentFileCount: Int
+    let workingDirectory: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                SessionMetric(icon: "cpu", label: "模型", value: "\(modelCount)")
+                SessionMetric(icon: "text.bubble", label: "消息", value: "\(messageCount)")
+                SessionMetric(icon: "doc.text", label: "文件", value: "\(recentFileCount)")
+            }
+
+            if let workingDirectory {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.statusInfo)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(URL(fileURLWithPath: workingDirectory).lastPathComponent)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Theme.textPrimary)
+                            .lineLimit(1)
+                        Text(workingDirectory)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+                }
+                .padding(8)
+                .background(Theme.bgInput)
+                .cornerRadius(Theme.radiusSM)
+            }
+        }
+    }
+}
+
+struct SessionMetric: View {
+    let icon: String
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .foregroundColor(Theme.accentPrimary)
+            Text(value)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundColor(Theme.textPrimary)
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusSM)
+    }
+}
+
+struct ContextUsageBadge: View {
+    let label: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(tone)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundColor(tone)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tone.opacity(0.10))
+        .cornerRadius(Theme.radiusSM)
+    }
+}
+
+struct RecentFileRow: View {
+    let file: String
+    let workingDirectory: String?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 10))
+                .foregroundColor(Theme.textTertiary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(URL(fileURLWithPath: file).lastPathComponent)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                    .lineLimit(1)
+
+                Text(relativePath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Theme.textTertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var relativePath: String {
+        guard let workingDirectory else { return file }
+        return file.replacingOccurrences(of: workingDirectory + "/", with: "")
     }
 }
 

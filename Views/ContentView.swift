@@ -85,6 +85,7 @@ struct ContentView: View {
                 taskPlan: agentEngine.currentTaskPlan,
                 runtimeRoles: agentEngine.runtimeModelRoles,
                 messageCount: agentEngine.messages.count,
+                workingDirectory: agentEngine.workingDirectory,
                 estimatedTokens: agentEngine.getTotalTokensUsed(),
                 contextWindow: AIProvider.contextWindow(for: agentEngine.primaryDisplayModelName),
                 recentFiles: agentEngine.memory.session.recentFiles
@@ -345,28 +346,59 @@ struct ConversationRow: View {
     let isHovered: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "bubble.left")
-                .font(.system(size: 12))
-                .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
-                .frame(width: 18, height: 18)
-                .background(
-                    Circle()
-                        .fill(isSelected ? Theme.accentPrimary.opacity(0.13) : Color.clear)
-                )
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "bubble.left")
+                    .font(.system(size: 12))
+                    .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .background(
+                        Circle()
+                            .fill(isSelected ? Theme.accentPrimary.opacity(0.13) : Color.clear)
+                    )
 
-            VStack(alignment: .leading, spacing: 2) {
                 Text(conversation.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                     .lineLimit(1)
                     .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
+
+                Spacer(minLength: 8)
 
                 Text(conversation.updatedAt, style: .relative)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(Theme.textTertiary)
             }
 
-            Spacer()
+            if let previewText {
+                Text(previewText)
+                    .font(.system(size: 11))
+                    .foregroundColor(isSelected ? Theme.textSecondary : Theme.textTertiary)
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 10) {
+                MetaPill(
+                    icon: "text.bubble",
+                    text: "\(visibleMessageCount) 条消息",
+                    isSelected: isSelected
+                )
+
+                if conversation.workingDirectory != nil {
+                    MetaPill(
+                        icon: "folder",
+                        text: folderName,
+                        isSelected: isSelected
+                    )
+                }
+
+                if !conversation.draftInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    MetaPill(
+                        icon: "square.and.pencil",
+                        text: "草稿",
+                        isSelected: isSelected
+                    )
+                }
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -379,6 +411,30 @@ struct ConversationRow: View {
                 .stroke(isSelected ? Theme.accentPrimary.opacity(0.28) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
+    }
+
+    private var visibleMessageCount: Int {
+        conversation.messages.filter(\.isVisibleInTranscript).count
+    }
+
+    private var previewText: String? {
+        let lastVisibleContent = conversation.messages
+            .reversed()
+            .first(where: \.isVisibleInTranscript)?
+            .content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let lastVisibleContent, !lastVisibleContent.isEmpty {
+            return lastVisibleContent.replacingOccurrences(of: "\n", with: " ")
+        }
+
+        let draft = conversation.draftInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        return draft.isEmpty ? nil : "草稿：\(draft.replacingOccurrences(of: "\n", with: " "))"
+    }
+
+    private var folderName: String {
+        guard let path = conversation.workingDirectory else { return "" }
+        return URL(fileURLWithPath: path).lastPathComponent
     }
 }
 
@@ -412,8 +468,11 @@ struct MainContentView: View {
             // Top bar
             TopBar(
                 showingSettings: $showingSettings,
-                isPipelineActive: true,
-                currentProvider: agentEngine.configuration.executionProvider
+                pipeline: agentEngine.currentPipeline,
+                currentProvider: agentEngine.configuration.executionProvider,
+                currentModelName: agentEngine.primaryDisplayModelName,
+                currentWorkingDirectory: agentEngine.workingDirectory,
+                messageCount: agentEngine.messages.filter(\.isVisibleInTranscript).count
             )
 
             // Chat area
@@ -475,8 +534,11 @@ struct MainContentView: View {
 
 struct TopBar: View {
     @Binding var showingSettings: Bool
-    var isPipelineActive: Bool = true
+    var pipeline: ExecutionPipeline?
     var currentProvider: AIProvider = .claude
+    var currentModelName: String = ""
+    var currentWorkingDirectory: String?
+    var messageCount: Int = 0
 
     var body: some View {
         HStack(spacing: 12) {
@@ -497,21 +559,63 @@ struct TopBar: View {
                     .stroke(Theme.borderSubtle, lineWidth: 1)
             )
 
-            if isPipelineActive {
+            if pipeline != nil {
                 HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.branch")
+                    Image(systemName: pipelineIcon)
                         .font(.system(size: 10))
-                    Text("Pipeline")
+                    Text(pipelineLabel)
                         .font(.system(size: 11, weight: .medium))
                 }
-                .foregroundColor(Theme.accentPrimary)
+                .foregroundColor(pipelineColor)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Theme.accentPrimary.opacity(0.1))
+                .background(pipelineColor.opacity(0.1))
+                .cornerRadius(Theme.radiusSM)
+            }
+
+            if !currentModelName.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 10))
+                    Text(currentModelName)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundColor(Theme.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.bgGlass.opacity(0.7))
                 .cornerRadius(Theme.radiusSM)
             }
 
             Spacer()
+
+            if let currentWorkingDirectory {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                    Text(URL(fileURLWithPath: currentWorkingDirectory).lastPathComponent)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundColor(Theme.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.bgGlass.opacity(0.7))
+                .cornerRadius(Theme.radiusSM)
+            }
+
+            HStack(spacing: 5) {
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 10))
+                Text("\(messageCount)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+            }
+            .foregroundColor(Theme.textTertiary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Theme.bgGlass.opacity(0.5))
+            .cornerRadius(Theme.radiusSM)
 
             Button(action: { showingSettings = true }) {
                 Image(systemName: "gearshape")
@@ -532,6 +636,80 @@ struct TopBar: View {
                         .fill(Theme.borderSubtle)
                         .frame(height: 1)
                 }
+        )
+    }
+
+    private var pipelineLabel: String {
+        switch pipeline?.overallStatus {
+        case .running:
+            return "执行中"
+        case .completed:
+            return "已完成"
+        case .cancelled:
+            return "已停止"
+        case .failed:
+            return "需处理"
+        case .pending:
+            return "待开始"
+        case .skipped, .none:
+            return "流程"
+        }
+    }
+
+    private var pipelineColor: Color {
+        switch pipeline?.overallStatus {
+        case .running:
+            return Theme.statusInfo
+        case .completed:
+            return Theme.statusSuccess
+        case .cancelled:
+            return Theme.textTertiary
+        case .failed:
+            return Theme.statusError
+        case .pending, .skipped, .none:
+            return Theme.accentPrimary
+        }
+    }
+
+    private var pipelineIcon: String {
+        switch pipeline?.overallStatus {
+        case .running:
+            return "arrow.triangle.branch"
+        case .completed:
+            return "checkmark.seal"
+        case .cancelled:
+            return "slash.circle"
+        case .failed:
+            return "exclamationmark.triangle"
+        case .pending, .skipped, .none:
+            return "arrow.triangle.branch"
+        }
+    }
+}
+
+struct MetaPill: View {
+    let icon: String
+    let text: String
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+        }
+        .foregroundColor(isSelected ? Theme.textSecondary : Theme.textTertiary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(isSelected ? Theme.accentPrimary.opacity(0.10) : Theme.bgGlass.opacity(0.55))
+        )
+        .overlay(
+            Capsule()
+                .stroke(isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.borderSubtle, lineWidth: 1)
         )
     }
 }

@@ -244,7 +244,7 @@ final class MultiAgentRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testCancelProcessingMarksActiveSubTasksAsFailed() {
+    func testCancelProcessingMarksActiveSubTasksAsCancelled() {
         let engine = MultiAgentEngine(config: MultiAgentConfig())
         engine.currentPlan = TaskPlan(
             originalTask: "cancel me",
@@ -261,10 +261,11 @@ final class MultiAgentRoutingTests: XCTestCase {
 
         XCTAssertFalse(engine.isProcessing)
         XCTAssertNil(engine.error)
-        XCTAssertEqual(engine.currentPlan?.status, .failed)
-        XCTAssertEqual(engine.currentPlan?.subTasks[0].status, .failed)
+        XCTAssertEqual(engine.currentPlan?.status, .cancelled)
+        XCTAssertEqual(engine.currentPlan?.subTasks[0].status, .cancelled)
         XCTAssertEqual(engine.currentPlan?.subTasks[0].result, "已取消")
-        XCTAssertEqual(engine.currentPlan?.subTasks[1].status, .failed)
+        XCTAssertEqual(engine.currentPlan?.subTasks[0].verificationStatus, .unverified)
+        XCTAssertEqual(engine.currentPlan?.subTasks[1].status, .cancelled)
         XCTAssertEqual(engine.currentPlan?.subTasks[2].status, .completed)
     }
 

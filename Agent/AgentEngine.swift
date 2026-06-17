@@ -654,8 +654,8 @@ class AgentEngine: ObservableObject {
         multiAgentEngine?.cancelProcessing()
         isProcessing = false
         currentToolExecution = nil
-        currentSingleAgentPlan?.status = .failed
-        failActivePipelineStage()
+        currentSingleAgentPlan?.status = .cancelled
+        cancelActivePipelineStage()
         pipelineBuilder?.finish()
         currentPipeline = pipelineBuilder?.build()
         pipelineBuilder = nil
@@ -1714,6 +1714,8 @@ class AgentEngine: ObservableObject {
                 details: .synthesis(workerResults: plan.subTasks.count),
                 status: .completed
             )
+        case .cancelled:
+            cancelActivePipelineStage(builder: builder)
         case .failed:
             failActivePipelineStage(builder: builder)
         }
@@ -1785,6 +1787,10 @@ class AgentEngine: ObservableObject {
             if currentStatus != .completed {
                 builder.completeStage(stageId)
             }
+        case .cancelled:
+            if currentStatus != .cancelled {
+                builder.cancelStage(stageId, reason: "用户已停止")
+            }
         case .failed:
             if currentStatus != .failed {
                 builder.failStage(stageId, error: "任务执行失败")
@@ -1837,6 +1843,25 @@ class AgentEngine: ObservableObject {
     private func failActivePipelineStage() {
         guard let builder = pipelineBuilder else { return }
         failActivePipelineStage(builder: builder)
+    }
+
+    private func cancelActivePipelineStage(builder: PipelineBuilder) {
+        if let stageId = currentSynthesisStageId, builder.stageStatus(stageId) == .running {
+            builder.cancelStage(stageId, reason: "用户已停止")
+        } else if let stageId = currentVerificationStageId, builder.stageStatus(stageId) == .running {
+            builder.cancelStage(stageId, reason: "用户已停止")
+        } else if let stageId = currentExecutionStageId, builder.stageStatus(stageId) == .running {
+            builder.cancelStage(stageId, reason: "用户已停止")
+        } else if let stageId = currentDAGPlanningStageId, builder.stageStatus(stageId) == .running {
+            builder.cancelStage(stageId, reason: "用户已停止")
+        }
+
+        updatePipelineUI()
+    }
+
+    private func cancelActivePipelineStage() {
+        guard let builder = pipelineBuilder else { return }
+        cancelActivePipelineStage(builder: builder)
     }
 
     private func countAssignedWorkers(in plan: TaskPlan) -> Int {
@@ -1935,7 +1960,7 @@ class AgentEngine: ObservableObject {
         }
 
         if let substep = executionSubsteps[toolCall.id],
-           status == .completed || status == .failed || status == .skipped {
+           status == .completed || status == .cancelled || status == .failed || status == .skipped {
             duration = Date().timeIntervalSince(substep.startTime)
         }
 
@@ -1946,7 +1971,7 @@ class AgentEngine: ObservableObject {
         let completedCount = builder.build().stages
             .first(where: { $0.id == stageId })?
             .substeps
-            .filter { $0.status == .completed || $0.status == .failed || $0.status == .skipped }
+            .filter { $0.status == .completed || $0.status == .cancelled || $0.status == .failed || $0.status == .skipped }
             .count ?? 0
 
         updateExecutionProgress(
@@ -1970,7 +1995,7 @@ class AgentEngine: ObservableObject {
         case .error:
             return .failed
         case .cancelled:
-            return .skipped
+            return .cancelled
         }
     }
 
@@ -1982,6 +2007,8 @@ class AgentEngine: ObservableObject {
             return .running
         case .completed:
             return verificationStatus == .needsRetry ? .failed : .completed
+        case .cancelled:
+            return .cancelled
         case .failed:
             return .failed
         }
