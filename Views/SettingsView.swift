@@ -42,6 +42,7 @@ struct SettingsView: View {
     @State private var executionConfigSetId: UUID?
     @State private var enableStreaming: Bool
     @State private var maxContextMessages: Int
+    @State private var singleAgentSystemPrompt: String
 
     init(configuration: Binding<AIConfiguration>, multiAgentConfig: Binding<MultiAgentConfig>? = nil) {
         self._configuration = configuration
@@ -51,6 +52,7 @@ struct SettingsView: View {
         self._executionConfigSetId = State(initialValue: cfg.executionConfigSetId)
         self._enableStreaming = State(initialValue: cfg.enableStreaming)
         self._maxContextMessages = State(initialValue: cfg.maxContextMessages)
+        self._singleAgentSystemPrompt = State(initialValue: cfg.singleAgentSystemPrompt)
     }
 
     private func saveConfiguration() {
@@ -59,6 +61,7 @@ struct SettingsView: View {
         configuration.executionConfigSetId = executionConfigSetId
         configuration.enableStreaming = enableStreaming
         configuration.maxContextMessages = maxContextMessages
+        configuration.singleAgentSystemPrompt = singleAgentSystemPrompt
 
         let pName = planningConfigSet?.name ?? "未设置"
         let eName = executionConfigSet?.name ?? "未设置"
@@ -298,6 +301,36 @@ struct SettingsView: View {
                         .frame(width: 80)
                     }
                     .frame(maxWidth: .infinity)
+                }
+            }
+
+            DarkSettingsSection(title: "单 Agent 系统提示词", icon: "text.quote") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("影响单 Agent 模式下的执行风格、证据审计和输出格式。多 Agent 模式使用各自的 orchestrator / worker 提示词。")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textTertiary)
+
+                    TextEditor(text: $singleAgentSystemPrompt)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(Theme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 220)
+                        .padding(10)
+                        .background(Theme.bgInput)
+                        .cornerRadius(Theme.radiusMD)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                        )
+
+                    HStack {
+                        Spacer()
+                        Button("恢复默认") {
+                            singleAgentSystemPrompt = AIConfiguration.defaultSingleAgentSystemPrompt
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Theme.accentSecondary)
+                    }
                 }
             }
         }

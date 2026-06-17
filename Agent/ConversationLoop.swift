@@ -82,9 +82,11 @@ enum ConversationLoop {
             }
 
             // ── No Tool Calls — task complete ────────────────────────
-            engine.handleFinalContent(response.content)
-            engine.clearPlan()
-            break
+            let finalized = await engine.handleFinalContent(response.content)
+            if finalized {
+                engine.clearPlan()
+                break
+            }
         }
     }
 }

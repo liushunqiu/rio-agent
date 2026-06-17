@@ -162,6 +162,71 @@ struct MultiAgentConfig: Codable {
     var enableCritic: Bool
     var router: RouterConfig
 
+    static let legacyDefaultOrchestratorPrompt = "你是一个任务协调者。你的职责是：\n1. 理解用户的任务需求\n2. 将复杂任务拆分为多个子任务\n3. 分配子任务给工作 Agent\n4. 汇总所有结果，给出最终答案"
+    static let defaultOrchestratorPrompt = """
+    你是任务协调者，负责拆解任务、分配执行者、审计证据并汇总最终答案。
+
+    工作原则：
+    - 先给结论，再给支撑细节。
+    - 只把有证据支持的内容写进进度汇报和最终结论。证据来自本轮子任务结果与工具输出。
+    - 若某部分尚未验证、存在残留错误或依赖失败，必须明确写出“未验证”或“未完成”，不要脑补完成状态。
+    - 优先保持回答清晰、自然，避免无意义的格式化堆砌。
+
+    在拆解任务时：
+    - 只在确实能并行时拆分，避免为了拆而拆。
+    - 给每个子任务足够上下文，使 worker 可以独立执行。
+    - 选择最匹配能力的 worker；如果没有完全匹配者，选择最接近者并说明原因。
+
+    在汇总结果时：
+    - 区分“已验证完成”“部分完成”“失败/阻塞”三类状态。
+    - 若 worker 结果之间存在冲突或空白，优先指出冲突，不要擅自抹平。
+    - 最终回答必须忠实反映执行证据，而不是反映预期。
+    """
+    static let legacyDefaultSearchPrompt = "你是一个搜索助手。负责查找和整理信息。"
+    static let defaultSearchPrompt = """
+    你是搜索 Agent。负责收集事实、整理证据、输出可核对的信息。
+
+    工作原则：
+    - 只陈述你从工具结果中能支持的事实。
+    - 不要把猜测写成事实；无法确认时直接说明未验证。
+    - 回答先写发现了什么，再补充证据细节。
+    - 保持简洁清晰，避免空泛总结。
+
+    执行要求：
+    - 优先用搜索、读取、列目录等工具确认信息来源。
+    - 若问题依赖当前仓库内容，先读取相关文件再下结论。
+    - 输出时尽量保留关键路径、文件名、错误信息、命令结果等可审计线索。
+    """
+    static let legacyDefaultCodePrompt = "你是一个代码助手。负责代码分析和实现。"
+    static let defaultCodePrompt = """
+    你是代码 Agent。负责代码阅读、实现、调试和验证。
+
+    工作原则：
+    - 先说明改了什么或发现了什么，再解释原因。
+    - 声称修复、完成或通过之前，必须先拿到可验证证据，例如读回文件、编译结果、测试结果或命令输出。
+    - 不要假设代码行为，不要脑补未运行过的结果。
+    - 变更应尽量精确，遵循现有代码风格。
+
+    执行要求：
+    - 修改前先阅读相关文件和上下文。
+    - 修改后至少做一项验证；若无法验证，明确说明原因和未验证范围。
+    - 若同一路径连续失败，停止重复尝试，转而分析根因并给出下一步。
+    """
+    static let legacyDefaultFilePrompt = "你是一个文件助手。负责文件读写操作。"
+    static let defaultFilePrompt = """
+    你是文件 Agent。负责精确的文件读写、目录整理和文本变更。
+
+    工作原则：
+    - 只根据当前读到的内容修改文件，不要猜测文件结构。
+    - 输出先说明实际改动，再说明影响范围。
+    - 未读到文件前，不要声明将进行精确替换。
+
+    执行要求：
+    - 修改前确认目标路径和当前内容。
+    - 修改后读回关键片段，确认结果与预期一致。
+    - 如果匹配失败、路径错误或权限不足，直接报告真实错误，不要伪造成功。
+    """
+
     init(
         orchestrator: AgentConfig? = nil,
         workers: [AgentConfig] = [],
@@ -179,7 +244,7 @@ struct MultiAgentConfig: Codable {
             capability: .general,
             provider: .claude,
             model: "claude-sonnet-4-20250514",
-            systemPrompt: "你是一个任务协调者。你的职责是：\n1. 理解用户的任务需求\n2. 将复杂任务拆分为多个子任务\n3. 分配子任务给工作 Agent\n4. 汇总所有结果，给出最终答案"
+            systemPrompt: Self.defaultOrchestratorPrompt
         )
         self.workers = workers.isEmpty ? Self.defaultWorkers : workers
         self.maxParallelWorkers = maxParallelWorkers
@@ -194,6 +259,28 @@ struct MultiAgentConfig: Codable {
         return AIProvider.defaultMaxTokens(for: orchestrator.model)
     }
 
+    mutating func migrateBuiltInPromptsIfNeeded() {
+        if orchestrator.systemPrompt == Self.legacyDefaultOrchestratorPrompt {
+            orchestrator.systemPrompt = Self.defaultOrchestratorPrompt
+        }
+
+        for index in workers.indices {
+            switch workers[index].systemPrompt {
+            case Self.legacyDefaultSearchPrompt,
+                 "你是一个搜索助手。负责查找和整理信息。使用工具高效搜索，优先返回准确、结构化的结果。":
+                workers[index].systemPrompt = Self.defaultSearchPrompt
+            case Self.legacyDefaultCodePrompt,
+                 "你是一个代码助手。负责代码分析、实现和调试。写出简洁、可维护的代码，遵循项目已有的代码风格。":
+                workers[index].systemPrompt = Self.defaultCodePrompt
+            case Self.legacyDefaultFilePrompt,
+                 "你是一个文件助手。负责文件读写操作。精确匹配文件内容，避免破坏文件结构。":
+                workers[index].systemPrompt = Self.defaultFilePrompt
+            default:
+                continue
+            }
+        }
+    }
+
     static var defaultWorkers: [AgentConfig] {
         [
             AgentConfig(
@@ -202,7 +289,7 @@ struct MultiAgentConfig: Codable {
                 capability: .search,
                 provider: .claude,
                 model: "claude-3-5-haiku-20241022",
-                systemPrompt: "你是一个搜索助手。负责查找和整理信息。"
+                systemPrompt: Self.defaultSearchPrompt
             ),
             AgentConfig(
                 name: "代码 Agent",
@@ -210,7 +297,7 @@ struct MultiAgentConfig: Codable {
                 capability: .code,
                 provider: .claude,
                 model: "claude-3-5-haiku-20241022",
-                systemPrompt: "你是一个代码助手。负责代码分析和实现。"
+                systemPrompt: Self.defaultCodePrompt
             ),
             AgentConfig(
                 name: "文件 Agent",
@@ -218,7 +305,7 @@ struct MultiAgentConfig: Codable {
                 capability: .file,
                 provider: .claude,
                 model: "claude-3-5-haiku-20241022",
-                systemPrompt: "你是一个文件助手。负责文件读写操作。"
+                systemPrompt: Self.defaultFilePrompt
             )
         ]
     }
@@ -241,7 +328,7 @@ extension MultiAgentConfig {
                 capability: .search,
                 provider: .openAICompatible,
                 model: "gemini-2.0-flash",
-                systemPrompt: "你是一个搜索助手。负责查找和整理信息。使用工具高效搜索，优先返回准确、结构化的结果。"
+                systemPrompt: Self.defaultSearchPrompt
             ),
             AgentConfig(
                 name: "代码 Agent",
@@ -249,7 +336,7 @@ extension MultiAgentConfig {
                 capability: .code,
                 provider: .openAICompatible,
                 model: "deepseek-chat",
-                systemPrompt: "你是一个代码助手。负责代码分析、实现和调试。写出简洁、可维护的代码，遵循项目已有的代码风格。"
+                systemPrompt: Self.defaultCodePrompt
             ),
             AgentConfig(
                 name: "文件 Agent",
@@ -257,7 +344,7 @@ extension MultiAgentConfig {
                 capability: .file,
                 provider: .openAICompatible,
                 model: "gemini-1.5-flash",
-                systemPrompt: "你是一个文件助手。负责文件读写操作。精确匹配文件内容，避免破坏文件结构。"
+                systemPrompt: Self.defaultFilePrompt
             )
         ]
     }
@@ -271,7 +358,7 @@ extension MultiAgentConfig {
                 capability: .search,
                 provider: .openAICompatible,
                 model: "gemini-2.5-pro",
-                systemPrompt: "你是一个搜索助手。负责查找和整理信息。"
+                systemPrompt: Self.defaultSearchPrompt
             ),
             AgentConfig(
                 name: "代码 Agent",
@@ -279,7 +366,7 @@ extension MultiAgentConfig {
                 capability: .code,
                 provider: .claude,
                 model: "claude-sonnet-4-20250514",
-                systemPrompt: "你是一个代码助手。负责代码分析和实现。"
+                systemPrompt: Self.defaultCodePrompt
             ),
             AgentConfig(
                 name: "文件 Agent",
@@ -287,7 +374,7 @@ extension MultiAgentConfig {
                 capability: .file,
                 provider: .openAICompatible,
                 model: "gpt-4o",
-                systemPrompt: "你是一个文件助手。负责文件读写操作。"
+                systemPrompt: Self.defaultFilePrompt
             )
         ]
     }
@@ -474,6 +561,7 @@ struct SubTask: Identifiable {
     var dependencies: [UUID]
     var retryCount: Int
     var verificationStatus: VerificationStatus
+    var verificationSummary: String?
 
     init(
         id: UUID = UUID(),
@@ -486,7 +574,8 @@ struct SubTask: Identifiable {
         result: String? = nil,
         dependencies: [UUID] = [],
         retryCount: Int = 0,
-        verificationStatus: VerificationStatus = .unverified
+        verificationStatus: VerificationStatus = .unverified,
+        verificationSummary: String? = nil
     ) {
         self.id = id
         self.description = description
@@ -499,6 +588,7 @@ struct SubTask: Identifiable {
         self.dependencies = dependencies
         self.retryCount = retryCount
         self.verificationStatus = verificationStatus
+        self.verificationSummary = verificationSummary
     }
 }
 
@@ -515,6 +605,14 @@ enum VerificationStatus: String {
     case unverified
     case verified
     case needsRetry
+
+    var displayText: String {
+        switch self {
+        case .unverified: return "未验证"
+        case .verified: return "已验证"
+        case .needsRetry: return "需重试"
+        }
+    }
 }
 
 // MARK: - Execution Result
@@ -525,6 +623,7 @@ struct ExecutionResult {
     let errors: [String]
     let retryCount: Int
     let verificationStatus: VerificationStatus
+    let verificationSummary: String?
 
     var hasErrors: Bool { !errors.isEmpty }
 }

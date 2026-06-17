@@ -113,4 +113,47 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertTrue(toolMessages[0].toolResults?.first?.output.contains("[... truncated") == true)
         XCTAssertFalse(toolMessages[1].toolResults?.first?.output.contains("[... truncated") == true)
     }
+
+    func testHandleFinalContentSkipsVerificationWhenNoToolEvidenceExists() async {
+        let engine = AgentEngine()
+        engine.memory.setCurrentTask("just chat")
+
+        let finalized = await engine.handleFinalContent("这是普通回答。")
+
+        XCTAssertTrue(finalized)
+        XCTAssertEqual(engine.messages.last?.content, "这是普通回答。")
+    }
+
+    func testHandleFinalContentAppendsUnverifiedNoteWhenEvidenceIsWeak() async {
+        let engine = AgentEngine()
+        engine.memory.setCurrentTask("修改文件")
+
+        _ = await engine.buildToolResultReflection(
+            toolCalls: [ToolCall(name: "execute_command")],
+            results: [ToolResult.success(toolCallId: "1", output: "")],
+            consecutiveErrors: 0
+        )
+
+        let finalized = await engine.handleFinalContent("已完成修改。")
+
+        XCTAssertTrue(finalized)
+        XCTAssertTrue(engine.messages.last?.content.contains("未验证说明") == true)
+    }
+
+    func testHandleFinalContentRequestsRevisionWhenVerifierNeedsRetry() async {
+        let engine = AgentEngine()
+        engine.memory.setCurrentTask("运行测试")
+
+        _ = await engine.buildToolResultReflection(
+            toolCalls: [ToolCall(name: "execute_command")],
+            results: [ToolResult.error(toolCallId: "1", error: "exit code 1")],
+            consecutiveErrors: 1
+        )
+
+        let finalized = await engine.handleFinalContent("测试已经通过。")
+
+        XCTAssertFalse(finalized)
+        XCTAssertTrue(engine.messages.last?.role == .user)
+        XCTAssertTrue(engine.messages.last?.content.contains("[Verification Audit]") == true)
+    }
 }

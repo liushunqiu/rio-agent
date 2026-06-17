@@ -14,14 +14,21 @@ class MultiAgentEngine: ObservableObject {
     private var config: MultiAgentConfig
     private var configSetStore: [ConfigSet] = []
     private let criticService: CriticService?
+    private let verifierService: VerifierService?
 
     /// Cached project context injected into every Worker
     private var projectContext: String = ""
 
-    init(config: MultiAgentConfig, toolRegistry: ToolRegistry = .shared, criticService: CriticService? = nil) {
+    init(
+        config: MultiAgentConfig,
+        toolRegistry: ToolRegistry = .shared,
+        criticService: CriticService? = nil,
+        verifierService: VerifierService? = nil
+    ) {
         self.config = config
         self.toolRegistry = toolRegistry
         self.criticService = criticService
+        self.verifierService = verifierService
         setupServices()
     }
 
@@ -146,8 +153,9 @@ class MultiAgentEngine: ObservableObject {
             // Verify results — mark verified / needsRetry status on each sub-task
             for subTask in plan.subTasks {
                 if let idx = plan.subTasks.firstIndex(where: { $0.id == subTask.id }) {
-                    if let result = results[subTask.id], !result.hasErrors {
-                        plan.subTasks[idx].verificationStatus = .verified
+                    if let result = results[subTask.id] {
+                        plan.subTasks[idx].verificationStatus = result.verificationStatus
+                        plan.subTasks[idx].verificationSummary = result.verificationSummary
                     }
                 }
             }
@@ -356,7 +364,9 @@ class MultiAgentEngine: ObservableObject {
                     completedIds.insert(subTask.id)
                     allResults[subTask.id] = ExecutionResult(
                         subTaskId: subTask.id, output: "", errors: ["依赖无法满足"],
-                        retryCount: 0, verificationStatus: .needsRetry
+                        retryCount: 0,
+                        verificationStatus: .needsRetry,
+                        verificationSummary: "前置依赖未完成，当前子任务无法验证。"
                     )
                 }
                 break
@@ -374,7 +384,9 @@ class MultiAgentEngine: ObservableObject {
                             completedIds.insert(subTask.id)
                             allResults[subTask.id] = ExecutionResult(
                                 subTaskId: subTask.id, output: "", errors: ["服务不可用"],
-                                retryCount: 0, verificationStatus: .needsRetry
+                                retryCount: 0,
+                                verificationStatus: .needsRetry,
+                                verificationSummary: "执行服务不可用，当前子任务无法验证。"
                             )
                             continue
                         }
@@ -400,12 +412,13 @@ class MultiAgentEngine: ObservableObject {
                         allResults[taskId] = result
                         completedIds.insert(taskId)
 
-                        let status: SubTaskStatus = result.hasErrors ? .failed : .completed
+                        let status: SubTaskStatus = (result.hasErrors || result.verificationStatus == .needsRetry) ? .failed : .completed
                         updateSubTask(taskId, in: &plan, status: status, result: result.output)
 
                         if let idx = plan.subTasks.firstIndex(where: { $0.id == taskId }) {
                             plan.subTasks[idx].retryCount = result.retryCount
                             plan.subTasks[idx].verificationStatus = result.verificationStatus
+                            plan.subTasks[idx].verificationSummary = result.verificationSummary
                         }
                         currentPlan = plan
                     }
@@ -459,6 +472,7 @@ class MultiAgentEngine: ObservableObject {
         var allErrors: [String] = []
         var lastOutput = ""
         var totalRetries = 0
+        var lastEvidence: [String] = []
 
         for attempt in 0...(config.enableCritic ? config.maxRetries : 0) {
             try Task.checkCancellation()
@@ -469,12 +483,24 @@ class MultiAgentEngine: ObservableObject {
 
             lastOutput = executionResult.output
             let errors = executionResult.errors
+            lastEvidence = executionResult.evidence
 
             if errors.isEmpty {
-                // Success — verified
+                let verification = await verifyResult(
+                    subTask: subTask,
+                    output: lastOutput,
+                    errors: [],
+                    evidence: lastEvidence,
+                    worker: worker
+                )
+
                 return ExecutionResult(
-                    subTaskId: subTask.id, output: lastOutput, errors: [],
-                    retryCount: totalRetries, verificationStatus: .verified
+                    subTaskId: subTask.id,
+                    output: lastOutput,
+                    errors: verification.status == .needsRetry ? [verification.summary] : [],
+                    retryCount: totalRetries,
+                    verificationStatus: verification.status,
+                    verificationSummary: verification.summary
                 )
             }
 
@@ -524,7 +550,8 @@ class MultiAgentEngine: ObservableObject {
             output: lastOutput,
             errors: allErrors,
             retryCount: totalRetries,
-            verificationStatus: .needsRetry
+            verificationStatus: .needsRetry,
+            verificationSummary: lastEvidence.isEmpty ? "执行失败，且未形成可验证证据。" : "执行失败，已有证据显示任务未完成。"
         )
     }
 
@@ -534,9 +561,10 @@ class MultiAgentEngine: ObservableObject {
         service: AIService,
         worker: AgentConfig,
         context: String
-    ) async throws -> (output: String, errors: [String]) {
+    ) async throws -> (output: String, errors: [String], evidence: [String]) {
         var allResults: [String] = []
         var collectedErrors: [String] = []
+        var evidenceLog: [String] = []
 
         // Build messages with structured XML context
         var currentMessages: [Message] = [
@@ -582,6 +610,7 @@ class MultiAgentEngine: ObservableObject {
                         name: toolCall.name, arguments: toolCall.arguments.mapValues { $0.value }
                     )
                     toolResults.append(result)
+                    evidenceLog.append(formatEvidence(toolCall: toolCall, result: result))
 
                     // Collect errors for PEV
                     if result.status == .error, let errorMsg = result.error {
@@ -597,7 +626,7 @@ class MultiAgentEngine: ObservableObject {
         }
 
         let output = allResults.isEmpty ? "无结果" : allResults.joined(separator: "\n\n")
-        return (output: output, errors: collectedErrors)
+        return (output: output, errors: collectedErrors, evidence: evidenceLog)
     }
 
     // MARK: - Layer 4: Critic — Error Analysis & Fix Suggestions
@@ -618,6 +647,53 @@ class MultiAgentEngine: ObservableObject {
             output: output,
             systemPrompt: worker.systemPrompt
         )
+    }
+
+    private func verifyResult(
+        subTask: SubTask,
+        output: String,
+        errors: [String],
+        evidence: [String],
+        worker: AgentConfig
+    ) async -> VerifierService.VerificationOutcome {
+        guard let verifierService else {
+            return await VerifierService(aiService: nil, model: "").verify(
+                task: subTask.description,
+                output: output,
+                errors: errors,
+                evidence: evidence,
+                systemPrompt: worker.systemPrompt
+            )
+        }
+
+        return await verifierService.verify(
+            task: subTask.description,
+            output: output,
+            errors: errors,
+            evidence: evidence,
+            systemPrompt: worker.systemPrompt
+        )
+    }
+
+    private func formatEvidence(toolCall: ToolCall, result: ToolResult) -> String {
+        let maxLength = 500
+        let payload: String
+        if result.status == .error {
+            payload = result.error ?? "未知错误"
+        } else {
+            payload = result.output
+        }
+
+        let normalized = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        let truncated = normalized.count > maxLength
+            ? String(normalized.prefix(maxLength)) + " ...[truncated]"
+            : normalized
+
+        return """
+        tool=\(toolCall.name)
+        status=\(result.status.rawValue.uppercased())
+        evidence=\(truncated.isEmpty ? "（空输出）" : truncated)
+        """
     }
 
     // MARK: - Result Synthesis (enhanced with execution metadata)
@@ -645,6 +721,10 @@ class MultiAgentEngine: ObservableObject {
             var text = "=== 子任务 \(index + 1) ===\n"
             if result.retryCount > 0 {
                 text += "（经过 \(result.retryCount) 次重试）\n"
+            }
+            text += "验证状态: \(result.verificationStatus.displayText)\n"
+            if let summary = result.verificationSummary, !summary.isEmpty {
+                text += "验证摘要: \(summary)\n"
             }
             text += result.output
             if result.hasErrors {

@@ -181,6 +181,21 @@ struct DarkSubTaskRow: View {
                     }
                     .foregroundColor(Theme.statusWarning)
                 }
+
+                HStack(spacing: 6) {
+                    Image(systemName: verificationIcon)
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(subTask.verificationStatus.displayText)
+                        .font(.system(size: 9, weight: .medium))
+                }
+                .foregroundColor(verificationColor)
+
+                if let summary = subTask.verificationSummary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textTertiary)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
@@ -222,6 +237,22 @@ struct DarkSubTaskRow: View {
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
         case .failed: return Theme.statusError
+        }
+    }
+
+    private var verificationIcon: String {
+        switch subTask.verificationStatus {
+        case .unverified: return "questionmark.circle"
+        case .verified: return "checkmark.shield"
+        case .needsRetry: return "exclamationmark.triangle"
+        }
+    }
+
+    private var verificationColor: Color {
+        switch subTask.verificationStatus {
+        case .unverified: return Theme.textTertiary
+        case .verified: return Theme.statusSuccess
+        case .needsRetry: return Theme.statusWarning
         }
     }
 }

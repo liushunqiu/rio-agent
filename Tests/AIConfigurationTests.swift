@@ -14,6 +14,7 @@ final class AIConfigurationTests: XCTestCase {
 
         XCTAssertEqual(configuration.maxContextMessages, 999)
         XCTAssertTrue(configuration.enableStreaming)
+        XCTAssertEqual(configuration.singleAgentSystemPrompt, AIConfiguration.defaultSingleAgentSystemPrompt)
     }
 
     func testDecodingLegacyConfigurationDoesNotFail() throws {
@@ -32,5 +33,16 @@ final class AIConfigurationTests: XCTestCase {
         XCTAssertNil(configuration.executionConfigSetId)
         XCTAssertEqual(configuration.maxContextMessages, 50)
         XCTAssertTrue(configuration.enableStreaming)
+        XCTAssertEqual(configuration.singleAgentSystemPrompt, AIConfiguration.defaultSingleAgentSystemPrompt)
+    }
+
+    func testEncodingAndDecodingPreservesSingleAgentSystemPrompt() throws {
+        var configuration = AIConfiguration()
+        configuration.singleAgentSystemPrompt = "custom prompt"
+
+        let data = try JSONEncoder().encode(configuration)
+        let decoded = try JSONDecoder().decode(AIConfiguration.self, from: data)
+
+        XCTAssertEqual(decoded.singleAgentSystemPrompt, "custom prompt")
     }
 }

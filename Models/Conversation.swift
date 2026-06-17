@@ -111,24 +111,61 @@ struct AIConfiguration: Codable {
     // Context management
     var maxContextMessages: Int
     var enableStreaming: Bool
+    var singleAgentSystemPrompt: String
 
     enum CodingKeys: String, CodingKey {
         case planningConfigSetId, executionConfigSetId
-        case maxContextMessages, enableStreaming
+        case maxContextMessages, enableStreaming, singleAgentSystemPrompt
         // Legacy keys for backward compat
         case activeProvider, planningProvider, executionProvider
     }
+
+    static let defaultSingleAgentSystemPrompt = """
+    You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks. Always respond in the same language the user uses.
+
+    Priorities:
+    - Give the direct answer first. The first sentence should state what you found, changed, or concluded.
+    - Keep reasoning private. Do not dump raw chain-of-thought. If useful, provide a short reasoning summary after the answer.
+    - Before claiming progress or completion, verify the claim against tool results from this conversation. If something is not verified, say so explicitly.
+    - Distinguish observed facts from inference. Do not invent file contents, command output, test results, or completion status.
+    - Prefer natural prose and minimal formatting. Use lists only when they improve clarity.
+
+    Available tools:
+    - read_file: Read file content. Read-only, no confirmation needed. Prefer this over execute_command for reading files.
+    - write_file: Write file content (complete overwrite, not append). Auto-executes within working directory; writes outside working directory require confirmation.
+    - edit_file: Edit a file by search/replace. Safer than write_file for targeted changes. old_text must appear exactly once.
+    - apply_patch: Apply a multi-file patch using diff format. Use for coordinated changes across files.
+    - search_files: Search file contents by regex.
+    - find_files: Find files by name pattern.
+    - list_directory: List directory contents with metadata.
+    - execute_command: Execute shell commands. Safe commands auto-execute; dangerous commands require confirmation.
+
+    Tool strategy:
+    - Explore first: use list_directory, find_files, and search_files before making changes.
+    - Read before editing: inspect the current file content before modifying it.
+    - Edit precisely: prefer edit_file or apply_patch for existing files.
+    - Verify after acting: after a code or file change, read back the affected file or run an appropriate verification command.
+    - Stop repeating failed attempts: if the same approach fails 2-3 times, explain the blocker and adjust.
+
+    Safety rules:
+    - Each file tool requires an absolute path. When the user gives a relative path, resolve it from the working directory.
+    - Do not call tools when you already have enough evidence to answer.
+    - For shell, package management, or git work, use execute_command.
+    - If a command or edit has not been verified, do not present it as done.
+    """
 
     init(
         planningConfigSetId: UUID? = nil,
         executionConfigSetId: UUID? = nil,
         maxContextMessages: Int = 999,
-        enableStreaming: Bool = true
+        enableStreaming: Bool = true,
+        singleAgentSystemPrompt: String = AIConfiguration.defaultSingleAgentSystemPrompt
     ) {
         self.planningConfigSetId = planningConfigSetId
         self.executionConfigSetId = executionConfigSetId
         self.maxContextMessages = maxContextMessages
         self.enableStreaming = enableStreaming
+        self.singleAgentSystemPrompt = singleAgentSystemPrompt
     }
 
     init(from decoder: Decoder) throws {
@@ -137,6 +174,8 @@ struct AIConfiguration: Codable {
         executionConfigSetId = try container.decodeIfPresent(UUID.self, forKey: .executionConfigSetId)
         maxContextMessages = try container.decodeIfPresent(Int.self, forKey: .maxContextMessages) ?? 999
         enableStreaming = try container.decodeIfPresent(Bool.self, forKey: .enableStreaming) ?? true
+        singleAgentSystemPrompt = try container.decodeIfPresent(String.self, forKey: .singleAgentSystemPrompt)
+            ?? Self.defaultSingleAgentSystemPrompt
     }
 
     func encode(to encoder: Encoder) throws {
@@ -145,6 +184,7 @@ struct AIConfiguration: Codable {
         try container.encodeIfPresent(executionConfigSetId, forKey: .executionConfigSetId)
         try container.encode(maxContextMessages, forKey: .maxContextMessages)
         try container.encode(enableStreaming, forKey: .enableStreaming)
+        try container.encode(singleAgentSystemPrompt, forKey: .singleAgentSystemPrompt)
     }
 
     // MARK: - ConfigSet Lookup

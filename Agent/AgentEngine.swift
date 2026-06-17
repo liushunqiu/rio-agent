@@ -42,6 +42,7 @@ class AgentEngine: ObservableObject {
     private var planningService: AIService?
     private var executionService: AIService?
     private var criticService: CriticService?
+    private var verifierService: VerifierService?
     var configuration: AIConfiguration
     var multiAgentConfig: MultiAgentConfig
     private var multiAgentEngine: MultiAgentEngine?
@@ -60,7 +61,8 @@ class AgentEngine: ObservableObject {
             tokenTracker: tokenTracker,
             model: configuration.executionModel,
             workingDirectory: workingDirectory,
-            maxContextMessages: configuration.maxContextMessages
+            maxContextMessages: configuration.maxContextMessages,
+            systemPrompt: configuration.singleAgentSystemPrompt
         )
     }
 
@@ -80,6 +82,9 @@ class AgentEngine: ObservableObject {
     private var currentProcessingTask: Task<Void, Never>?
     /// Flag to signal cancellation to the processing loop
     private var isCancelled = false
+    private var recentSingleAgentEvidence: [String] = []
+    private var recentSingleAgentToolErrors: [String] = []
+    private var isAwaitingSingleAgentVerificationRetry = false
 
     init(configuration: AIConfiguration = AIConfiguration(), multiAgentConfig: MultiAgentConfig = MultiAgentConfig()) {
         self.configuration = configuration
@@ -99,6 +104,10 @@ class AgentEngine: ObservableObject {
     private func setupCriticService() {
         let service = createService(configSetId: configuration.planningConfigSetId)
         criticService = CriticService(
+            aiService: service,
+            model: configuration.planningModel
+        )
+        verifierService = VerifierService(
             aiService: service,
             model: configuration.planningModel
         )
@@ -133,7 +142,12 @@ class AgentEngine: ObservableObject {
     }
 
     private func setupMultiAgentEngine() {
-        let engine = MultiAgentEngine(config: multiAgentConfig, toolRegistry: toolRegistry, criticService: criticService)
+        let engine = MultiAgentEngine(
+            config: multiAgentConfig,
+            toolRegistry: toolRegistry,
+            criticService: criticService,
+            verifierService: verifierService
+        )
         let configManager = ConfigSetManager.shared
         engine.configureConfigSets(configManager.configSets)
         multiAgentEngine = engine
@@ -310,6 +324,7 @@ class AgentEngine: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: multiAgentConfigKey) else { return }
         do {
             multiAgentConfig = try JSONDecoder().decode(MultiAgentConfig.self, from: data)
+            multiAgentConfig.migrateBuiltInPromptsIfNeeded()
             setupMultiAgentEngine()
         } catch {
             RioLogger.config.error("⚠️ 加载 Multi-Agent 配置失败: \(error.localizedDescription, privacy: .public)")
@@ -780,10 +795,50 @@ class AgentEngine: ObservableObject {
     func clearPlan() { clearActivePlan() }
 
     /// Handle final assistant content when no tool calls are returned
-    func handleFinalContent(_ content: String?) {
-        if let content, !content.isEmpty {
-            messages.append(Message.assistant(content))
+    func handleFinalContent(_ content: String?) async -> Bool {
+        guard let content, !content.isEmpty else {
+            return true
         }
+
+        if shouldVerifySingleAgentCompletion(for: content) {
+            let verification = await verifySingleAgentCompletion(output: content)
+            switch verification.status {
+            case .verified, .unverified:
+                let finalizedContent = attachVerificationNoteIfNeeded(
+                    content: content,
+                    verification: verification
+                )
+                messages.append(Message.assistant(finalizedContent))
+                resetSingleAgentVerificationState()
+                return true
+            case .needsRetry:
+                if isAwaitingSingleAgentVerificationRetry {
+                    let finalizedContent = content + "\n\n未验证说明：\(verification.summary)"
+                    messages.append(Message.assistant(finalizedContent))
+                    resetSingleAgentVerificationState()
+                    return true
+                }
+
+                isAwaitingSingleAgentVerificationRetry = true
+                let auditMessage = Message.user("""
+                [Verification Audit]
+                当前答案不能直接视为已完成。
+
+                审计结论：\(verification.summary)
+
+                请基于本轮已经拿到的工具结果修订你的回答：
+                - 只保留能被证据支持的结论
+                - 把未验证部分明确标为“未验证”
+                - 如果任务实际上未完成，直接说明缺什么验证或哪一步失败
+                """)
+                messages.append(auditMessage)
+                return false
+            }
+        }
+
+        messages.append(Message.assistant(content))
+        resetSingleAgentVerificationState()
+        return true
     }
 
     /// Build error reflection + optional critic analysis for tool results
@@ -792,6 +847,8 @@ class AgentEngine: ObservableObject {
         results: [ToolResult],
         consecutiveErrors: Int
     ) async -> String {
+        recordSingleAgentToolEvidence(toolCalls: toolCalls, results: results)
+
         var reflection = ""
         for (index, toolCall) in toolCalls.enumerated() {
             if index < results.count && results[index].status == .error {
@@ -1008,6 +1065,81 @@ class AgentEngine: ObservableObject {
         activePlan = []
         currentPlanStep = 0
         activePlanAnalysis = nil
+    }
+
+    private func shouldVerifySingleAgentCompletion(for content: String) -> Bool {
+        guard !recentSingleAgentEvidence.isEmpty else { return false }
+
+        let lower = content.lowercased()
+        let completionSignals = [
+            "已完成", "完成了", "修改了", "修复了", "通过了", "已更新",
+            "done", "completed", "fixed", "updated", "passed", "implemented"
+        ]
+        return completionSignals.contains { lower.contains($0.lowercased()) } || !recentSingleAgentToolErrors.isEmpty
+    }
+
+    private func verifySingleAgentCompletion(output: String) async -> VerifierService.VerificationOutcome {
+        guard let verifierService else {
+            return await VerifierService(aiService: nil, model: "").verify(
+                task: memory.session.currentTask ?? "",
+                output: output,
+                errors: recentSingleAgentToolErrors,
+                evidence: recentSingleAgentEvidence,
+                systemPrompt: configuration.singleAgentSystemPrompt
+            )
+        }
+
+        return await verifierService.verify(
+            task: memory.session.currentTask ?? "",
+            output: output,
+            errors: recentSingleAgentToolErrors,
+            evidence: recentSingleAgentEvidence,
+            systemPrompt: configuration.singleAgentSystemPrompt
+        )
+    }
+
+    private func recordSingleAgentToolEvidence(toolCalls: [ToolCall], results: [ToolResult]) {
+        for (index, toolCall) in toolCalls.enumerated() where index < results.count {
+            let result = results[index]
+            recentSingleAgentEvidence.append(formatSingleAgentEvidence(toolCall: toolCall, result: result))
+            if result.status == .error, let error = result.error {
+                recentSingleAgentToolErrors.append("[\(toolCall.name)] \(error)")
+            }
+        }
+
+        if recentSingleAgentEvidence.count > 16 {
+            recentSingleAgentEvidence = Array(recentSingleAgentEvidence.suffix(16))
+        }
+        if recentSingleAgentToolErrors.count > 8 {
+            recentSingleAgentToolErrors = Array(recentSingleAgentToolErrors.suffix(8))
+        }
+    }
+
+    private func formatSingleAgentEvidence(toolCall: ToolCall, result: ToolResult) -> String {
+        let source = result.status == .error ? (result.error ?? "未知错误") : result.output
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = trimmed.count > 500 ? String(trimmed.prefix(500)) + " ...[truncated]" : trimmed
+        return """
+        tool=\(toolCall.name)
+        status=\(result.status.rawValue.uppercased())
+        evidence=\(preview.isEmpty ? "（空输出）" : preview)
+        """
+    }
+
+    private func attachVerificationNoteIfNeeded(
+        content: String,
+        verification: VerifierService.VerificationOutcome
+    ) -> String {
+        guard verification.status == .unverified else {
+            return content
+        }
+        return content + "\n\n未验证说明：\(verification.summary)"
+    }
+
+    private func resetSingleAgentVerificationState() {
+        recentSingleAgentEvidence.removeAll()
+        recentSingleAgentToolErrors.removeAll()
+        isAwaitingSingleAgentVerificationRetry = false
     }
     
     func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
