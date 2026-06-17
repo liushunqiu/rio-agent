@@ -156,4 +156,19 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertTrue(engine.messages.last?.role == .user)
         XCTAssertTrue(engine.messages.last?.content.contains("[Verification Audit]") == true)
     }
+
+    func testProcessUserInputAppendsUserMessageImmediatelyForNormalTurn() async {
+        let engine = AgentEngine()
+        var callbackCount = 0
+        engine.onUserMessageAdded = {
+            callbackCount += 1
+        }
+
+        await engine.processUserInput("你好，帮我看下项目")
+
+        let userMessages = engine.messages.filter { $0.role == .user }
+        XCTAssertEqual(userMessages.count, 1)
+        XCTAssertEqual(userMessages.first?.content, "你好，帮我看下项目")
+        XCTAssertEqual(callbackCount, 1)
+    }
 }

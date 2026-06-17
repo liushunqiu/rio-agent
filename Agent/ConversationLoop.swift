@@ -81,7 +81,15 @@ enum ConversationLoop {
                 continue
             }
 
-            // ── No Tool Calls — task complete ────────────────────────
+            // ── No Tool Calls ──────────────────────────────────────
+            // Safety net: detect when the model outputs tool calls as text
+            // (XML-like tags) instead of using the structured API, and redirect.
+            if let content = response.content, !content.isEmpty,
+               engine.handleTextToolCallRedirect(content) {
+                continue
+            }
+
+            // ── Task complete ────────────────────────────────────────
             let finalized = await engine.handleFinalContent(response.content)
             if finalized {
                 engine.clearPlan()

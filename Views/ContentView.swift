@@ -415,7 +415,9 @@ struct MainContentView: View {
                 EnhancedChatView(
                     messages: agentEngine.messages,
                     isProcessing: agentEngine.isProcessing,
-                    currentToolCallId: agentEngine.currentToolCallId
+                    currentToolCallId: agentEngine.currentToolCallId,
+                    currentPipeline: agentEngine.currentPipeline,
+                    currentTaskPlan: agentEngine.currentTaskPlan
                 )
                 .transition(.opacity)
             }

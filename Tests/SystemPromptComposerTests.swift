@@ -10,7 +10,7 @@ final class SystemPromptComposerTests: XCTestCase {
         )
 
         XCTAssertTrue(composed.contains("Evidence policy:"))
-        XCTAssertTrue(composed.contains("Available tools:"))
+        XCTAssertTrue(composed.contains("Available tools"))
         XCTAssertTrue(composed.contains("read_file"))
     }
 
@@ -33,7 +33,7 @@ final class SystemPromptComposerTests: XCTestCase {
         )
 
         XCTAssertTrue(composed.contains("证据规则："))
-        XCTAssertTrue(composed.contains("可用工具："))
+        XCTAssertTrue(composed.contains("可用工具"))
     }
 
     func testRouterPromptReceivesStrictJsonReminder() {

@@ -23,6 +23,7 @@ class AgentEngine: ObservableObject {
     @Published var error: String?
     @Published var currentToolExecution: ToolExecutionState?
     @Published var currentTaskPlan: TaskPlan?
+    @Published var currentPipeline: ExecutionPipeline?
 
     /// 当前正在执行的工具调用 ID，用于驱动文件操作动画
     var currentToolCallId: String? {
@@ -30,6 +31,23 @@ class AgentEngine: ObservableObject {
     }
     var pendingInitConfirmation = false
     private var pendingExecutionStrategyConfirmation: PendingExecutionStrategyConfirmation?
+
+    /// Pipeline 构建器（单次执行期间有效）
+    private var pipelineBuilder: PipelineBuilder?
+    private var currentRouterStageId: UUID?
+    private var currentTaskAnalysisStageId: UUID?
+    private var currentDAGPlanningStageId: UUID?
+    private var currentExecutionStageId: UUID?
+    private var currentVerificationStageId: UUID?
+    private var currentSynthesisStageId: UUID?
+    private var currentErrorRecoveryStageId: UUID?
+    private var executionStageToolNames: [String] = []
+    private var executionSubsteps: [String: (id: UUID, startTime: Date)] = [:]
+    private var multiAgentExecutionSubsteps: [UUID: UUID] = [:]
+    private var multiAgentVerificationSubsteps: [UUID: UUID] = [:]
+
+    /// 当前 Router 决策（用于决定是否启用工具调用）
+    private var currentRouterDecision: RoutingDecision?
     @Published var workingDirectory: String? {
         didSet {
             ToolRegistry.shared.workingDirectory = workingDirectory
@@ -72,6 +90,7 @@ class AgentEngine: ObservableObject {
         let executor = ToolExecutor(toolRegistry: toolRegistry, memory: memory)
         executor.onExecutionStateChanged = { [weak self] state in
             self?.currentToolExecution = state
+            self?.syncExecutionSubstep(with: state)
         }
         return executor
     }()
@@ -86,6 +105,7 @@ class AgentEngine: ObservableObject {
     private var recentSingleAgentEvidence: [String] = []
     private var recentSingleAgentToolErrors: [String] = []
     private var isAwaitingSingleAgentVerificationRetry = false
+    var textToolCallRedirectCount = 0
 
     init(configuration: AIConfiguration = AIConfiguration(), multiAgentConfig: MultiAgentConfig = MultiAgentConfig()) {
         self.configuration = configuration
@@ -319,8 +339,30 @@ class AgentEngine: ObservableObject {
             return
         }
 
+        // For a normal user turn, render the message immediately so a brand-new
+        // conversation switches out of the landing view before router/planning work finishes.
+        let userMessage = Message.user(input)
+        messages.append(userMessage)
+        onUserMessageAdded?()
+        isProcessing = true
+        isCancelled = false
+        error = nil
+        currentTaskPlan = nil
+
         // MARK: - Router interception (本地路由模型前置拦截)
-        var routerSkip = false
+        currentRouterDecision = nil
+        currentRouterStageId = nil
+        currentTaskAnalysisStageId = nil
+        currentDAGPlanningStageId = nil
+        currentExecutionStageId = nil
+        currentVerificationStageId = nil
+        currentSynthesisStageId = nil
+        currentErrorRecoveryStageId = nil
+        executionStageToolNames = []
+        currentPipeline = nil
+        pipelineBuilder = PipelineBuilder(mode: .singleAgent)
+        currentPipeline = pipelineBuilder?.build()
+
         if multiAgentConfig.router.enabled {
             RioLogger.service.info("🔀 Router 已启用，开始路由分析...")
             RioLogger.service.debug("🔀 RouterConfig - configSetId: \(self.multiAgentConfig.router.configSetId?.uuidString ?? "nil", privacy: .public)")
@@ -337,20 +379,20 @@ class AgentEngine: ObservableObject {
                     model: model,
                     config: routerConfig
                 ) {
+                    currentRouterDecision = decision
+                    trackRouterStage(decision: decision)
+
                     switch decision {
                     case .skip(let reason):
                         RioLogger.service.info("🔀 Router 决策: SKIP - \(reason, privacy: .public)")
-                        let userMessage = Message.user(input)
-                        messages.append(userMessage)
-                        onUserMessageAdded?()
-                        let response = Message.assistant(reason)
-                        messages.append(response)
-                        routerSkip = true
+                        // skip 意味着无需工具调用，但仍需让 AI 回答问题，因此继续执行但禁用工具
                     case .routeToTarget(let target, _, let confidence, let reasoning):
                         RioLogger.service.info("🔀 Router 决策: \(target, privacy: .public) (置信度: \(confidence, privacy: .public)) - \(reasoning, privacy: .public)")
+                        // TODO: 根据 target 路由到特定 Worker（未来扩展）
                     }
                 } else {
                     RioLogger.service.warning("⚠️ Router 调用失败，继续执行标准流程")
+                    trackRouterStage(decision: nil)
                 }
             } else {
                 RioLogger.service.warning("⚠️ Router 已启用但未配置 configSetId 或 API Key，跳过路由")
@@ -358,12 +400,14 @@ class AgentEngine: ObservableObject {
         } else {
             RioLogger.service.debug("⏭️ Router 未启用，跳过路由阶段")
         }
-        guard !routerSkip else { return }
-        
+
         // Analyze task complexity and generate plan if needed
         RioLogger.agent.info("📊 开始分析任务复杂度...")
         let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: planningService, model: configuration.planningModel)
         RioLogger.agent.info("📊 任务复杂度: \(taskAnalysis.complexity, privacy: .public), 预计步骤: \(taskAnalysis.estimatedSteps, privacy: .public)")
+
+        // 追踪任务分析阶段
+        trackTaskAnalysisStage(analysis: taskAnalysis)
 
         // For complex tasks, generate a plan and inform the user
         if taskAnalysis.complexity != .simple {
@@ -396,9 +440,7 @@ class AgentEngine: ObservableObject {
 
         let useDAG = shouldUseMultiAgent(for: taskAnalysis)
         if useDAG, multiAgentConfig.taskSplitStrategy == .manual {
-            let userMessage = Message.user(input)
-            messages.append(userMessage)
-            onUserMessageAdded?()
+            isProcessing = false
             messages.append(
                 Message.system("检测到该任务适合 Multi-Agent 协作。回复「是」或「yes」继续使用 Multi-Agent；回复其他内容则改用单 Agent。")
             )
@@ -413,7 +455,7 @@ class AgentEngine: ObservableObject {
             input: input,
             taskAnalysis: taskAnalysis,
             useDAG: useDAG,
-            appendUserMessage: true
+            appendUserMessage: false
         )
     }
 
@@ -427,6 +469,15 @@ class AgentEngine: ObservableObject {
         isCancelled = false
         error = nil
         currentTaskPlan = nil
+
+        let mode: ExecutionPipeline.ExecutionMode = useDAG ? .multiAgent : .singleAgent
+        if let pipelineBuilder {
+            pipelineBuilder.setMode(mode)
+            currentPipeline = pipelineBuilder.build()
+        } else {
+            pipelineBuilder = PipelineBuilder(mode: mode)
+            currentPipeline = pipelineBuilder?.build()
+        }
 
         if appendUserMessage {
             let userMessage = Message.user(input)
@@ -478,9 +529,16 @@ class AgentEngine: ObservableObject {
             self.error = error.localizedDescription
         }
 
+        completeExecutionStage()
+
         // Auto-compact if too many messages (save tokens)
         await autoCompactIfNeeded()
-        
+
+        // 完成 Pipeline
+        pipelineBuilder?.finish()
+        currentPipeline = pipelineBuilder?.build()
+        pipelineBuilder = nil
+
         isProcessing = false
     }
 
@@ -499,6 +557,10 @@ class AgentEngine: ObservableObject {
         multiAgentEngine?.cancelProcessing()
         isProcessing = false
         currentToolExecution = nil
+        failActivePipelineStage()
+        pipelineBuilder?.finish()
+        currentPipeline = pipelineBuilder?.build()
+        pipelineBuilder = nil
 
         let cancelMessage = Message.system("⏹ 已停止当前任务。")
         messages.append(cancelMessage)
@@ -672,6 +734,9 @@ class AgentEngine: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] plan in
                 self?.currentTaskPlan = plan
+                if let plan {
+                    self?.syncPipeline(with: plan)
+                }
             }
 
         let result = await engine.processTask(input)
@@ -729,13 +794,13 @@ class AgentEngine: ObservableObject {
                     content: content,
                     verification: verification
                 )
-                messages.append(Message.assistant(finalizedContent))
+                finalizeAssistantMessage(finalizedContent)
                 resetSingleAgentVerificationState()
                 return true
             case .needsRetry:
                 if isAwaitingSingleAgentVerificationRetry {
                     let finalizedContent = content + "\n\n未验证说明：\(verification.summary)"
-                    messages.append(Message.assistant(finalizedContent))
+                    finalizeAssistantMessage(finalizedContent)
                     resetSingleAgentVerificationState()
                     return true
                 }
@@ -757,7 +822,7 @@ class AgentEngine: ObservableObject {
             }
         }
 
-        messages.append(Message.assistant(content))
+        finalizeAssistantMessage(content)
         resetSingleAgentVerificationState()
         return true
     }
@@ -780,10 +845,13 @@ class AgentEngine: ObservableObject {
             let errorMessages = results.filter { $0.status == .error }.compactMap { $0.error }
             if !errorMessages.isEmpty {
                 let taskContext = activePlan.first ?? memory.session.currentTask ?? ""
+                trackErrorRecoveryStage(retryCount: consecutiveErrors, analysis: nil)
                 let criticFeedback = await criticService.analyze(
                     task: taskContext, errors: errorMessages,
                     output: messages.last?.content ?? "", systemPrompt: nil
                 )
+                updateErrorRecoveryStage(retryCount: consecutiveErrors, analysis: criticFeedback)
+                completeErrorRecoveryStage()
                 reflection += "\n\n[Critic Analysis]\n\(criticFeedback)"
             }
         }
@@ -796,6 +864,15 @@ class AgentEngine: ObservableObject {
         let model = configuration.executionModel
         var thinkingStartTime: Date?
         var hasThinkingContent = false
+
+        // 根据 Router 决策决定是否启用工具
+        let enableTools: Bool
+        if case .skip = currentRouterDecision {
+            enableTools = false
+            RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
+        } else {
+            enableTools = true
+        }
 
         try await ConversationLoop.run(engine: self) { contextMessages in
             // Pre-call setup: add streaming placeholder message
@@ -827,7 +904,7 @@ class AgentEngine: ObservableObject {
             do {
                 response = try await aiService.sendMessageStreaming(
                     contextMessages,
-                    tools: self.toolRegistry.getToolDefinitions(),
+                    tools: enableTools ? self.toolRegistry.getToolDefinitions() : [],
                     model: model,
                     maxTokens: self.configuration.maxTokens,
                     onChunk: { chunk in
@@ -896,7 +973,7 @@ class AgentEngine: ObservableObject {
             }
 
             return AIResponse(
-                content: nil,
+                content: response.content,
                 reasoningContent: response.reasoningContent,
                 toolCalls: response.toolCalls,
                 usage: response.usage
@@ -908,10 +985,20 @@ class AgentEngine: ObservableObject {
 
     private func processConversationLoop(aiService: AIService) async throws {
         let model = configuration.executionModel
+
+        // 根据 Router 决策决定是否启用工具
+        let enableTools: Bool
+        if case .skip = currentRouterDecision {
+            enableTools = false
+            RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
+        } else {
+            enableTools = true
+        }
+
         try await ConversationLoop.run(engine: self) { contextMessages in
             try await aiService.sendMessage(
                 contextMessages,
-                tools: self.toolRegistry.getToolDefinitions(),
+                tools: enableTools ? self.toolRegistry.getToolDefinitions() : [],
                 model: model,
                 maxTokens: self.configuration.maxTokens
             )
@@ -1070,9 +1157,30 @@ class AgentEngine: ObservableObject {
         recentSingleAgentToolErrors.removeAll()
         isAwaitingSingleAgentVerificationRetry = false
     }
+
+    private func finalizeAssistantMessage(_ content: String) {
+        if let lastIndex = messages.indices.last, messages[lastIndex].role == .assistant {
+            messages[lastIndex].content = content
+            messages[lastIndex].isStreaming = false
+        } else {
+            messages.append(Message.assistant(content))
+        }
+    }
     
     func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
-        return await toolExecutor.executeToolCalls(toolCalls)
+        let toolNames = toolCalls.map(\.name)
+        executionStageToolNames = toolNames
+        startExecutionStage(toolNames: toolNames)
+
+        let results = await toolExecutor.executeToolCalls(toolCalls)
+
+        updateExecutionProgress(
+            completed: results.count,
+            total: toolCalls.count,
+            toolNames: toolNames
+        )
+        completeExecutionStage()
+        return results
     }
 
     /// Generate reflection prompt when errors occur
@@ -1102,6 +1210,7 @@ class AgentEngine: ObservableObject {
         error = nil
         currentToolExecution = nil
         currentTaskPlan = nil
+        resetPipelineState(clearVisiblePipeline: true)
         pendingInitConfirmation = false
         pendingExecutionStrategyConfirmation = nil
         resetUsageTracking()
@@ -1140,6 +1249,7 @@ class AgentEngine: ObservableObject {
         workingDirectory = conversation.workingDirectory
         error = nil
         currentTaskPlan = nil
+        resetPipelineState(clearVisiblePipeline: true)
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
         pendingExecutionStrategyConfirmation = nil
@@ -1227,6 +1337,512 @@ class AgentEngine: ObservableObject {
         let limit = configuration.maxContextMessages
         guard limit > 0, limit < 999 else { return nil }
         return limit
+    }
+
+    // MARK: - Pipeline Helpers
+
+    private func updatePipelineUI() {
+        currentPipeline = pipelineBuilder?.build()
+    }
+
+    private func resetPipelineState(clearVisiblePipeline: Bool) {
+        pipelineBuilder = nil
+        currentRouterStageId = nil
+        currentTaskAnalysisStageId = nil
+        currentDAGPlanningStageId = nil
+        currentExecutionStageId = nil
+        currentVerificationStageId = nil
+        currentSynthesisStageId = nil
+        currentErrorRecoveryStageId = nil
+        executionStageToolNames = []
+        executionSubsteps = [:]
+        multiAgentExecutionSubsteps = [:]
+        multiAgentVerificationSubsteps = [:]
+
+        if clearVisiblePipeline {
+            currentPipeline = nil
+        }
+    }
+
+    private func trackRouterStage(decision: RoutingDecision?) {
+        guard let builder = pipelineBuilder else { return }
+
+        if multiAgentConfig.router.enabled {
+            let stageId = builder.addStage(.router)
+            currentRouterStageId = stageId
+            builder.startStage(stageId)
+            updatePipelineUI()
+
+            if let decision {
+                switch decision {
+                case .skip(let reason):
+                    builder.updateStageDetails(stageId, details: .router(decision: "跳过工具调用", target: nil, confidence: nil))
+                    builder.skipStage(stageId, reason: reason)
+                case .routeToTarget(let target, _, let confidence, let reasoning):
+                    builder.updateStageDetails(stageId, details: .router(decision: reasoning, target: target, confidence: confidence))
+                    builder.completeStage(stageId)
+                }
+            } else {
+                builder.completeStage(stageId)
+            }
+            updatePipelineUI()
+        }
+    }
+
+    private func trackTaskAnalysisStage(analysis: TaskPlanner.TaskAnalysis) {
+        guard let builder = pipelineBuilder else { return }
+
+        let stageId = builder.addStage(.taskAnalysis)
+        currentTaskAnalysisStageId = stageId
+        builder.startStage(stageId)
+        updatePipelineUI()
+
+        let complexityStr: String
+        switch analysis.complexity {
+        case .simple: complexityStr = "简单"
+        case .moderate: complexityStr = "中等"
+        case .complex: complexityStr = "复杂"
+        case .veryComplex: complexityStr = "非常复杂"
+        }
+
+        builder.updateStageDetails(stageId, details: .taskAnalysis(
+            complexity: complexityStr,
+            stepCount: analysis.estimatedSteps,
+            estimatedTime: formatEstimatedTime(analysis.estimatedTime)
+        ))
+        builder.completeStage(stageId)
+        updatePipelineUI()
+    }
+
+    private func syncPipeline(with plan: TaskPlan) {
+        guard let builder = pipelineBuilder else { return }
+
+        switch plan.status {
+        case .planning:
+            syncSingleStage(
+                id: &currentDAGPlanningStageId,
+                builder: builder,
+                type: .dagPlanning,
+                details: .dagPlanning(
+                    subTaskCount: plan.subTasks.count,
+                    workerCount: countAssignedWorkers(in: plan),
+                    maxDepth: maxDependencyDepth(in: plan)
+                ),
+                status: .running
+            )
+        case .executing:
+            syncSingleStage(
+                id: &currentDAGPlanningStageId,
+                builder: builder,
+                type: .dagPlanning,
+                details: .dagPlanning(
+                    subTaskCount: plan.subTasks.count,
+                    workerCount: countAssignedWorkers(in: plan),
+                    maxDepth: maxDependencyDepth(in: plan)
+                ),
+                status: .completed
+            )
+            syncSingleStage(
+                id: &currentExecutionStageId,
+                builder: builder,
+                type: .execution,
+                details: .execution(
+                    toolCalls: [],
+                    completedCount: completedSubTaskCount(in: plan),
+                    totalCount: plan.subTasks.count
+                ),
+                status: .running
+            )
+            syncExecutionSubsteps(for: plan, builder: builder)
+            syncErrorRecoveryIfNeeded(plan: plan, builder: builder)
+        case .verifying:
+            completeErrorRecoveryStage()
+            syncSingleStage(
+                id: &currentExecutionStageId,
+                builder: builder,
+                type: .execution,
+                details: .execution(
+                    toolCalls: [],
+                    completedCount: completedSubTaskCount(in: plan),
+                    totalCount: plan.subTasks.count
+                ),
+                status: .completed
+            )
+            syncSingleStage(
+                id: &currentVerificationStageId,
+                builder: builder,
+                type: .verification,
+                details: .verification(
+                    passedChecks: verifiedSubTaskCount(in: plan),
+                    totalChecks: plan.subTasks.count
+                ),
+                status: .running
+            )
+            syncVerificationSubsteps(for: plan, builder: builder)
+        case .synthesizing:
+            syncSingleStage(
+                id: &currentVerificationStageId,
+                builder: builder,
+                type: .verification,
+                details: .verification(
+                    passedChecks: verifiedSubTaskCount(in: plan),
+                    totalChecks: plan.subTasks.count
+                ),
+                status: .completed
+            )
+            syncSingleStage(
+                id: &currentSynthesisStageId,
+                builder: builder,
+                type: .synthesis,
+                details: .synthesis(workerResults: plan.subTasks.count),
+                status: .running
+            )
+        case .completed:
+            syncSingleStage(
+                id: &currentSynthesisStageId,
+                builder: builder,
+                type: .synthesis,
+                details: .synthesis(workerResults: plan.subTasks.count),
+                status: .completed
+            )
+        case .failed:
+            failActivePipelineStage(builder: builder)
+        }
+    }
+
+    private func syncExecutionSubsteps(for plan: TaskPlan, builder: PipelineBuilder) {
+        guard let stageId = currentExecutionStageId else { return }
+
+        for subTask in plan.subTasks {
+            let label = pipelineLabel(for: subTask)
+            let status = pipelineStatus(for: subTask.status, verificationStatus: subTask.verificationStatus)
+
+            if multiAgentExecutionSubsteps[subTask.id] == nil {
+                let substep = PipelineSubstep(title: label, status: status)
+                multiAgentExecutionSubsteps[subTask.id] = substep.id
+                builder.addSubstep(stageId, substep: substep)
+            }
+
+            if let substepId = multiAgentExecutionSubsteps[subTask.id] {
+                builder.updateSubstep(stageId, substepId: substepId, status: status)
+            }
+        }
+
+        updatePipelineUI()
+    }
+
+    private func syncVerificationSubsteps(for plan: TaskPlan, builder: PipelineBuilder) {
+        guard let stageId = currentVerificationStageId else { return }
+
+        for subTask in plan.subTasks {
+            let label = pipelineLabel(for: subTask)
+            let status = pipelineStatus(for: subTask.verificationStatus)
+
+            if multiAgentVerificationSubsteps[subTask.id] == nil {
+                let substep = PipelineSubstep(title: label, status: status)
+                multiAgentVerificationSubsteps[subTask.id] = substep.id
+                builder.addSubstep(stageId, substep: substep)
+            }
+
+            if let substepId = multiAgentVerificationSubsteps[subTask.id] {
+                builder.updateSubstep(stageId, substepId: substepId, status: status)
+            }
+        }
+
+        updatePipelineUI()
+    }
+
+    private func syncSingleStage(
+        id: inout UUID?,
+        builder: PipelineBuilder,
+        type: PipelineStage.StageType,
+        details: StageDetails,
+        status: PipelineStageStatus
+    ) {
+        if id == nil {
+            let stageId = builder.addStage(type, details: details)
+            id = stageId
+            builder.startStage(stageId)
+        }
+
+        guard let stageId = id else { return }
+        builder.updateStageDetails(stageId, details: details)
+        let currentStatus = builder.stageStatus(stageId)
+
+        switch status {
+        case .pending, .running:
+            break
+        case .completed:
+            if currentStatus != .completed {
+                builder.completeStage(stageId)
+            }
+        case .failed:
+            if currentStatus != .failed {
+                builder.failStage(stageId, error: "任务执行失败")
+            }
+        case .skipped:
+            if currentStatus != .skipped {
+                builder.skipStage(stageId, reason: "未执行")
+            }
+        }
+
+        updatePipelineUI()
+    }
+
+    private func syncErrorRecoveryIfNeeded(plan: TaskPlan, builder: PipelineBuilder) {
+        let retryCount = plan.subTasks.map(\.retryCount).max() ?? 0
+        guard retryCount > 0 else { return }
+
+        let retryingTasks = plan.subTasks
+            .filter { $0.retryCount > 0 }
+            .map { $0.assignedWorker?.name ?? $0.workerType.displayName }
+            .sorted()
+            .joined(separator: ", ")
+
+        syncSingleStage(
+            id: &currentErrorRecoveryStageId,
+            builder: builder,
+            type: .errorRecovery,
+            details: .errorRecovery(
+                retryCount: retryCount,
+                analysisResult: retryingTasks.isEmpty ? "Worker 正在根据 Critic 反馈重试。" : "重试任务: \(retryingTasks)"
+            ),
+            status: .running
+        )
+    }
+
+    private func failActivePipelineStage(builder: PipelineBuilder) {
+        if let stageId = currentSynthesisStageId, builder.stageStatus(stageId) == .running {
+            builder.failStage(stageId, error: "结果汇总失败")
+        } else if let stageId = currentVerificationStageId, builder.stageStatus(stageId) == .running {
+            builder.failStage(stageId, error: "验证阶段失败")
+        } else if let stageId = currentExecutionStageId, builder.stageStatus(stageId) == .running {
+            builder.failStage(stageId, error: "执行阶段失败")
+        } else if let stageId = currentDAGPlanningStageId, builder.stageStatus(stageId) == .running {
+            builder.failStage(stageId, error: "DAG 规划失败")
+        }
+
+        updatePipelineUI()
+    }
+
+    private func failActivePipelineStage() {
+        guard let builder = pipelineBuilder else { return }
+        failActivePipelineStage(builder: builder)
+    }
+
+    private func countAssignedWorkers(in plan: TaskPlan) -> Int {
+        Set(plan.subTasks.compactMap { $0.assignedWorker?.id }).count
+    }
+
+    private func completedSubTaskCount(in plan: TaskPlan) -> Int {
+        plan.subTasks.filter { $0.status == .completed }.count
+    }
+
+    private func verifiedSubTaskCount(in plan: TaskPlan) -> Int {
+        plan.subTasks.filter { $0.verificationStatus == .verified }.count
+    }
+
+    private func maxDependencyDepth(in plan: TaskPlan) -> Int {
+        let lookup = Dictionary(uniqueKeysWithValues: plan.subTasks.map { ($0.id, $0) })
+
+        func depth(of id: UUID, visiting: Set<UUID> = []) -> Int {
+            guard let task = lookup[id] else { return 0 }
+            guard !visiting.contains(id) else { return 0 }
+            let next = visiting.union([id])
+            let childDepths = task.dependencies.map { depth(of: $0, visiting: next) }
+            return 1 + (childDepths.max() ?? 0)
+        }
+
+        return plan.subTasks.map { depth(of: $0.id) }.max() ?? 0
+    }
+
+    private func startExecutionStage(toolNames: [String]) {
+        guard let builder = pipelineBuilder else { return }
+        guard currentExecutionStageId == nil else { return }
+        executionSubsteps = [:]
+
+        let stageId = builder.addStage(.execution, details: .execution(
+            toolCalls: toolNames,
+            completedCount: 0,
+            totalCount: toolNames.count
+        ))
+        currentExecutionStageId = stageId
+        builder.startStage(stageId)
+        updatePipelineUI()
+    }
+
+    private func updateExecutionProgress(completed: Int, total: Int, toolNames: [String]) {
+        guard let builder = pipelineBuilder, let stageId = currentExecutionStageId else { return }
+
+        builder.updateStageDetails(stageId, details: .execution(
+            toolCalls: toolNames,
+            completedCount: completed,
+            totalCount: total
+        ))
+        updatePipelineUI()
+    }
+
+    private func completeExecutionStage() {
+        guard let builder = pipelineBuilder, let stageId = currentExecutionStageId else { return }
+        builder.completeStage(stageId)
+        currentExecutionStageId = nil
+        executionSubsteps = [:]
+        updatePipelineUI()
+    }
+
+    private func syncExecutionSubstep(with state: ToolExecutionState?) {
+        guard let builder = pipelineBuilder, let stageId = currentExecutionStageId else { return }
+        guard let state else { return }
+
+        let toolCall: ToolCall
+        let status: PipelineStageStatus
+        var duration: TimeInterval?
+
+        switch state {
+        case .pending(let currentToolCall):
+            toolCall = currentToolCall
+            status = .pending
+        case .confirming(let currentToolCall):
+            toolCall = currentToolCall
+            status = .pending
+        case .executing(let currentToolCall):
+            toolCall = currentToolCall
+            status = .running
+        case .completed(let currentToolCall, let result):
+            toolCall = currentToolCall
+            status = pipelineStatus(from: result.status)
+        case .failed(let currentToolCall, _):
+            toolCall = currentToolCall
+            status = .failed
+        }
+
+        if executionSubsteps[toolCall.id] == nil {
+            let substep = PipelineSubstep(
+                title: pipelineToolLabel(for: toolCall),
+                status: status
+            )
+            executionSubsteps[toolCall.id] = (substep.id, Date())
+            builder.addSubstep(stageId, substep: substep)
+        }
+
+        if let substep = executionSubsteps[toolCall.id],
+           status == .completed || status == .failed || status == .skipped {
+            duration = Date().timeIntervalSince(substep.startTime)
+        }
+
+        if let substepId = executionSubsteps[toolCall.id]?.id {
+            builder.updateSubstep(stageId, substepId: substepId, status: status, duration: duration)
+        }
+
+        let completedCount = builder.build().stages
+            .first(where: { $0.id == stageId })?
+            .substeps
+            .filter { $0.status == .completed || $0.status == .failed || $0.status == .skipped }
+            .count ?? 0
+
+        updateExecutionProgress(
+            completed: completedCount,
+            total: executionStageToolNames.count,
+            toolNames: executionStageToolNames
+        )
+    }
+
+    private func pipelineToolLabel(for toolCall: ToolCall) -> String {
+        if let path = toolCall.arguments["path"]?.value as? String, !path.isEmpty {
+            return "\(toolCall.name): \(path)"
+        }
+        return toolCall.name
+    }
+
+    private func pipelineStatus(from resultStatus: ToolResultStatus) -> PipelineStageStatus {
+        switch resultStatus {
+        case .success:
+            return .completed
+        case .error:
+            return .failed
+        case .cancelled:
+            return .skipped
+        }
+    }
+
+    private func pipelineStatus(for subTaskStatus: SubTaskStatus, verificationStatus: VerificationStatus) -> PipelineStageStatus {
+        switch subTaskStatus {
+        case .pending:
+            return .pending
+        case .running:
+            return .running
+        case .completed:
+            return verificationStatus == .needsRetry ? .failed : .completed
+        case .failed:
+            return .failed
+        }
+    }
+
+    private func pipelineStatus(for verificationStatus: VerificationStatus) -> PipelineStageStatus {
+        switch verificationStatus {
+        case .unverified:
+            return .pending
+        case .verified:
+            return .completed
+        case .needsRetry:
+            return .failed
+        }
+    }
+
+    private func pipelineLabel(for subTask: SubTask) -> String {
+        let workerName = subTask.assignedWorker?.name ?? subTask.workerType.displayName
+        let summary = subTask.description.replacingOccurrences(of: "\n", with: " ")
+        let trimmed = summary.count > 48 ? String(summary.prefix(48)) + "..." : summary
+        return "\(workerName): \(trimmed)"
+    }
+
+    private func trackErrorRecoveryStage(retryCount: Int, analysis: String?) {
+        guard let builder = pipelineBuilder else { return }
+        if let stageId = currentErrorRecoveryStageId {
+            builder.updateStageDetails(stageId, details: .errorRecovery(
+                retryCount: retryCount,
+                analysisResult: analysis
+            ))
+            if builder.stageStatus(stageId) != .running {
+                builder.startStage(stageId)
+            }
+            updatePipelineUI()
+            return
+        }
+
+        let stageId = builder.addStage(.errorRecovery, details: .errorRecovery(
+            retryCount: retryCount,
+            analysisResult: analysis
+        ))
+        currentErrorRecoveryStageId = stageId
+        builder.startStage(stageId)
+        updatePipelineUI()
+    }
+
+    private func updateErrorRecoveryStage(retryCount: Int, analysis: String?) {
+        guard let builder = pipelineBuilder, let stageId = currentErrorRecoveryStageId else { return }
+        builder.updateStageDetails(stageId, details: .errorRecovery(
+            retryCount: retryCount,
+            analysisResult: analysis
+        ))
+        updatePipelineUI()
+    }
+
+    private func completeErrorRecoveryStage() {
+        guard let builder = pipelineBuilder, let stageId = currentErrorRecoveryStageId else { return }
+        builder.completeStage(stageId)
+        currentErrorRecoveryStageId = nil
+        updatePipelineUI()
+    }
+
+    private func formatEstimatedTime(_ seconds: TimeInterval) -> String {
+        if seconds < 60 {
+            return String(format: "%.0fs", seconds)
+        }
+
+        let minutes = Int(seconds / 60)
+        let remainingSeconds = Int(seconds.truncatingRemainder(dividingBy: 60))
+        return "\(minutes)m \(remainingSeconds)s"
     }
 }
 

@@ -154,15 +154,28 @@ struct AIConfiguration: Codable {
     - If a command or edit has not been verified, do not present it as done.
     """
 
-    static let defaultSingleAgentSystemPrompt = """
+    static let previousDefaultSingleAgentSystemPrompt = """
     You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks.
     Always respond in the same language the user uses.
     Focus on concrete progress, truthful status reporting, and the smallest effective next step.
     """
 
+    static let defaultSingleAgentSystemPrompt = """
+    You are Rio Agent, an AI assistant with tool-calling capabilities for software engineering tasks.
+    Always respond in the same language the user uses.
+    Focus on concrete progress, truthful status reporting, and the smallest effective next step.
+
+    IMPORTANT — Tool usage rules:
+    - You MUST use the structured tool-calling API (function calling) to invoke any tool.
+    - NEVER output tool calls as plain text, XML tags, JSON blocks, or any other textual format.
+    - If you need to use a tool, call it through the function-calling mechanism provided by this API.
+    - If no tool is needed, respond with text directly.
+    """
+
     static let builtInSingleAgentPrompts: Set<String> = [
         legacyDefaultSingleAgentSystemPrompt,
-        defaultSingleAgentSystemPrompt
+        defaultSingleAgentSystemPrompt,
+        previousDefaultSingleAgentSystemPrompt
     ]
 
     init(
@@ -186,7 +199,8 @@ struct AIConfiguration: Codable {
         maxContextMessages = try container.decodeIfPresent(Int.self, forKey: .maxContextMessages) ?? 999
         enableStreaming = try container.decodeIfPresent(Bool.self, forKey: .enableStreaming) ?? true
         let decodedPrompt = try container.decodeIfPresent(String.self, forKey: .singleAgentSystemPrompt)
-        if decodedPrompt == Self.legacyDefaultSingleAgentSystemPrompt {
+        if decodedPrompt == Self.legacyDefaultSingleAgentSystemPrompt
+            || decodedPrompt == Self.previousDefaultSingleAgentSystemPrompt {
             singleAgentSystemPrompt = Self.defaultSingleAgentSystemPrompt
         } else {
             singleAgentSystemPrompt = decodedPrompt ?? Self.defaultSingleAgentSystemPrompt

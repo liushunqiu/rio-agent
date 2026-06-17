@@ -120,6 +120,8 @@ struct EnhancedChatView: View {
     let messages: [Message]
     let isProcessing: Bool
     let currentToolCallId: String?
+    let currentPipeline: ExecutionPipeline?
+    let currentTaskPlan: TaskPlan?
 
     /// 自动滚动跟随开关
     @State private var autoScrollEnabled = true
@@ -167,6 +169,21 @@ struct EnhancedChatView: View {
                                 toolResultsById: toolResultsById
                             )
                             .id(message.id)
+                        }
+
+                        // Pipeline 流程面板（在消息列表末尾显示）
+                        if let pipeline = currentPipeline, !pipeline.stages.isEmpty {
+                            ExecutionPipelineView(pipeline: pipeline)
+                                .padding(.horizontal, 28)
+                                .padding(.vertical, 12)
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        }
+
+                        // TaskPlan 面板（Multi-Agent 模式）
+                        if let taskPlan = currentTaskPlan {
+                            TaskPlanView(plan: taskPlan)
+                                .padding(.horizontal, 28)
+                                .padding(.vertical, 8)
                         }
 
                         // 底部锚点（用于滚动）
