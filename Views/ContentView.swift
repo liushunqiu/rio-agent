@@ -4,7 +4,6 @@ import AppKit
 struct ContentView: View {
     @StateObject private var agentEngine = AgentEngine()
     @StateObject private var conversationManager = ConversationManager()
-    @State private var inputText = ""
     @State private var showingSettings = false
     @State private var showingConfirmation = false
     @State private var confirmationTitle = ""
@@ -48,11 +47,11 @@ struct ContentView: View {
             // Main content
             MainContentView(
                 agentEngine: agentEngine,
-                inputText: $inputText,
+                inputText: conversationDraftBinding,
                 showingSettings: $showingSettings,
                 onSubmit: {
-                    let text = inputText
-                    inputText = ""
+                    let text = conversationManager.currentConversation?.draftInput ?? ""
+                    conversationManager.updateDraftInput("")
                     agentEngine.submitUserInput(text) {
                         conversationManager.updateCurrentConversation(
                             messages: agentEngine.messages,
@@ -167,6 +166,13 @@ struct ContentView: View {
         confirmationContinuation = nil
         showingConfirmation = false
         continuation.resume(returning: result)
+    }
+
+    private var conversationDraftBinding: Binding<String> {
+        Binding(
+            get: { conversationManager.currentConversation?.draftInput ?? "" },
+            set: { conversationManager.updateDraftInput($0) }
+        )
     }
 }
 

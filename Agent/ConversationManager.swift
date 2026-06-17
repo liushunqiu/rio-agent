@@ -65,6 +65,23 @@ class ConversationManager: ObservableObject {
         debouncedSave()
     }
 
+    func updateDraftInput(_ draftInput: String) {
+        guard var current = currentConversation else { return }
+        guard current.draftInput != draftInput else { return }
+
+        current.draftInput = draftInput
+        current.updatedAt = Date()
+        currentConversation = current
+
+        if let index = conversations.firstIndex(where: { $0.id == current.id }) {
+            conversations[index] = current
+        } else {
+            conversations.insert(current, at: 0)
+        }
+
+        debouncedSave()
+    }
+
     // MARK: - Persistence
 
     /// 防抖保存, 避免流式输出期间频繁写入

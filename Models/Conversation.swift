@@ -5,14 +5,26 @@ struct Conversation: Identifiable, Codable, Hashable {
     var title: String
     var messages: [Message]
     var workingDirectory: String?
+    var draftInput: String
     let createdAt: Date
     var updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case messages
+        case workingDirectory
+        case draftInput
+        case createdAt
+        case updatedAt
+    }
 
     init(
         id: UUID = UUID(),
         title: String = "新对话",
         messages: [Message] = [],
         workingDirectory: String? = nil,
+        draftInput: String = "",
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -20,8 +32,20 @@ struct Conversation: Identifiable, Codable, Hashable {
         self.title = title
         self.messages = messages
         self.workingDirectory = workingDirectory
+        self.draftInput = draftInput
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? "新对话"
+        messages = try container.decodeIfPresent([Message].self, forKey: .messages) ?? []
+        workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        draftInput = try container.decodeIfPresent(String.self, forKey: .draftInput) ?? ""
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
     }
 
     static func == (lhs: Conversation, rhs: Conversation) -> Bool {
