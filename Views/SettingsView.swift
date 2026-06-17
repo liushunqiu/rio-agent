@@ -142,14 +142,17 @@ struct SettingsView: View {
         let claudeSet = sets.first { $0.provider == .claude }
         let openAISet = sets.first { $0.provider == .openAI }
         let customSet = sets.first { $0.provider == .openAICompatible }
+        let claudeApiKey = claudeSet?.loadAPIKey() ?? ""
+        let openAIApiKey = openAISet?.loadAPIKey() ?? ""
+        let compatibleApiKey = customSet?.loadAPIKey() ?? ""
         
         return AIConfigInfo(
-            hasClaudeKey: claudeSet?.loadAPIKey().isEmpty == false,
-            hasOpenAIKey: openAISet?.loadAPIKey().isEmpty == false,
+            hasClaudeKey: !claudeApiKey.isEmpty,
+            hasOpenAIKey: !openAIApiKey.isEmpty,
             hasCompatibleEndpoint: customSet?.baseURL.isEmpty == false,
-            claudeApiKey: claudeSet?.loadAPIKey() ?? "",
-            openAIApiKey: openAISet?.loadAPIKey() ?? "",
-            compatibleApiKey: customSet?.loadAPIKey() ?? "",
+            claudeApiKey: claudeApiKey,
+            openAIApiKey: openAIApiKey,
+            compatibleApiKey: compatibleApiKey,
             currentClaudeModel: claudeSet?.model ?? "",
             currentOpenAIModel: openAISet?.model ?? "",
             currentCompatibleModel: customSet?.model ?? "",

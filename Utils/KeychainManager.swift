@@ -3,6 +3,10 @@ import Security
 
 /// macOS Keychain wrapper for secure storage of API keys and sensitive data
 enum KeychainManager {
+    private enum StorageMode: String {
+        case keychain
+        case userDefaults
+    }
     
     // MARK: - Error Types
     
@@ -30,6 +34,57 @@ enum KeychainManager {
 
     private static let service = "com.rio-agent.api-keys"
     private static let accessGroup = "com.rioagent.app"
+    private static let cacheLock = NSLock()
+    private static var cachedValues: [String: String] = [:]
+    private static var didLogUserDefaultsFallback = false
+
+    private static var storageMode: StorageMode {
+        if ProcessInfo.processInfo.environment["RIO_AGENT_DISABLE_KEYCHAIN"] == "1" {
+            return .userDefaults
+        }
+
+        if let flag = Bundle.main.object(forInfoDictionaryKey: "RIOUnsignedBuild") as? Bool, flag {
+            return .userDefaults
+        }
+
+        return .keychain
+    }
+
+    private static func cacheKey(for key: String, mode: StorageMode) -> String {
+        "\(mode.rawValue)::\(key)"
+    }
+
+    private static func userDefaultsStorageKey(for key: String) -> String {
+        "rio_agent_userdefaults_secret_\(key)"
+    }
+
+    private static func logUserDefaultsFallbackIfNeeded() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
+        guard !didLogUserDefaultsFallback else { return }
+        didLogUserDefaultsFallback = true
+        RioLogger.config.warning("Keychain unavailable for current build; falling back to UserDefaults storage")
+    }
+
+    private static func cachedValue(forKey key: String, mode: StorageMode) -> String? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cachedValues[cacheKey(for: key, mode: mode)]
+    }
+
+    private static func cache(_ value: String, forKey key: String, mode: StorageMode) {
+        cacheLock.lock()
+        cachedValues[cacheKey(for: key, mode: mode)] = value
+        cacheLock.unlock()
+    }
+
+    private static func removeCachedValue(forKey key: String) {
+        cacheLock.lock()
+        cachedValues.removeValue(forKey: cacheKey(for: key, mode: .keychain))
+        cachedValues.removeValue(forKey: cacheKey(for: key, mode: .userDefaults))
+        cacheLock.unlock()
+    }
     
     // MARK: - Public Methods
     
@@ -40,6 +95,15 @@ enum KeychainManager {
     ///   - accessibility: Keychain accessibility level (default: whenUnlocked)
     static func save(_ value: String, forKey key: String, 
                      accessibility: CFString = kSecAttrAccessibleWhenUnlocked) throws {
+        let mode = storageMode
+
+        if mode == .userDefaults {
+            logUserDefaultsFallbackIfNeeded()
+            UserDefaults.standard.set(value, forKey: userDefaultsStorageKey(for: key))
+            cache(value, forKey: key, mode: mode)
+            return
+        }
+
         guard let data = value.data(using: .utf8) else {
             throw KeychainError.dataConversionError
         }
@@ -64,6 +128,8 @@ enum KeychainManager {
         guard status == errSecSuccess else {
             throw KeychainError.unexpectedStatus(status)
         }
+
+        cache(value, forKey: key, mode: mode)
         
         RioLogger.config.info("🔐 Keychain: Saved \(key, privacy: .public)")
     }
@@ -72,6 +138,21 @@ enum KeychainManager {
     /// - Parameter key: The key to look up
     /// - Returns: The stored string value, or nil if not found
     static func load(forKey key: String) -> String? {
+        let mode = storageMode
+
+        if let cached = cachedValue(forKey: key, mode: mode) {
+            return cached
+        }
+
+        if mode == .userDefaults {
+            logUserDefaultsFallbackIfNeeded()
+            guard let value = UserDefaults.standard.string(forKey: userDefaultsStorageKey(for: key)) else {
+                return nil
+            }
+            cache(value, forKey: key, mode: mode)
+            return value
+        }
+
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -92,6 +173,8 @@ enum KeychainManager {
               let string = String(data: data, encoding: .utf8) else {
             return nil
         }
+
+        cache(string, forKey: key, mode: mode)
         
         return string
     }
@@ -99,6 +182,14 @@ enum KeychainManager {
     /// Delete a value from Keychain
     /// - Parameter key: The key to delete
     static func delete(forKey key: String) throws {
+        let mode = storageMode
+
+        if mode == .userDefaults {
+            UserDefaults.standard.removeObject(forKey: userDefaultsStorageKey(for: key))
+            removeCachedValue(forKey: key)
+            return
+        }
+
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -114,6 +205,8 @@ enum KeychainManager {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
         }
+
+        removeCachedValue(forKey: key)
     }
     
     /// Check if a key exists in Keychain

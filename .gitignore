@@ -15,6 +15,7 @@ xcuserdata/
 *.moved-aside
 *.xcuserstate
 DerivedData/
+.swiftpm-home/
 
 # macOS
 .DS_Store

@@ -22,11 +22,19 @@ swift run
 swift test
 
 # 打包 .app
+# 有 Team ID 时走稳定签名；否则自动回退到未签名本地模式（不使用 Keychain）
 ./create_app.sh
+
+# 显式指定稳定签名
+RIO_DEVELOPMENT_TEAM=ABCDE12345 ./create_app.sh
+
+# 如只需临时未签名包
+./create_app.sh --unsigned
 
 # 构建脚本
 ./build.sh build    # 构建
 ./build.sh run      # 构建并运行
+./build.sh app      # 构建已签名 .app
 ./build.sh test     # 运行测试
 ./build.sh clean    # 清理构建产物
 ```
@@ -228,7 +236,9 @@ Xcode 项目由 xcodegen 从 `project.yml` 生成，不要手动修改 `.xcodepr
 |------|------|------|
 | `open RioAgent.xcodeproj` | Xcode 开发调试 | 支持断点、Debug Console、UI 预览 |
 | `swift build` / `swift run` | 命令行快速构建 | 生成命令行可执行文件 |
-| `./create_app.sh` | 打包 .app | 生成独立 macOS 应用包 |
+| `./create_app.sh` | 打包 .app | 优先走稳定签名；若本机未配置开发签名，则自动回退到未签名本地模式 |
+| `RIO_DEVELOPMENT_TEAM=... ./create_app.sh` | 打包已签名 .app | 生成稳定签名的 macOS 应用包，首次授权后可持续复用 Keychain 身份 |
+| `./create_app.sh --unsigned` | 打包未签名 .app | 不使用 Keychain，API Key 改存本地 UserDefaults，避免重复密码弹窗 |
 | `./build.sh build` | 构建脚本 | 封装常用构建命令 |
 
 ## 注意事项
@@ -236,6 +246,8 @@ Xcode 项目由 xcodegen 从 `project.yml` 生成，不要手动修改 `.xcodepr
 - Xcode 项目由 xcodegen 从 `project.yml` 生成，不要手动修改 `.xcodeproj`
 - Info.plist 使用 linker flags 嵌入二进制文件（SPM 方式，见 `Package.swift` 的 `linkerSettings`）
 - API Key 存储在 macOS Keychain 中，配置元数据存储在 UserDefaults
+- 若本机没有 Apple Development 证书，`./create_app.sh` 会自动回退到未签名本地模式，并禁用 Keychain 以避免重复密码弹窗
+- 若想继续使用 Keychain，请配置开发签名并在首次 Keychain 提示时选择“总是允许”
 - 流式响应使用 SSE（Server-Sent Events）格式解析
 - 模型能力矩阵（`ModelCapabilities`）覆盖 Claude / GPT / Qwen / DeepSeek / Gemini 等主流模型，自动检测上下文窗口大小和特性支持
 

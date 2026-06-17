@@ -21,12 +21,20 @@ swift run
 # Run tests
 swift test
 
-# Package .app bundle
+# Package a .app bundle
+# Uses stable signing when RIO_DEVELOPMENT_TEAM is set; otherwise falls back to unsigned local mode
 ./create_app.sh
+
+# Force stable signing
+RIO_DEVELOPMENT_TEAM=ABCDE12345 ./create_app.sh
+
+# Unsigned fallback
+./create_app.sh --unsigned
 
 # Build scripts
 ./build.sh build    # Build only
 ./build.sh run      # Build and run
+./build.sh app      # Build signed .app
 ./build.sh test     # Run tests
 ./build.sh clean    # Clean build artifacts
 ```

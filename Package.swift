@@ -28,6 +28,8 @@ let package = Package(
                 "AGENT.md",
                 "CLAUDE.md",
                 ".gitignore",
+                ".swiftpm-home",
+                "DerivedData",
                 "Tests",
                 "Resources",
                 "project.yml",

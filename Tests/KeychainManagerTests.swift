@@ -174,4 +174,21 @@ final class KeychainManagerTests: XCTestCase {
         let loadedValue = KeychainManager.load(forKey: key)
         XCTAssertEqual(loadedValue?.count, 10000, "Long string should be preserved completely")
     }
+
+    func testUserDefaultsFallbackWhenKeychainDisabled() throws {
+        let key = "user_defaults_fallback_key"
+        let value = "fallback_secret"
+
+        setenv("RIO_AGENT_DISABLE_KEYCHAIN", "1", 1)
+        defer {
+            unsetenv("RIO_AGENT_DISABLE_KEYCHAIN")
+            try? KeychainManager.delete(forKey: key)
+        }
+
+        try KeychainManager.save(value, forKey: key)
+        XCTAssertEqual(KeychainManager.load(forKey: key), value)
+
+        try KeychainManager.delete(forKey: key)
+        XCTAssertNil(KeychainManager.load(forKey: key))
+    }
 }

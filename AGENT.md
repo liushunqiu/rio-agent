@@ -23,11 +23,19 @@ swift run
 swift test
 
 # 创建 macOS 应用包
+# 有 Team ID 时签名；否则自动回退到未签名本地模式
 ./create_app.sh
+
+# 强制稳定签名
+RIO_DEVELOPMENT_TEAM=ABCDE12345 ./create_app.sh
+
+# 临时未签名包
+./create_app.sh --unsigned
 
 # 使用构建脚本
 ./build.sh build
 ./build.sh run
+./build.sh app
 ```
 
 ## Xcode 项目管理
@@ -103,6 +111,6 @@ rio-agent/
 - **Xcode 项目是生成的**: `RioAgent.xcodeproj` 由 xcodegen 从 `project.yml` 生成，不要手动修改；新增文件后运行 `xcodegen generate`
 - **Info.plist 嵌入**: SPM 方式使用 linker flags 将 Info.plist 嵌入二进制文件（见 Package.swift 的 `linkerSettings`）
 - **NSAllowsArbitraryLoads**: Info.plist 允许任意网络请求（开发阶段）
-- **API Key 存储**: 存储在 UserDefaults 中
+- **API Key 存储**: 已签名应用默认使用 macOS Keychain；未签名本地包会自动回退到 UserDefaults，避免反复密码弹窗
 - **流式响应**: 使用 SSE（Server-Sent Events）格式解析 AI 响应
 - **确认机制**: 所有非安全命令都需要用户通过 `ConfirmationCallback` 确认

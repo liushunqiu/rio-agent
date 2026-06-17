@@ -27,6 +27,6 @@ targets:
         PRODUCT_NAME: "Rio Agent"
         SWIFT_VERSION: "5.9"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: RioAgent.entitlements
         ENABLE_HARDENED_RUNTIME: "NO"

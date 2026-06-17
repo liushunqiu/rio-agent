@@ -19,6 +19,8 @@ show_help() {
     echo "命令:"
     echo "  build     构建项目"
     echo "  run       构建并运行项目"
+    echo "  app       构建 .app（有 RIO_DEVELOPMENT_TEAM 时签名，否则自动回退到本地未签名模式）"
+    echo "  app-unsigned  强制构建未签名 .app"
     echo "  clean     清理构建产物"
     echo "  test      运行测试"
     echo "  help      显示此帮助信息"
@@ -40,12 +42,27 @@ run_project() {
     swift run
 }
 
+# 构建已签名 .app
+build_signed_app() {
+    echo "正在构建已签名应用包..."
+    cd "$(dirname "$0")"
+    ./create_app.sh
+}
+
+# 构建未签名 .app
+build_unsigned_app() {
+    echo "正在构建未签名应用包..."
+    cd "$(dirname "$0")"
+    ./create_app.sh --unsigned
+}
+
 # 清理构建产物
 clean_project() {
     echo "正在清理构建产物..."
     cd "$(dirname "$0")"
     swift package clean
     rm -rf .build
+    rm -rf DerivedData
     echo "清理完成！"
 }
 
@@ -64,6 +81,12 @@ case "${1:-help}" in
         ;;
     run)
         run_project
+        ;;
+    app)
+        build_signed_app
+        ;;
+    app-unsigned)
+        build_unsigned_app
         ;;
     clean)
         clean_project
