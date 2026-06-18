@@ -1,6 +1,6 @@
 import Foundation
 
-struct ToolCall: Identifiable, Codable {
+struct ToolCall: Identifiable, Codable, Equatable {
     let id: String
     let name: String
     let arguments: [String: AnyCodable]
@@ -18,7 +18,7 @@ enum ToolResultStatus: String, Codable {
     case cancelled
 }
 
-struct ToolResult: Codable {
+struct ToolResult: Codable, Equatable {
     let toolCallId: String
     let status: ToolResultStatus
     let output: String

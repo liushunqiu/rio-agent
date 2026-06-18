@@ -30,6 +30,9 @@ class FileReadTool: Tool {
         guard let path = arguments["path"] as? String else {
             throw ToolError.missingParameter("path")
         }
+        guard PathSecurity.isAbsolutePath(path) else {
+            return ToolResult.error(toolCallId: "read_file", error: "path must be an absolute path. Resolve relative paths from the working directory before calling read_file.")
+        }
 
         let encodingName = (arguments["encoding"] as? String) ?? "utf-8"
         guard let encoding = Self.encoding(named: encodingName) else {

@@ -93,12 +93,18 @@ struct Message: Identifiable, Codable, Hashable {
         guard lhs.content.count == rhs.content.count,
               lhs.thinkingContent?.count == rhs.thinkingContent?.count,
               lhs.thinkingDuration == rhs.thinkingDuration,
+              lhs.role == rhs.role,
+              lhs.timestamp == rhs.timestamp,
+              lhs.toolCalls?.count == rhs.toolCalls?.count,
+              lhs.toolResults?.count == rhs.toolResults?.count,
               lhs.isStreaming == rhs.isStreaming,
               lhs.source == rhs.source,
               lhs.presentation == rhs.presentation else { return false }
         // 长度相同时才做完整字符串比较（流式场景下极少见）
         return lhs.content == rhs.content
             && lhs.thinkingContent == rhs.thinkingContent
+            && lhs.toolCalls == rhs.toolCalls
+            && lhs.toolResults == rhs.toolResults
     }
 
     func hash(into hasher: inout Hasher) {
@@ -108,6 +114,28 @@ struct Message: Identifiable, Codable, Hashable {
     var isVisibleInTranscript: Bool {
         presentation == .normal
     }
+
+    var trimmedContent: String {
+        content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var singleLineDisplayContent: String {
+        trimmedContent.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    var isEligibleUserTaskInput: Bool {
+        guard role == .user, isVisibleInTranscript else { return false }
+
+        let trimmed = trimmedContent
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/") else { return false }
+
+        return !Self.nonTaskUserReplyTokens.contains(trimmed.lowercased())
+    }
+
+    private static let nonTaskUserReplyTokens: Set<String> = [
+        "是", "yes", "y", "确认", "ok", "好", "继续",
+        "否", "不", "no", "n", "取消", "算了", "continue"
+    ]
 
     static func user(
         _ content: String,
@@ -218,7 +246,7 @@ struct APIResponseMessage: Codable {
 
 // MARK: - AnyCodable Helper
 
-struct AnyCodable: Codable {
+struct AnyCodable: Codable, Equatable {
     let value: Any
 
     init(_ value: Any) {
@@ -250,6 +278,21 @@ struct AnyCodable: Codable {
             try container.encode(string)
         } else if let bool = value as? Bool {
             try container.encode(bool)
+        }
+    }
+
+    static func == (lhs: AnyCodable, rhs: AnyCodable) -> Bool {
+        switch (lhs.value, rhs.value) {
+        case let (lhs as Int, rhs as Int):
+            lhs == rhs
+        case let (lhs as Double, rhs as Double):
+            lhs == rhs
+        case let (lhs as String, rhs as String):
+            lhs == rhs
+        case let (lhs as Bool, rhs as Bool):
+            lhs == rhs
+        default:
+            false
         }
     }
 }

@@ -47,6 +47,32 @@ enum FileReferenceParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func removingReferencesOutsideWorkingDirectory(from text: String, workingDirectory: String?) -> String {
+        guard let workingDirectory, !workingDirectory.isEmpty else {
+            return removingAllReferences(from: text)
+        }
+
+        let remainingLines = text.components(separatedBy: .newlines).filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix(marker) else { return true }
+
+            let path = String(trimmed.dropFirst(marker.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return PathSecurity.isWithinDirectory(path, workingDirectory: workingDirectory)
+        }
+
+        return remainingLines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func removingAllReferences(from text: String) -> String {
+        let remainingLines = text.components(separatedBy: .newlines).filter { line in
+            !line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(marker)
+        }
+        return remainingLines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func removingDanglingAt(from text: String) -> String {
         guard text.hasSuffix("@") else { return text }
         return String(text.dropLast())

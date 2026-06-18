@@ -28,6 +28,39 @@ final class ConversationManagerTests: XCTestCase {
         XCTAssertEqual(manager.conversations.first?.messages.last?.content, "updated current")
     }
 
+    func testDeletingNonCurrentConversationKeepsCurrentConversationSelected() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "Current",
+            messages: [.user("current")]
+        )
+        let other = Conversation(
+            title: "Other",
+            messages: [.user("other")]
+        )
+
+        manager.conversations = [current, other]
+        manager.currentConversation = current
+
+        manager.deleteConversation(other)
+
+        XCTAssertEqual(manager.currentConversation?.id, current.id)
+        XCTAssertEqual(manager.conversations.map(\.id), [current.id])
+    }
+
+    func testCreateNewConversationCanCarryWorkingDirectory() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let conversation = manager.createNewConversation(workingDirectory: "/tmp/project")
+
+        XCTAssertEqual(conversation.workingDirectory, "/tmp/project")
+        XCTAssertEqual(manager.currentConversation?.workingDirectory, "/tmp/project")
+        XCTAssertEqual(manager.conversations.first?.workingDirectory, "/tmp/project")
+    }
+
     func testUpdateCurrentConversationSkipsRedundantUpdates() {
         let manager = ConversationManager()
         manager.conversations = []
@@ -51,11 +84,54 @@ final class ConversationManagerTests: XCTestCase {
 
         manager.updateCurrentConversation(
             messages: [sameMessage],
-            workingDirectory: "/tmp/project"
+            workingDirectory: .set("/tmp/project")
         )
 
         XCTAssertEqual(manager.currentConversation?.updatedAt, currentUpdatedAt)
         XCTAssertEqual(manager.conversations.map(\.id), [older.id, current.id])
+    }
+
+    func testUpdateCurrentConversationPreservesWorkingDirectoryWhenOmitted() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "Current",
+            messages: [.user("before")],
+            workingDirectory: "/tmp/project",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [current]
+        manager.currentConversation = current
+
+        manager.updateCurrentConversation(messages: [.user("after")])
+
+        XCTAssertEqual(manager.currentConversation?.workingDirectory, "/tmp/project")
+        XCTAssertEqual(manager.conversations.first?.workingDirectory, "/tmp/project")
+    }
+
+    func testUpdateCurrentConversationCanExplicitlyClearWorkingDirectory() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "Current",
+            messages: [.user("before")],
+            workingDirectory: "/tmp/project",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [current]
+        manager.currentConversation = current
+
+        manager.updateCurrentConversation(
+            messages: [.user("after")],
+            workingDirectory: .set(nil)
+        )
+
+        XCTAssertNil(manager.currentConversation?.workingDirectory)
+        XCTAssertNil(manager.conversations.first?.workingDirectory)
     }
 
     func testUpdateCurrentConversationGeneratesTitleWithoutSecondMutation() throws {
@@ -135,6 +211,143 @@ final class ConversationManagerTests: XCTestCase {
         XCTAssertEqual(manager.conversations.map(\.id), [older.id, current.id])
     }
 
+    func testUpdateDraftInputCanRestoreLatestUserTaskWithoutReorderingConversation() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let older = Conversation(
+            title: "Older",
+            messages: [.user("older task")],
+            draftInput: "",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let current = Conversation(
+            title: "Current",
+            messages: [
+                .user("请继续修复刚才失败的任务"),
+                .assistant("执行时遇到错误")
+            ],
+            draftInput: "",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [older, current]
+        manager.currentConversation = current
+
+        manager.updateDraftInput("请继续修复刚才失败的任务")
+
+        XCTAssertEqual(manager.currentConversation?.draftInput, "请继续修复刚才失败的任务")
+        XCTAssertEqual(manager.conversations.map(\.id), [older.id, current.id])
+        XCTAssertEqual(manager.currentConversation?.updatedAt, current.updatedAt)
+    }
+
+    func testUpdateWorkingDirectoryPersistsWithoutReorderingOrTouchingUpdatedAt() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let older = Conversation(
+            title: "Older",
+            messages: [.user("older task")],
+            workingDirectory: "/tmp/older",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let current = Conversation(
+            title: "Current",
+            messages: [],
+            workingDirectory: nil,
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [older, current]
+        manager.currentConversation = current
+
+        manager.updateWorkingDirectory("/tmp/current")
+
+        XCTAssertEqual(manager.currentConversation?.workingDirectory, "/tmp/current")
+        XCTAssertEqual(manager.conversations.map(\.id), [older.id, current.id])
+        XCTAssertEqual(manager.currentConversation?.updatedAt, current.updatedAt)
+    }
+
+    func testConversationPreviewPrefersUserOrAssistantContentOverTrailingSystemPrompt() {
+        let conversation = Conversation(
+            title: "Preview",
+            messages: [
+                .user("请分析这个项目"),
+                .assistant("已经完成第一轮扫描"),
+                .system(
+                    "已切换为单 Agent 模式。",
+                    source: MessageSource(agentName: "Planning")
+                )
+            ]
+        )
+
+        XCTAssertEqual(conversation.latestPreviewContent, "已经完成第一轮扫描")
+        XCTAssertEqual(conversation.visibleMessageCount, 3)
+    }
+
+    func testConversationPreviewPrefersUnsentDraftOverOlderMessages() {
+        let conversation = Conversation(
+            title: "Draft Preview",
+            messages: [
+                .user("旧任务"),
+                .assistant("旧回复")
+            ],
+            draftInput: "继续优化侧栏\n草稿体验"
+        )
+
+        XCTAssertEqual(conversation.latestPreviewContent, "草稿：继续优化侧栏 草稿体验")
+        XCTAssertEqual(conversation.visibleMessageCount, 2)
+    }
+
+    func testInternalOnlyMessagesDoNotCreateVisibleTranscript() {
+        let conversation = Conversation(
+            title: "Internal",
+            messages: [
+                Message.system(
+                    "[Internal Planning Context]",
+                    presentation: .internalOnly
+                )
+            ]
+        )
+
+        XCTAssertEqual(conversation.visibleMessageCount, 0)
+        XCTAssertFalse(conversation.hasVisibleTranscript)
+        XCTAssertNil(conversation.latestPreviewContent)
+    }
+
+    func testUpdateCurrentConversationTitleSkipsConfirmationReplyAndUsesFirstRealTask() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "新对话",
+            messages: [],
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [current]
+        manager.currentConversation = current
+
+        manager.updateCurrentConversation(messages: [
+            .user("是"),
+            .system("已确认使用 Multi-Agent 模式。"),
+            .user("请继续扫描仓库并修复交互状态问题")
+        ])
+
+        XCTAssertEqual(manager.currentConversation?.title, "请继续扫描仓库并修复交互状态问题")
+    }
+
+    func testGeneratedTitleSkipsSlashCommandAndNormalizesLineBreaks() {
+        let conversation = Conversation(
+            messages: [
+                .user("/help"),
+                .user("继续优化首页\n和会话交互")
+            ]
+        )
+
+        XCTAssertEqual(conversation.generatedTitle, "继续优化首页 和会话交互")
+    }
+
     func testConversationDecodingBackfillsMissingDraftInput() throws {
         let json = """
         {
@@ -199,6 +412,42 @@ final class ConversationManagerTests: XCTestCase {
             messages: [.user("message")],
             workingDirectory: "/tmp/project-b",
             draftInput: "draft-b",
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+
+        XCTAssertNotEqual(original, changed)
+    }
+
+    func testConversationEqualityDetectsToolMetadataChanges() {
+        let id = UUID()
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let updatedAt = Date(timeIntervalSince1970: 200)
+
+        let baseMessage = Message(
+            id: UUID(),
+            role: .assistant,
+            content: "正在处理",
+            toolCalls: [ToolCall(id: "call-1", name: "read_file")]
+        )
+        var changedMessage = baseMessage
+        changedMessage.toolResults = [ToolResult.success(toolCallId: "call-1", output: "README content")]
+
+        let original = Conversation(
+            id: id,
+            title: "Same",
+            messages: [baseMessage],
+            workingDirectory: "/tmp/project-a",
+            draftInput: "draft-a",
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+        let changed = Conversation(
+            id: id,
+            title: "Same",
+            messages: [changedMessage],
+            workingDirectory: "/tmp/project-a",
+            draftInput: "draft-a",
             createdAt: createdAt,
             updatedAt: updatedAt
         )

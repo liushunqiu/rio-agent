@@ -31,6 +31,9 @@ class EditFileTool: Tool {
         guard let newText = arguments["new_text"] as? String else {
             throw ToolError.missingParameter("new_text")
         }
+        guard PathSecurity.isAbsolutePath(path) else {
+            return ToolResult.error(toolCallId: name, error: "path must be an absolute path. Resolve relative paths from the working directory before calling edit_file.")
+        }
 
         // Check if file exists
         guard FileManager.default.fileExists(atPath: path) else {

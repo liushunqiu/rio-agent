@@ -57,6 +57,21 @@ enum AgentCapability: String, Codable, CaseIterable {
     init(workerType: String) {
         self = AgentCapability(rawValue: workerType) ?? .general
     }
+
+    static func routingTarget(_ target: String) -> AgentCapability? {
+        switch target.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "code_expert", "code", "developer":
+            return .code
+        case "search_agent", "search", "research":
+            return .search
+        case "data_analyst", "data":
+            return .general
+        case "process", "general":
+            return nil
+        default:
+            return AgentCapability(rawValue: target)
+        }
+    }
 }
 
 // MARK: - Agent Configuration
@@ -507,6 +522,36 @@ struct RouterConfig: Codable {
     // 路由目标节点定义
     var routingTargets: [RoutingTarget] = RoutingTarget.defaultTargets
 
+    var qwenReadinessIssue: String? {
+        Self.qwenReadinessIssue(baseUrl: qwenBaseUrl, model: qwenModel)
+    }
+
+    var qwenChatCompletionsURL: URL? {
+        guard qwenReadinessIssue == nil else { return nil }
+        var trimmedBaseUrl = qwenBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        while trimmedBaseUrl.hasSuffix("/") {
+            trimmedBaseUrl.removeLast()
+        }
+        return URL(string: "\(trimmedBaseUrl)/v1/chat/completions")
+    }
+
+    static func qwenReadinessIssue(baseUrl: String, model: String) -> String? {
+        let trimmedBaseUrl = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseUrl.isEmpty else { return "缺少 vLLM 服务地址" }
+
+        let components = URLComponents(string: trimmedBaseUrl)
+        let scheme = components?.scheme?.lowercased()
+        guard (scheme == "http" || scheme == "https"), components?.host?.isEmpty == false else {
+            return "vLLM 服务地址必须是 http/https URL"
+        }
+
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "缺少 Qwen 模型名称"
+        }
+
+        return nil
+    }
+
     static let previousDefaultPrompt = """
     你是一个任务路由器。分析用户输入，输出 JSON 决定如何处理。
 
@@ -666,6 +711,7 @@ struct SubTask: Identifiable {
     var retryCount: Int
     var verificationStatus: VerificationStatus
     var verificationSummary: String?
+    var recoveryContext: ErrorRecoveryContext?
 
     init(
         id: UUID = UUID(),
@@ -679,7 +725,8 @@ struct SubTask: Identifiable {
         dependencies: [UUID] = [],
         retryCount: Int = 0,
         verificationStatus: VerificationStatus = .unverified,
-        verificationSummary: String? = nil
+        verificationSummary: String? = nil,
+        recoveryContext: ErrorRecoveryContext? = nil
     ) {
         self.id = id
         self.description = description
@@ -693,6 +740,22 @@ struct SubTask: Identifiable {
         self.retryCount = retryCount
         self.verificationStatus = verificationStatus
         self.verificationSummary = verificationSummary
+        self.recoveryContext = recoveryContext
+    }
+
+    var needsAttention: Bool {
+        switch status {
+        case .failed, .cancelled:
+            return true
+        case .pending, .running, .completed:
+            break
+        }
+
+        if verificationStatus == .needsRetry {
+            return true
+        }
+
+        return recoveryContext != nil
     }
 }
 
@@ -729,6 +792,7 @@ struct ExecutionResult {
     let retryCount: Int
     let verificationStatus: VerificationStatus
     let verificationSummary: String?
+    let recoveryContext: ErrorRecoveryContext?
 
     var hasErrors: Bool { !errors.isEmpty }
 }

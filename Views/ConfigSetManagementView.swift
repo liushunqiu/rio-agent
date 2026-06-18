@@ -7,13 +7,22 @@ struct ConfigSetManagementView: View {
     @State private var editingConfigSet: ConfigSet?
     @State private var isAddingNew = false
     @State private var pendingDeleteConfigSet: ConfigSet?
+
+    private var configuredCount: Int {
+        manager.configSets.filter { $0.isConfigured }.count
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("模型配置")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("模型配置")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text("已配置 \(configuredCount) / \(manager.configSets.count) 个端点")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textTertiary)
+                }
                 
                 Spacer()
                 
@@ -57,7 +66,7 @@ struct ConfigSetManagementView: View {
                 pendingDeleteConfigSet = nil
             }
         } message: {
-            Text("删除后会同时移除该配置保存的 API Key。")
+            Text("删除后会同时移除该配置保存的 API Key，并解除所有引用它的选择。")
         }
     }
 
@@ -111,6 +120,9 @@ struct ConfigSetManagementView: View {
                 Text(configSet.name)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(configSet.name)
                 
                 HStack(spacing: 6) {
                     Text(configSet.provider.displayName)
@@ -121,7 +133,19 @@ struct ConfigSetManagementView: View {
                         Text(configSet.model)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(Theme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(configSet.model)
                     }
+                }
+
+                if let readinessHint = readinessHint(for: configSet) {
+                    Text(readinessHint)
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(readinessHint)
                 }
             }
             
@@ -144,7 +168,7 @@ struct ConfigSetManagementView: View {
             }
             .buttonStyle(.plain)
             
-            if manager.configSets.count > 0 {
+            if manager.configSets.count > 1 {
                 Button {
                     pendingDeleteConfigSet = configSet
                 } label: {
@@ -153,6 +177,11 @@ struct ConfigSetManagementView: View {
                         .foregroundColor(Theme.statusError.opacity(0.7))
                 }
                 .buttonStyle(.plain)
+            } else {
+                Image(systemName: "lock.circle")
+                    .font(.system(size: 16))
+                    .foregroundColor(Theme.textTertiary.opacity(0.65))
+                    .help("至少保留一个模型配置，避免设置页失去可选项。")
             }
         }
         .padding(10)
@@ -162,6 +191,10 @@ struct ConfigSetManagementView: View {
             RoundedRectangle(cornerRadius: Theme.radiusMD)
                 .stroke(Theme.borderSubtle, lineWidth: 1)
         )
+    }
+
+    private func readinessHint(for configSet: ConfigSet) -> String? {
+        configSet.readinessIssue
     }
 }
 
@@ -204,6 +237,21 @@ struct ConfigSetEditorView: View {
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(canSave ? Theme.statusSuccess : Theme.statusWarning)
+                                .frame(width: 6, height: 6)
+                            Text(canSave ? "当前配置填写完整，保存后可立即使用" : readinessMessage)
+                                .font(.system(size: 11))
+                                .foregroundColor(canSave ? Theme.statusSuccess : Theme.textSecondary)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background((canSave ? Theme.statusSuccess : Theme.statusWarning).opacity(0.08))
+                        .cornerRadius(Theme.radiusMD)
+                    }
+
                     // 名称
                     fieldGroup(label: "模型名称") {
                         TextField("例如: GPT-4o, Claude Sonnet", text: $name)
@@ -264,12 +312,13 @@ struct ConfigSetEditorView: View {
                         
                         HStack(spacing: 4) {
                             Circle()
-                                .fill(apiKey.isEmpty ? Theme.statusError : Theme.statusSuccess)
+                                .fill(apiKeyStatusColor)
                                 .frame(width: 5, height: 5)
-                            Text(apiKey.isEmpty ? "未配置" : "已配置")
+                            Text(apiKeyStatusText)
                                 .font(.system(size: 10))
-                                .foregroundColor(apiKey.isEmpty ? Theme.statusError : Theme.statusSuccess)
+                                .foregroundColor(apiKeyStatusColor)
                         }
+                        .help(apiKeyStatusHelp)
                     }
                     
                     // 模型名称
@@ -308,7 +357,8 @@ struct ConfigSetEditorView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accentPrimary)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSave)
+                .help(canSave ? "保存模型配置" : readinessMessage)
             }
             .padding()
         }
@@ -332,6 +382,96 @@ struct ConfigSetEditorView: View {
         case .openAICompatible: return "your-model-name"
         }
     }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedBaseURL: String {
+        baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedAPIKey: String {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedModel: String {
+        model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !trimmedName.isEmpty && isConfigurationComplete
+    }
+
+    private var isConfigurationComplete: Bool {
+        switch provider {
+        case .claude, .openAI:
+            return !trimmedAPIKey.isEmpty && !trimmedModel.isEmpty
+        case .openAICompatible:
+            return !trimmedBaseURL.isEmpty && !trimmedModel.isEmpty
+        }
+    }
+
+    private var readinessMessage: String {
+        var missingFields: [String] = []
+        if trimmedName.isEmpty {
+            missingFields.append("模型名称")
+        }
+
+        switch provider {
+        case .claude, .openAI:
+            if trimmedAPIKey.isEmpty {
+                missingFields.append("API Key")
+            }
+        case .openAICompatible:
+            if trimmedBaseURL.isEmpty {
+                missingFields.append("API 端点")
+            }
+        }
+
+        if trimmedModel.isEmpty {
+            missingFields.append("模型标识")
+        }
+
+        guard !missingFields.isEmpty else {
+            return "当前配置填写完整，保存后可立即使用"
+        }
+
+        return "还需要填写：" + missingFields.joined(separator: "、")
+    }
+
+    private var apiKeyStatusText: String {
+        if !trimmedAPIKey.isEmpty {
+            return "已配置"
+        }
+        switch provider {
+        case .openAICompatible:
+            return "可选"
+        case .claude, .openAI:
+            return "未配置"
+        }
+    }
+
+    private var apiKeyStatusColor: Color {
+        if !trimmedAPIKey.isEmpty {
+            return Theme.statusSuccess
+        }
+        switch provider {
+        case .openAICompatible:
+            return Theme.textTertiary
+        case .claude, .openAI:
+            return Theme.statusError
+        }
+    }
+
+    private var apiKeyStatusHelp: String {
+        switch provider {
+        case .openAICompatible:
+            return "OpenAI Compatible 端点可按服务需要选择是否填写 API Key。"
+        case .claude, .openAI:
+            return "该提供商需要 API Key 才能保存为可用配置。"
+        }
+    }
     
     @ViewBuilder
     private func fieldGroup(label: String, @ViewBuilder content: () -> some View) -> some View {
@@ -347,12 +487,12 @@ struct ConfigSetEditorView: View {
         let id = configSet?.id ?? UUID()
         let newSet = ConfigSet(
             id: id,
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            name: trimmedName,
             provider: provider,
-            baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            model: model.trimmingCharacters(in: .whitespacesAndNewlines)
+            baseURL: trimmedBaseURL,
+            model: trimmedModel
         )
-        newSet.saveAPIKey(apiKey)
+        newSet.saveAPIKey(trimmedAPIKey)
         onSave(newSet)
     }
 }

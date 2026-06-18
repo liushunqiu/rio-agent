@@ -66,13 +66,63 @@ struct Conversation: Identifiable, Codable, Hashable {
         messages.append(message)
         updatedAt = Date()
 
-        // Auto-generate title from first user message
-        if title == "新对话", message.role == .user {
-            title = String(message.content.prefix(50))
-            if message.content.count > 50 {
-                title += "..."
-            }
+        if title == "新对话", let generatedTitle {
+            title = generatedTitle
         }
+    }
+
+    var visibleMessageCount: Int {
+        messages.filter(\.isVisibleInTranscript).count
+    }
+
+    var hasVisibleTranscript: Bool {
+        visibleMessageCount > 0
+    }
+
+    var latestPreviewContent: String? {
+        let draft = draftInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.isEmpty {
+            return "草稿：\(draft.replacingOccurrences(of: "\n", with: " "))"
+        }
+
+        let conversationalMessage = messages.reversed().first { message in
+            guard message.isVisibleInTranscript else { return false }
+            let trimmed = message.trimmedContent
+            guard !trimmed.isEmpty else { return false }
+            return message.role == .assistant || message.role == .user
+        }
+
+        if let conversationalMessage {
+            return conversationalMessage.singleLineDisplayContent
+        }
+
+        let lastVisibleContent = messages
+            .reversed()
+            .first(where: \.isVisibleInTranscript)?
+            .trimmedContent
+
+        if let lastVisibleContent, !lastVisibleContent.isEmpty {
+            return lastVisibleContent.replacingOccurrences(of: "\n", with: " ")
+        }
+
+        return nil
+    }
+
+    var firstEligibleTaskInput: String? {
+        messages.first(where: \.isEligibleUserTaskInput)?.trimmedContent
+    }
+
+    var generatedTitle: String? {
+        guard let taskInput = firstEligibleTaskInput else { return nil }
+        return Self.makeTitle(from: taskInput)
+    }
+
+    static func makeTitle(from taskInput: String) -> String {
+        let normalized = taskInput
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        guard normalized.count > 50 else { return normalized }
+        return String(normalized.prefix(50)) + "..."
     }
 }
 

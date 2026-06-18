@@ -1,8 +1,72 @@
 import SwiftUI
 
+struct MultiAgentSettingsDraft {
+    var orchestratorConfigSetId: UUID?
+    var orchestratorPrompt: String
+    var workers: [AgentConfig]
+    var maxParallel: Int
+    var taskStrategy: TaskSplitStrategy
+    var maxRetries: Int
+    var enableCritic: Bool
+    var routerEnabled: Bool
+    var routerConfigSetId: UUID?
+    var routerModel: String
+    var routerPrompt: String
+    var enableQwenRouter: Bool
+    var qwenBaseUrl: String
+    var qwenModel: String
+    var disableThinking: Bool
+    var qwenTemperature: Float
+    var qwenTopP: Float
+    var qwenTopK: Int
+    var qwenPresencePenalty: Float
+
+    func applied(to configuration: MultiAgentConfig, availableConfigSets: [ConfigSet]) -> MultiAgentConfig {
+        var updated = configuration
+        let readyConfigSets = availableConfigSets.filter(\.isConfigured)
+        var orchestrator = updated.orchestrator
+        let resolvedOrchestratorConfigSet = readyConfigSets.first(where: { $0.id == orchestratorConfigSetId })
+            ?? updated.orchestrator.resolvedConfigSet(from: readyConfigSets)
+            ?? readyConfigSets.first
+
+        orchestrator.applyConfigSet(resolvedOrchestratorConfigSet)
+        orchestrator.systemPrompt = orchestratorPrompt
+
+        updated.orchestrator = orchestrator
+        updated.workers = workers.map { worker in
+            var updatedWorker = worker
+            let resolvedConfigSet = worker.resolvedConfigSet(from: readyConfigSets)
+                ?? readyConfigSets.first
+            updatedWorker.applyConfigSet(resolvedConfigSet)
+            return updatedWorker
+        }
+        updated.maxParallelWorkers = maxParallel
+        updated.taskSplitStrategy = taskStrategy
+        updated.maxRetries = maxRetries
+        updated.enableCritic = enableCritic
+        updated.router.enabled = routerEnabled
+        updated.router.configSetId = readyConfigSets.contains(where: { $0.id == routerConfigSetId })
+            ? routerConfigSetId
+            : nil
+        updated.router.model = routerModel
+        updated.router.prompt = routerPrompt
+        updated.router.enableQwenRouter = enableQwenRouter
+        updated.router.qwenBaseUrl = qwenBaseUrl
+        updated.router.qwenModel = qwenModel
+        updated.router.disableThinking = disableThinking
+        updated.router.temperature = qwenTemperature
+        updated.router.topP = qwenTopP
+        updated.router.topK = qwenTopK
+        updated.router.presencePenalty = qwenPresencePenalty
+        updated.reconcileConfigSets(with: readyConfigSets)
+        return updated
+    }
+}
+
 struct MultiAgentSettingsView: View {
     @Binding var config: MultiAgentConfig
     let aiConfig: AIConfigInfo
+    let launchContext: SettingsLaunchContext?
 
     @State private var orchestratorConfigSetId: UUID?
     @State private var orchestratorPrompt: String
@@ -13,6 +77,7 @@ struct MultiAgentSettingsView: View {
     @State private var enableCritic: Bool
     @State private var showingAddWorker = false
     @State private var editingWorker: AgentConfig?
+    @State private var pendingDeleteWorker: AgentConfig?
 
     @State private var routerEnabled: Bool
     @State private var routerConfigSetId: UUID?
@@ -28,22 +93,25 @@ struct MultiAgentSettingsView: View {
     @State private var qwenTopP: Float
     @State private var qwenTopK: Int
     @State private var qwenPresencePenalty: Float
+    @State private var draftApplyTask: Task<Void, Never>?
 
-    init(config: Binding<MultiAgentConfig>, aiConfig: AIConfigInfo) {
+    init(config: Binding<MultiAgentConfig>, aiConfig: AIConfigInfo, launchContext: SettingsLaunchContext? = nil) {
         self._config = config
         self.aiConfig = aiConfig
+        self.launchContext = launchContext
         let initial = config.wrappedValue
-        let fallbackConfigSet = initial.orchestrator.resolvedConfigSet(from: aiConfig.allConfigSets)
-            ?? aiConfig.primaryConfigSet(for: initial.orchestrator.provider)
-            ?? aiConfig.allConfigSets.first
+        let readyConfigSets = aiConfig.allConfigSets.filter(\.isConfigured)
+        let fallbackConfigSet = initial.orchestrator.resolvedConfigSet(from: readyConfigSets)
+            ?? readyConfigSets.first(where: { $0.provider == initial.orchestrator.provider })
+            ?? readyConfigSets.first
 
         self._orchestratorConfigSetId = State(initialValue: fallbackConfigSet?.id)
         self._orchestratorPrompt = State(initialValue: initial.orchestrator.systemPrompt)
         self._workers = State(initialValue: initial.workers.map { worker in
             var updated = worker
-            let resolvedConfigSet = worker.resolvedConfigSet(from: aiConfig.allConfigSets)
-                ?? aiConfig.primaryConfigSet(for: worker.provider)
-                ?? aiConfig.allConfigSets.first
+            let resolvedConfigSet = worker.resolvedConfigSet(from: readyConfigSets)
+                ?? readyConfigSets.first(where: { $0.provider == worker.provider })
+                ?? readyConfigSets.first
             updated.applyConfigSet(resolvedConfigSet)
             return updated
         })
@@ -67,46 +135,55 @@ struct MultiAgentSettingsView: View {
         self._qwenPresencePenalty = State(initialValue: initial.router.presencePenalty)
     }
 
-    private func syncToConfig() {
-        reconcileSelections()
+    private func currentDraft() -> MultiAgentSettingsDraft {
+        MultiAgentSettingsDraft(
+            orchestratorConfigSetId: orchestratorConfigSetId,
+            orchestratorPrompt: orchestratorPrompt,
+            workers: workers,
+            maxParallel: maxParallel,
+            taskStrategy: taskStrategy,
+            maxRetries: maxRetries,
+            enableCritic: enableCritic,
+            routerEnabled: routerEnabled,
+            routerConfigSetId: routerConfigSetId,
+            routerModel: routerModel,
+            routerPrompt: routerPrompt,
+            enableQwenRouter: enableQwenRouter,
+            qwenBaseUrl: qwenBaseUrl,
+            qwenModel: qwenModel,
+            disableThinking: disableThinking,
+            qwenTemperature: qwenTemperature,
+            qwenTopP: qwenTopP,
+            qwenTopK: qwenTopK,
+            qwenPresencePenalty: qwenPresencePenalty
+        )
+    }
 
-        var orchestrator = config.orchestrator
-        let resolvedOrchestratorConfigSet = aiConfig.configSet(for: orchestratorConfigSetId)
-            ?? aiConfig.allConfigSets.first
-        orchestrator.applyConfigSet(resolvedOrchestratorConfigSet)
-        orchestrator.systemPrompt = orchestratorPrompt
-        config.orchestrator = orchestrator
-        config.workers = workers
-        config.maxParallelWorkers = maxParallel
-        config.taskSplitStrategy = taskStrategy
-        config.maxRetries = maxRetries
-        config.enableCritic = enableCritic
-        config.router.enabled = routerEnabled
-        config.router.configSetId = routerConfigSetId
-        config.router.model = routerModel
-        config.router.prompt = routerPrompt
-        
-        // 同步 Qwen3.5-4B 专用配置
-        config.router.enableQwenRouter = enableQwenRouter
-        config.router.qwenBaseUrl = qwenBaseUrl
-        config.router.qwenModel = qwenModel
-        config.router.disableThinking = disableThinking
-        config.router.temperature = qwenTemperature
-        config.router.topP = qwenTopP
-        config.router.topK = qwenTopK
-        config.router.presencePenalty = qwenPresencePenalty
-        config.reconcileConfigSets(with: aiConfig.allConfigSets)
+    private func applyDraft() {
+        reconcileSelections()
+        config = currentDraft().applied(to: config, availableConfigSets: aiConfig.allConfigSets)
+    }
+
+    private func scheduleDraftApply() {
+        draftApplyTask?.cancel()
+        draftApplyTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            applyDraft()
+        }
     }
 
     private func reconcileSelections() {
-        let configSets = aiConfig.allConfigSets
+        let configSets = aiConfig.allConfigSets.filter(\.isConfigured)
         let fallbackId = configSets.first?.id
 
         if orchestratorConfigSetId == nil || aiConfig.configSet(for: orchestratorConfigSetId) == nil {
             let fallback = config.orchestrator.resolvedConfigSet(from: configSets)
-                ?? aiConfig.primaryConfigSet(for: config.orchestrator.provider)
+                ?? configSets.first(where: { $0.provider == config.orchestrator.provider })
                 ?? configSets.first
             orchestratorConfigSetId = fallback?.id ?? fallbackId
+        } else if aiConfig.configSet(for: orchestratorConfigSetId)?.isConfigured == false {
+            orchestratorConfigSetId = fallbackId
         }
 
         if routerConfigSetId == nil || aiConfig.configSet(for: routerConfigSetId) == nil {
@@ -115,12 +192,16 @@ struct MultiAgentSettingsView: View {
             if routerModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 routerModel = fallback?.model ?? ""
             }
+        } else if aiConfig.configSet(for: routerConfigSetId)?.isConfigured == false {
+            let fallback = resolvedRouterConfigSet(from: configSets)
+            routerConfigSetId = fallback?.id
+            routerModel = fallback?.model ?? routerModel
         }
 
         workers = workers.map { worker in
             var updated = worker
             let fallback = worker.resolvedConfigSet(from: configSets)
-                ?? aiConfig.primaryConfigSet(for: worker.provider)
+                ?? configSets.first(where: { $0.provider == worker.provider })
                 ?? configSets.first
             updated.applyConfigSet(fallback)
             return updated
@@ -146,6 +227,32 @@ struct MultiAgentSettingsView: View {
 
     private var canEnable: Bool {
         aiConfig.hasAnyProvider
+    }
+
+    private var orchestratorRecoveryMessage: String? {
+        switch launchContext {
+        case .planningModel, .multiAgentOrchestratorModel:
+            return launchContext?.detail
+        default:
+            return nil
+        }
+    }
+
+    private var workersRecoveryMessage: String? {
+        switch launchContext {
+        case .multiAgentWorkerAssignment, .multiAgentWorkerModel:
+            return launchContext?.detail
+        default:
+            return nil
+        }
+    }
+
+    private var routerRecoveryMessage: String? {
+        launchContext == .routerModel ? launchContext?.detail : nil
+    }
+
+    private var qwenRouterReadinessIssue: String? {
+        RouterConfig.qwenReadinessIssue(baseUrl: qwenBaseUrl, model: qwenModel)
     }
 
     var body: some View {
@@ -195,20 +302,22 @@ struct MultiAgentSettingsView: View {
                     configSetId: $orchestratorConfigSetId,
                     prompt: $orchestratorPrompt,
                     aiConfig: aiConfig,
-                    onChange: syncToConfig
+                    recoveryMessage: orchestratorRecoveryMessage,
+                    onChange: applyDraft,
+                    onPromptChange: scheduleDraftApply
                 )
 
                 WorkersSection(
                     workers: $workers,
                     maxParallel: $maxParallel,
                     aiConfig: aiConfig,
+                    recoveryMessage: workersRecoveryMessage,
                     onAdd: { showingAddWorker = true },
                     onEdit: { editingWorker = $0 },
                     onDelete: { worker in
-                        workers.removeAll { $0.id == worker.id }
-                        syncToConfig()
+                        pendingDeleteWorker = worker
                     },
-                    onChange: syncToConfig
+                    onChange: applyDraft
                 )
 
                 SettingsSection(title: "任务拆分策略", icon: "scissors") {
@@ -219,7 +328,7 @@ struct MultiAgentSettingsView: View {
                                 isSelected: taskStrategy == strategy
                             ) {
                                 taskStrategy = strategy
-                                syncToConfig()
+                                applyDraft()
                             }
                         }
                     }
@@ -239,7 +348,7 @@ struct MultiAgentSettingsView: View {
                         }
                         .toggleStyle(.switch)
                         .tint(Theme.accentPrimary)
-                        .onChange(of: enableCritic) { _, _ in syncToConfig() }
+                        .onChange(of: enableCritic) { _, _ in applyDraft() }
 
                         if enableCritic {
                             HStack(spacing: 10) {
@@ -259,7 +368,7 @@ struct MultiAgentSettingsView: View {
                                 }
                                 .pickerStyle(.menu)
                                 .frame(width: 80)
-                                .onChange(of: maxRetries) { _, _ in syncToConfig() }
+                                .onChange(of: maxRetries) { _, _ in applyDraft() }
 
                                 Spacer()
                             }
@@ -267,7 +376,7 @@ struct MultiAgentSettingsView: View {
                     }
                 }
 
-                SettingsSection(title: "路由配置", icon: "arrow.triangle.branch") {
+                SettingsSection(title: "路由配置", icon: "arrow.triangle.branch", recoveryMessage: routerRecoveryMessage) {
                     VStack(alignment: .leading, spacing: 12) {
                         Toggle(isOn: $routerEnabled) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -281,7 +390,7 @@ struct MultiAgentSettingsView: View {
                         }
                         .toggleStyle(.switch)
                         .tint(Theme.accentPrimary)
-                        .onChange(of: routerEnabled) { _, _ in syncToConfig() }
+                        .onChange(of: routerEnabled) { _, _ in applyDraft() }
 
                         if routerEnabled {
                             VStack(alignment: .leading, spacing: 10) {
@@ -311,13 +420,26 @@ struct MultiAgentSettingsView: View {
                                         }
                                     }
 
-                                    let configSets = ConfigSetManager.shared.configSets
+                                    let configSets = aiConfig.allConfigSets
+                                    let readyConfigSets = configSets.filter(\.isConfigured)
                                     if configSets.isEmpty {
                                         HStack(spacing: 8) {
                                             Image(systemName: "exclamationmark.triangle.fill")
                                                 .font(.system(size: 11))
                                                 .foregroundColor(Theme.statusWarning)
-                                            Text("暂无可用模型端点，请先在 AI 配置中添加")
+                                            Text("暂无模型端点，请先在 AI 配置中添加")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Theme.textTertiary)
+                                        }
+                                        .padding(8)
+                                        .background(Theme.statusWarning.opacity(0.08))
+                                        .cornerRadius(Theme.radiusSM)
+                                    } else if readyConfigSets.isEmpty {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(Theme.statusWarning)
+                                            Text("当前模型端点都不可用，请先补全模型、端点或 API Key")
                                                 .font(.system(size: 11))
                                                 .foregroundColor(Theme.textTertiary)
                                         }
@@ -330,38 +452,52 @@ struct MultiAgentSettingsView: View {
                                                 .font(.system(size: 11, weight: .medium))
                                                 .foregroundColor(enableQwenRouter ? Theme.textTertiary.opacity(0.5) : Theme.textTertiary)
                                             ForEach(configSets) { cs in
+                                                let isSelectedReadyRouterConfig = routerConfigSetId == cs.id && cs.isConfigured
                                                 HStack(spacing: 8) {
                                                     Button {
-                                                        if !enableQwenRouter {
+                                                        if !enableQwenRouter && cs.isConfigured {
                                                             routerConfigSetId = cs.id
-                                                            routerModel = cs.model  // 自动填充模型名称
-                                                            syncToConfig()
+                                                            routerModel = cs.model
+                                                            applyDraft()
                                                         }
                                                     } label: {
                                                         HStack(spacing: 8) {
-                                                            Image(systemName: routerConfigSetId == cs.id ? "circle.fill" : "circle")
+                                                            Image(systemName: isSelectedReadyRouterConfig ? "circle.fill" : (cs.isConfigured ? "circle" : "exclamationmark.triangle.fill"))
                                                                 .font(.system(size: 10))
-                                                                .foregroundColor(routerConfigSetId == cs.id ? Theme.accentPrimary : Theme.textTertiary)
-                                                            Text(cs.name)
-                                                                .font(.system(size: 12))
-                                                                .foregroundColor(Theme.textPrimary)
-                                                            Text(cs.model)
-                                                                .font(.system(size: 10, design: .monospaced))
-                                                                .foregroundColor(Theme.textTertiary)
+                                                                .foregroundColor(isSelectedReadyRouterConfig ? Theme.accentPrimary : (cs.isConfigured ? Theme.textTertiary : Theme.statusWarning))
+                                                            VStack(alignment: .leading, spacing: 2) {
+                                                                HStack(spacing: 6) {
+                                                                    Text(cs.name)
+                                                                        .font(.system(size: 12))
+                                                                        .foregroundColor(Theme.textPrimary)
+                                                                    Text(cs.model.isEmpty ? "未设置模型" : cs.model)
+                                                                        .font(.system(size: 10, design: .monospaced))
+                                                                        .foregroundColor(Theme.textTertiary)
+                                                                        .lineLimit(1)
+                                                                        .truncationMode(.middle)
+                                                                }
+                                                                if let readinessIssue = cs.readinessIssue {
+                                                                    Text(readinessIssue)
+                                                                        .font(.system(size: 10, weight: .medium))
+                                                                        .foregroundColor(Theme.statusWarning)
+                                                                        .lineLimit(1)
+                                                                }
+                                                            }
                                                         }
                                                         .padding(.horizontal, 10)
                                                         .padding(.vertical, 7)
                                                         .frame(maxWidth: .infinity, alignment: .leading)
-                                                        .background(routerConfigSetId == cs.id ? Theme.bgTertiary : Theme.bgInput)
+                                                        .background(isSelectedReadyRouterConfig ? Theme.bgTertiary : Theme.bgInput)
                                                         .cornerRadius(Theme.radiusSM)
                                                         .overlay(
                                                             RoundedRectangle(cornerRadius: Theme.radiusSM)
-                                                                .stroke(routerConfigSetId == cs.id ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+                                                                .stroke(isSelectedReadyRouterConfig ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
                                                         )
                                                     }
                                                     .buttonStyle(.plain)
-                                                    .disabled(enableQwenRouter)
-                                                    .opacity(enableQwenRouter ? 0.5 : 1.0)
+                                                    .disabled(enableQwenRouter || !cs.isConfigured)
+                                                    .opacity((enableQwenRouter || !cs.isConfigured) ? 0.5 : 1.0)
+                                                    .help(cs.readinessIssue.map { "暂不可选：\($0)" } ?? "")
                                                 }
                                             }
                                         }
@@ -390,7 +526,7 @@ struct MultiAgentSettingsView: View {
                                             )
                                             .disabled(enableQwenRouter)
                                             .opacity(enableQwenRouter ? 0.5 : 1.0)
-                                            .onChange(of: routerModel) { _, _ in syncToConfig() }
+                                            .onChange(of: routerModel) { _, _ in scheduleDraftApply() }
                                     }
 
                                     VStack(alignment: .leading, spacing: 6) {
@@ -407,7 +543,7 @@ struct MultiAgentSettingsView: View {
                                             .cornerRadius(Theme.radiusMD)
                                             .disabled(enableQwenRouter)
                                             .opacity(enableQwenRouter ? 0.5 : 1.0)
-                                            .onChange(of: routerPrompt) { _, _ in syncToConfig() }
+                                            .onChange(of: routerPrompt) { _, _ in scheduleDraftApply() }
                                     }
                                 }
 
@@ -435,10 +571,14 @@ struct MultiAgentSettingsView: View {
                                 }
                                 .toggleStyle(.switch)
                                 .tint(Theme.accentPrimary)
-                                .onChange(of: enableQwenRouter) { _, _ in syncToConfig() }
+                                .onChange(of: enableQwenRouter) { _, _ in applyDraft() }
                                 
                                 if enableQwenRouter {
                                     VStack(alignment: .leading, spacing: 10) {
+                                        if let qwenRouterReadinessIssue {
+                                            InlineWarning(text: "Qwen 专用路由暂不可用：\(qwenRouterReadinessIssue)。")
+                                        }
+
                                         // vLLM 服务地址
                                         VStack(alignment: .leading, spacing: 6) {
                                             Text("vLLM 服务地址")
@@ -456,7 +596,7 @@ struct MultiAgentSettingsView: View {
                                                     RoundedRectangle(cornerRadius: Theme.radiusMD)
                                                         .stroke(Theme.borderSubtle, lineWidth: 1)
                                                 )
-                                                .onChange(of: qwenBaseUrl) { _, _ in syncToConfig() }
+                                                .onChange(of: qwenBaseUrl) { _, _ in scheduleDraftApply() }
                                         }
                                         
                                         // Qwen 模型名称
@@ -476,7 +616,7 @@ struct MultiAgentSettingsView: View {
                                                     RoundedRectangle(cornerRadius: Theme.radiusMD)
                                                         .stroke(Theme.borderSubtle, lineWidth: 1)
                                                 )
-                                                .onChange(of: qwenModel) { _, _ in syncToConfig() }
+                                                .onChange(of: qwenModel) { _, _ in scheduleDraftApply() }
                                         }
                                         
                                         // 关闭思考模式开关
@@ -492,7 +632,7 @@ struct MultiAgentSettingsView: View {
                                         }
                                         .toggleStyle(.switch)
                                         .tint(Theme.accentPrimary)
-                                        .onChange(of: disableThinking) { _, _ in syncToConfig() }
+                                        .onChange(of: disableThinking) { _, _ in applyDraft() }
                                         
                                         // 采样参数配置
                                         VStack(alignment: .leading, spacing: 8) {
@@ -517,7 +657,7 @@ struct MultiAgentSettingsView: View {
                                                             RoundedRectangle(cornerRadius: Theme.radiusSM)
                                                                 .stroke(Theme.borderSubtle, lineWidth: 1)
                                                         )
-                                                        .onChange(of: qwenTemperature) { _, _ in syncToConfig() }
+                                                        .onChange(of: qwenTemperature) { _, _ in scheduleDraftApply() }
                                                 }
                                                 
                                                 VStack(alignment: .leading, spacing: 4) {
@@ -536,7 +676,7 @@ struct MultiAgentSettingsView: View {
                                                             RoundedRectangle(cornerRadius: Theme.radiusSM)
                                                                 .stroke(Theme.borderSubtle, lineWidth: 1)
                                                         )
-                                                        .onChange(of: qwenTopP) { _, _ in syncToConfig() }
+                                                        .onChange(of: qwenTopP) { _, _ in scheduleDraftApply() }
                                                 }
                                                 
                                                 VStack(alignment: .leading, spacing: 4) {
@@ -555,7 +695,7 @@ struct MultiAgentSettingsView: View {
                                                             RoundedRectangle(cornerRadius: Theme.radiusSM)
                                                                 .stroke(Theme.borderSubtle, lineWidth: 1)
                                                         )
-                                                        .onChange(of: qwenTopK) { _, _ in syncToConfig() }
+                                                        .onChange(of: qwenTopK) { _, _ in scheduleDraftApply() }
                                                 }
                                                 
                                                 VStack(alignment: .leading, spacing: 4) {
@@ -574,7 +714,7 @@ struct MultiAgentSettingsView: View {
                                                             RoundedRectangle(cornerRadius: Theme.radiusSM)
                                                                 .stroke(Theme.borderSubtle, lineWidth: 1)
                                                         )
-                                                        .onChange(of: qwenPresencePenalty) { _, _ in syncToConfig() }
+                                                        .onChange(of: qwenPresencePenalty) { _, _ in scheduleDraftApply() }
                                                 }
                                             }
                                         }
@@ -610,23 +750,59 @@ struct MultiAgentSettingsView: View {
         .sheet(isPresented: $showingAddWorker) {
             AddWorkerSheet(aiConfig: aiConfig) { newWorker in
                 workers.append(newWorker)
-                syncToConfig()
+                applyDraft()
             }
         }
         .sheet(item: $editingWorker) { worker in
             EditWorkerSheet(worker: worker, aiConfig: aiConfig) { updated in
                 if let index = workers.firstIndex(where: { $0.id == updated.id }) {
                     workers[index] = updated
-                    syncToConfig()
+                    applyDraft()
                 }
             }
         }
+        .alert("删除子 Agent？", isPresented: deleteWorkerConfirmationBinding) {
+            Button("取消", role: .cancel) {
+                pendingDeleteWorker = nil
+            }
+            Button("删除", role: .destructive) {
+                if let pendingDeleteWorker {
+                    workers.removeAll { $0.id == pendingDeleteWorker.id }
+                    applyDraft()
+                }
+                pendingDeleteWorker = nil
+            }
+        } message: {
+            Text(deleteWorkerConfirmationMessage)
+        }
         .onAppear {
-            syncToConfig()
+            applyDraft()
         }
-        .onChange(of: aiConfig.allConfigSets.map(\.id)) { _, _ in
-            syncToConfig()
+        .onChange(of: aiConfig.configSetRevision) { _, _ in
+            applyDraft()
         }
+        .onDisappear {
+            draftApplyTask?.cancel()
+            applyDraft()
+        }
+    }
+
+    private var deleteWorkerConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteWorker != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingDeleteWorker = nil
+                }
+            }
+        )
+    }
+
+    private var deleteWorkerConfirmationMessage: String {
+        guard let pendingDeleteWorker else {
+            return "这个操作无法撤销。"
+        }
+        return "将删除子 Agent「\(pendingDeleteWorker.name)」及其能力、模型端点和系统提示词配置。\n\n这个操作无法撤销。"
     }
 
     private var availableProviderText: String {
@@ -665,6 +841,7 @@ struct MultiAgentMetric: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundColor(Theme.textTertiary)
+                    .help(detail)
             }
 
             Spacer(minLength: 0)
@@ -773,10 +950,12 @@ struct OrchestratorSection: View {
     @Binding var configSetId: UUID?
     @Binding var prompt: String
     let aiConfig: AIConfigInfo
+    let recoveryMessage: String?
     let onChange: () -> Void
+    let onPromptChange: () -> Void
 
     var body: some View {
-        SettingsSection(title: "编排器", icon: "brain.head.profile") {
+        SettingsSection(title: "编排器", icon: "brain.head.profile", recoveryMessage: recoveryMessage) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     ZStack {
@@ -820,7 +999,7 @@ struct OrchestratorSection: View {
                         .padding(8)
                         .background(Theme.bgInput)
                         .cornerRadius(Theme.radiusMD)
-                        .onChange(of: prompt) { _, _ in onChange() }
+                        .onChange(of: prompt) { _, _ in onPromptChange() }
                 }
             }
         }
@@ -837,8 +1016,21 @@ struct AgentConfigSetSelector: View {
         aiConfig.allConfigSets
     }
 
+    private var readyConfigSets: [ConfigSet] {
+        configSets.filter(\.isConfigured)
+    }
+
     private var selectedConfigSet: ConfigSet? {
         aiConfig.configSet(for: configSetId)
+    }
+
+    private var selectedReadyConfigSet: ConfigSet? {
+        selectedConfigSet.flatMap { $0.isConfigured ? $0 : nil }
+    }
+
+    private var selectedUnavailableReason: String? {
+        guard let selectedConfigSet, !selectedConfigSet.isConfigured else { return nil }
+        return selectedConfigSet.readinessIssue ?? "模型配置不可用"
     }
 
     var body: some View {
@@ -848,24 +1040,31 @@ struct AgentConfigSetSelector: View {
                 .foregroundColor(Theme.textTertiary)
 
             if configSets.isEmpty {
-                InlineWarning(text: "请先在 AI 配置里添加至少一个可用配置集。")
+                InlineWarning(text: "请先在 AI 配置里添加至少一个模型配置。")
+            } else if readyConfigSets.isEmpty {
+                InlineWarning(text: "当前模型配置都不可用，请先补全模型、端点或 API Key。")
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(configSets) { configSet in
+                        let isSelectedReadyConfigSet = configSetId == configSet.id && configSet.isConfigured
                         Button {
+                            guard configSet.isConfigured else { return }
                             configSetId = configSet.id
                             onChange()
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: configSetId == configSet.id ? "checkmark.circle.fill" : "circle")
+                                Image(systemName: iconName(for: configSet))
                                     .font(.system(size: 13))
-                                    .foregroundColor(configSetId == configSet.id ? Theme.accentPrimary : Theme.textTertiary)
+                                    .foregroundColor(iconColor(for: configSet))
 
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack(spacing: 6) {
                                         Text(configSet.name)
                                             .font(.system(size: 12, weight: .medium))
                                             .foregroundColor(Theme.textPrimary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .help(configSet.name)
                                         Text(configSet.provider.displayName)
                                             .font(.system(size: 10))
                                             .foregroundColor(Theme.textTertiary)
@@ -876,6 +1075,16 @@ struct AgentConfigSetSelector: View {
                                         .foregroundColor(Theme.textSecondary)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
+                                        .help(configSet.model)
+
+                                    if let readinessIssue = configSet.readinessIssue {
+                                        Text(readinessIssue)
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(Theme.statusWarning)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .help(readinessIssue)
+                                    }
                                 }
 
                                 Spacer()
@@ -883,31 +1092,47 @@ struct AgentConfigSetSelector: View {
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(configSetId == configSet.id ? Theme.bgTertiary : Theme.bgInput)
+                            .background(isSelectedReadyConfigSet ? Theme.bgTertiary : Theme.bgInput)
                             .cornerRadius(Theme.radiusSM)
                             .overlay(
                                 RoundedRectangle(cornerRadius: Theme.radiusSM)
-                                    .stroke(configSetId == configSet.id ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
+                                    .stroke(isSelectedReadyConfigSet ? Theme.accentPrimary.opacity(0.45) : Theme.borderSubtle, lineWidth: 1)
                             )
                         }
                         .buttonStyle(.plain)
+                        .disabled(!configSet.isConfigured)
+                        .opacity(configSet.isConfigured ? 1 : 0.68)
+                        .help(configSet.readinessIssue.map { "暂不可选：\($0)" } ?? "")
                     }
                 }
             }
 
-            if let selectedConfigSet {
+            if let selectedReadyConfigSet {
                 HStack(spacing: 6) {
                     Image(systemName: "link")
                         .font(.system(size: 10))
                         .foregroundColor(Theme.accentSecondary)
-                    Text("当前绑定: \(selectedConfigSet.provider.displayName) · \(selectedConfigSet.model)")
+                    Text("当前绑定: \(selectedReadyConfigSet.provider.displayName) · \(selectedReadyConfigSet.model)")
                         .font(.system(size: 10))
                         .foregroundColor(Theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help("当前绑定: \(selectedReadyConfigSet.provider.displayName) · \(selectedReadyConfigSet.model)")
                 }
+            } else if let selectedUnavailableReason {
+                InlineWarning(text: "原绑定已失效：\(selectedUnavailableReason)。请选择一个可用模型端点。")
             }
         }
+    }
+
+    private func iconName(for configSet: ConfigSet) -> String {
+        if configSetId == configSet.id && configSet.isConfigured { return "checkmark.circle.fill" }
+        return configSet.isConfigured ? "circle" : "exclamationmark.triangle.fill"
+    }
+
+    private func iconColor(for configSet: ConfigSet) -> Color {
+        if configSetId == configSet.id && configSet.isConfigured { return Theme.accentPrimary }
+        return configSet.isConfigured ? Theme.textTertiary : Theme.statusWarning
     }
 }
 
@@ -1042,13 +1267,14 @@ struct WorkersSection: View {
     @Binding var workers: [AgentConfig]
     @Binding var maxParallel: Int
     let aiConfig: AIConfigInfo
+    let recoveryMessage: String?
     let onAdd: () -> Void
     let onEdit: (AgentConfig) -> Void
     let onDelete: (AgentConfig) -> Void
     let onChange: () -> Void
 
     var body: some View {
-        SettingsSection(title: "子 Agent 池", icon: "person.2.fill") {
+        SettingsSection(title: "子 Agent 池", icon: "person.2.fill", recoveryMessage: recoveryMessage) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -1202,10 +1428,29 @@ struct AddWorkerSheet: View {
     @State private var capability: AgentCapability = .general
     @State private var systemPrompt = ""
 
+    private var readyConfigSets: [ConfigSet] {
+        aiConfig.allConfigSets.filter(\.isConfigured)
+    }
+
+    private var selectedReadyConfigSet: ConfigSet? {
+        aiConfig.configSet(for: configSetId).flatMap { $0.isConfigured ? $0 : nil }
+            ?? readyConfigSets.first
+    }
+
+    private var saveDisabledReason: String? {
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "请先填写子 Agent 名称"
+        }
+        if selectedReadyConfigSet == nil {
+            return "请先选择一个可用的模型端点"
+        }
+        return nil
+    }
+
     init(aiConfig: AIConfigInfo, onAdd: @escaping (AgentConfig) -> Void) {
         self.aiConfig = aiConfig
         self.onAdd = onAdd
-        self._configSetId = State(initialValue: aiConfig.allConfigSets.first?.id)
+        self._configSetId = State(initialValue: aiConfig.allConfigSets.first(where: { $0.isConfigured })?.id)
     }
 
     var body: some View {
@@ -1271,14 +1516,14 @@ struct AddWorkerSheet: View {
             HStack {
                 Spacer()
                 Button("添加") {
-                    let selectedConfigSet = aiConfig.configSet(for: configSetId) ?? aiConfig.allConfigSets.first
+                    guard let selectedConfigSet = selectedReadyConfigSet else { return }
                     let worker = AgentConfig(
                         name: name.isEmpty ? "子 Agent" : name,
                         role: .worker,
                         capability: capability,
-                        configSetId: selectedConfigSet?.id,
-                        provider: selectedConfigSet?.provider ?? .claude,
-                        model: selectedConfigSet?.model ?? "",
+                        configSetId: selectedConfigSet.id,
+                        provider: selectedConfigSet.provider,
+                        model: selectedConfigSet.model,
                         systemPrompt: systemPrompt
                     )
                     onAdd(worker)
@@ -1286,7 +1531,8 @@ struct AddWorkerSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accentPrimary)
-                .disabled(name.isEmpty || (configSetId == nil && aiConfig.allConfigSets.isEmpty))
+                .disabled(saveDisabledReason != nil)
+                .help(saveDisabledReason ?? "添加子 Agent")
             }
             .padding(16)
         }
@@ -1309,12 +1555,32 @@ struct EditWorkerSheet: View {
     @State private var capability: AgentCapability
     @State private var systemPrompt: String
 
+    private var readyConfigSets: [ConfigSet] {
+        aiConfig.allConfigSets.filter(\.isConfigured)
+    }
+
+    private var selectedReadyConfigSet: ConfigSet? {
+        aiConfig.configSet(for: configSetId).flatMap { $0.isConfigured ? $0 : nil }
+            ?? readyConfigSets.first
+    }
+
+    private var saveDisabledReason: String? {
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "请先填写子 Agent 名称"
+        }
+        if selectedReadyConfigSet == nil {
+            return "请先选择一个可用的模型端点"
+        }
+        return nil
+    }
+
     init(worker: AgentConfig, aiConfig: AIConfigInfo, onSave: @escaping (AgentConfig) -> Void) {
         self.worker = worker
         self.aiConfig = aiConfig
         self.onSave = onSave
         self._name = State(initialValue: worker.name)
-        let resolvedConfigSet = worker.resolvedConfigSet(from: aiConfig.allConfigSets) ?? aiConfig.allConfigSets.first
+        let readyConfigSets = aiConfig.allConfigSets.filter(\.isConfigured)
+        let resolvedConfigSet = worker.resolvedConfigSet(from: readyConfigSets) ?? readyConfigSets.first
         self._configSetId = State(initialValue: resolvedConfigSet?.id)
         self._capability = State(initialValue: worker.capability)
         self._systemPrompt = State(initialValue: worker.systemPrompt)
@@ -1383,9 +1649,10 @@ struct EditWorkerSheet: View {
             HStack {
                 Spacer()
                 Button("保存") {
+                    guard let selectedConfigSet = selectedReadyConfigSet else { return }
                     var updated = worker
                     updated.name = name
-                    updated.applyConfigSet(aiConfig.configSet(for: configSetId) ?? aiConfig.allConfigSets.first)
+                    updated.applyConfigSet(selectedConfigSet)
                     updated.capability = capability
                     updated.systemPrompt = systemPrompt
                     onSave(updated)
@@ -1393,6 +1660,8 @@ struct EditWorkerSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accentPrimary)
+                .disabled(saveDisabledReason != nil)
+                .help(saveDisabledReason ?? "保存子 Agent")
             }
             .padding(16)
         }

@@ -35,9 +35,7 @@ let package = Package(
                 "project.yml",
                 "Rio Agent.app",
                 "Optimizations",
-                "RioAgent.entitlements",
-                "2.png",
-                "j.png"
+                "RioAgent.entitlements"
             ],
             sources: [
                 "App",

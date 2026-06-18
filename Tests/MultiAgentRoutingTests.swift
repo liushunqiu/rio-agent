@@ -193,6 +193,259 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertEqual(config.orchestrator.configSetId, first.id)
     }
 
+    func testRoutingDecisionMapsTargetToPreferredCapability() {
+        let codeDecision = RoutingDecision.routeToTarget(
+            target: "code_expert",
+            params: [:],
+            confidence: 0.9,
+            reasoning: "code work"
+        )
+        let searchDecision = RoutingDecision.routeToTarget(
+            target: "search_agent",
+            params: [:],
+            confidence: 0.9,
+            reasoning: "search work"
+        )
+
+        XCTAssertEqual(codeDecision.preferredWorkerCapability, .code)
+        XCTAssertEqual(searchDecision.preferredWorkerCapability, .search)
+        XCTAssertNil(RoutingDecision.skip(reason: "闲聊").preferredWorkerCapability)
+    }
+
+    @MainActor
+    func testSingleAgentRuntimeRolesHighlightOnlyCurrentPipelineStage() {
+        var configuration = AIConfiguration()
+        let originalConfigSets = ConfigSetManager.shared.configSets
+        defer { ConfigSetManager.shared.configSets = originalConfigSets }
+
+        let planningSet = ConfigSet(name: "Planning", model: "planning-model")
+        let executionSet = ConfigSet(name: "Execution", model: "execution-model")
+        ConfigSetManager.shared.configSets = [planningSet, executionSet]
+        configuration.planningConfigSetId = planningSet.id
+        configuration.executionConfigSetId = executionSet.id
+
+        var multiAgentConfig = MultiAgentConfig()
+        multiAgentConfig.router.enabled = true
+        multiAgentConfig.router.model = "router-model"
+
+        let planningPipeline = makePipelineWithRunningStage(.taskAnalysis)
+        let planningRoles = RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: nil,
+            isProcessing: true,
+            usesMultiAgent: false,
+            currentPipeline: planningPipeline,
+            lastMessageRole: .user
+        )
+        XCTAssertEqual(planningRoles.filter(\.isActive).map(\.id), ["planning"])
+
+        let executionPipeline = makePipelineWithRunningStage(.execution)
+        let executionRoles = RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: nil,
+            isProcessing: true,
+            usesMultiAgent: false,
+            currentPipeline: executionPipeline,
+            lastMessageRole: .assistant
+        )
+        XCTAssertEqual(executionRoles.filter(\.isActive).map(\.id), ["execution"])
+
+        let routerPipeline = makePipelineWithRunningStage(.router)
+        let routerRoles = RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: nil,
+            isProcessing: true,
+            usesMultiAgent: false,
+            currentPipeline: routerPipeline,
+            lastMessageRole: .user
+        )
+        XCTAssertEqual(routerRoles.filter(\.isActive).map(\.id), ["router"])
+    }
+
+    @MainActor
+    func testQwenRouterRuntimeRoleShowsActualQwenModel() {
+        let configuration = AIConfiguration()
+
+        var multiAgentConfig = MultiAgentConfig()
+        multiAgentConfig.router.enabled = true
+        multiAgentConfig.router.enableQwenRouter = true
+        multiAgentConfig.router.model = "generic-router-model"
+        multiAgentConfig.router.qwenModel = "Qwen/Qwen3.5-4B-Instruct"
+
+        let routerPipeline = makePipelineWithRunningStage(.router)
+        let roles = RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: nil,
+            isProcessing: true,
+            usesMultiAgent: false,
+            currentPipeline: routerPipeline,
+            lastMessageRole: .user
+        )
+
+        let routerRole = roles.first { $0.id == "router" }
+        XCTAssertEqual(routerRole?.title, "Qwen Router")
+        XCTAssertEqual(routerRole?.providerName, "Qwen / vLLM")
+        XCTAssertEqual(routerRole?.modelName, "Qwen/Qwen3.5-4B-Instruct")
+        XCTAssertTrue(routerRole?.isActive == true)
+    }
+
+    func testQwenRouterServiceRejectsInvalidConfigBeforeRequest() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Services/RouterService.swift"))
+
+        XCTAssertTrue(
+            source.contains("if let readinessIssue = config.qwenReadinessIssue"),
+            "Qwen router should validate config before constructing a network request."
+        )
+        XCTAssertTrue(
+            source.contains("service: AIService?"),
+            "RouterService should allow Qwen routing without a generic AI service."
+        )
+        XCTAssertTrue(
+            source.contains("static func routeDetailed("),
+            "RouterService should expose a detailed routing path so the UI can distinguish specific router failures."
+        )
+        XCTAssertTrue(
+            source.contains("guard let service else"),
+            "Generic router calls should still require a usable AI service."
+        )
+        XCTAssertTrue(
+            source.contains("return (nil, reason)"),
+            "Detailed router failures should be carried back to the caller instead of being collapsed into a bare nil."
+        )
+        XCTAssertTrue(
+            source.contains("guard let url = config.qwenChatCompletionsURL"),
+            "Qwen router should use the normalized chat completions URL from RouterConfig."
+        )
+        XCTAssertTrue(
+            source.contains("\"model\": config.qwenModel.trimmingCharacters(in: .whitespacesAndNewlines)"),
+            "Qwen router should send a trimmed model id after readiness validation."
+        )
+        XCTAssertTrue(
+            source.contains("Qwen 路由请求失败：HTTP")
+                && source.contains("Qwen Router 响应不是有效 JSON 路由决策")
+                && source.contains("Router 响应不是有效 JSON 路由决策"),
+            "Detailed router failures should classify HTTP failures and invalid JSON decisions separately."
+        )
+    }
+
+    @MainActor
+    func testRouterPreferredCapabilityCanBeClearedBetweenTasks() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+
+        engine.setRouterPreferredCapability(.code)
+        XCTAssertEqual(engine.currentRouterPreferredCapability, .code)
+
+        engine.clearRouterPreferredCapability()
+        XCTAssertNil(engine.currentRouterPreferredCapability)
+    }
+
+    @MainActor
+    func testServiceUnavailableResultExplainsMissingWorkerAssignment() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let subTask = SubTask(description: "do work")
+
+        let result = engine.serviceUnavailableResult(for: subTask)
+
+        XCTAssertEqual(result.errors.first, "未分配执行 Agent。请在 设置 → Multi-Agent 启用并选择一个 Worker。")
+        XCTAssertEqual(result.verificationStatus, .needsRetry)
+        XCTAssertTrue(result.verificationSummary?.contains("当前子任务无法验证") == true)
+        XCTAssertEqual(result.recoveryContext, .multiAgentWorkerAssignment)
+    }
+
+    @MainActor
+    func testServiceUnavailableResultExplainsMissingConfigSetForWorker() {
+        let missingConfigId = UUID()
+        let worker = AgentConfig(
+            name: "代码 Agent",
+            role: .worker,
+            capability: .code,
+            configSetId: missingConfigId,
+            provider: .openAICompatible,
+            model: "deepseek-chat"
+        )
+        let engine = MultiAgentEngine(config: MultiAgentConfig(workers: [worker]))
+        engine.configureConfigSets([])
+        let subTask = SubTask(description: "do work", assignedWorker: worker)
+
+        let result = engine.serviceUnavailableResult(for: subTask)
+
+        XCTAssertEqual(result.errors.first, "代码 Agent 未选择可用模型配置。请前往 设置 → Multi-Agent 为该 Agent 选择模型配置。")
+        XCTAssertEqual(result.recoveryContext, .multiAgentWorkerModel)
+    }
+
+    @MainActor
+    func testServiceUnavailableResultExplainsIncompleteWorkerConfigSet() {
+        let brokenConfig = ConfigSet(
+            id: UUID(),
+            name: "Broken Gateway",
+            provider: .openAICompatible,
+            baseURL: "",
+            model: "deepseek-chat"
+        )
+        let worker = AgentConfig(
+            name: "代码 Agent",
+            role: .worker,
+            capability: .code,
+            configSetId: brokenConfig.id,
+            provider: .openAICompatible,
+            model: "deepseek-chat"
+        )
+        let engine = MultiAgentEngine(config: MultiAgentConfig(workers: [worker]))
+        engine.configureConfigSets([brokenConfig])
+        let subTask = SubTask(description: "do work", assignedWorker: worker)
+
+        let result = engine.serviceUnavailableResult(for: subTask)
+
+        XCTAssertEqual(result.errors.first, "代码 Agent 使用的模型配置「Broken Gateway」不可用：缺少 API 端点。请前往 设置 → AI 配置 → 模型配置补全。")
+        XCTAssertEqual(result.recoveryContext, .multiAgentWorkerModel)
+    }
+
+    @MainActor
+    func testOrchestratorServiceUnavailablePublishesDedicatedRecoveryContext() async {
+        let brokenConfig = ConfigSet(
+            id: UUID(),
+            name: "Broken Orchestrator",
+            provider: .openAICompatible,
+            baseURL: "",
+            model: "deepseek-chat"
+        )
+        let orchestrator = AgentConfig(
+            name: "主 Agent",
+            role: .orchestrator,
+            capability: .general,
+            configSetId: brokenConfig.id,
+            provider: .openAICompatible,
+            model: "deepseek-chat"
+        )
+        let engine = MultiAgentEngine(
+            config: MultiAgentConfig(
+                orchestrator: orchestrator,
+                workers: []
+            )
+        )
+        engine.configureConfigSets([brokenConfig])
+
+        let result = await engine.processTask("拆分一个复杂任务")
+
+        XCTAssertTrue(result.contains("处理失败"))
+        XCTAssertEqual(engine.errorRecoveryContext, .multiAgentOrchestratorModel)
+    }
+
+    @MainActor
+    private func makePipelineWithRunningStage(_ type: PipelineStage.StageType) -> ExecutionPipeline {
+        let builder = PipelineBuilder(mode: .singleAgent)
+        let stageId = builder.addStage(type)
+        builder.startStage(stageId)
+        return builder.build()
+    }
+
     func testComplexityAnalysisSimple() {
         let analysis = TaskPlanner.TaskAnalysis(
             complexity: .simple,
@@ -241,6 +494,75 @@ final class MultiAgentRoutingTests: XCTestCase {
         let batches = engine.executionBatches(for: wave)
 
         XCTAssertEqual(batches.map(\.count), [2, 2, 1])
+    }
+
+    @MainActor
+    func testFailedSubTaskDisplayResultFallsBackToErrorsAndVerificationSummary() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let result = ExecutionResult(
+            subTaskId: UUID(),
+            output: "  ",
+            errors: ["工具调用失败：权限不足"],
+            retryCount: 1,
+            verificationStatus: .needsRetry,
+            verificationSummary: "缺少可验证的完成证据。",
+            recoveryContext: nil
+        )
+
+        let display = engine.subTaskDisplayResult(for: result, status: .failed)
+
+        XCTAssertTrue(display?.contains("工具调用失败：权限不足") == true)
+        XCTAssertTrue(display?.contains("缺少可验证的完成证据。") == true)
+    }
+
+    @MainActor
+    func testDependencyContextCarriesFailureReasonWhenOutputIsEmpty() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let dependency = ExecutionResult(
+            subTaskId: UUID(),
+            output: "",
+            errors: ["前置任务失败：模型配置缺失"],
+            retryCount: 0,
+            verificationStatus: .needsRetry,
+            verificationSummary: "前置任务没有完成，不能直接继续。",
+            recoveryContext: nil
+        )
+
+        let context = engine.buildWorkerContext(
+            for: SubTask(description: "continue work"),
+            dependencyResults: [dependency]
+        )
+
+        XCTAssertTrue(context.contains("前置任务失败：模型配置缺失"))
+        XCTAssertTrue(context.contains("前置任务没有完成，不能直接继续。"))
+    }
+
+    @MainActor
+    func testBlockedDependencyResultKeepsDownstreamTaskFromLookingCompleted() {
+        let failedId = UUID()
+        let blockedId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let plan = TaskPlan(
+            originalTask: "run dependent tasks",
+            subTasks: [
+                SubTask(id: failedId, description: "prepare data", status: .failed),
+                SubTask(id: blockedId, description: "use prepared data", dependencies: [failedId])
+            ],
+            status: .executing
+        )
+
+        let result = engine.dependencyBlockedResult(
+            for: plan.subTasks[1],
+            plan: plan,
+            finishedIds: [failedId],
+            successfulIds: []
+        )
+        let display = engine.subTaskDisplayResult(for: result, status: .failed)
+
+        XCTAssertEqual(result.verificationStatus, .needsRetry)
+        XCTAssertTrue(result.errors.first?.contains("前置依赖未成功完成") == true)
+        XCTAssertTrue(display?.contains("prepare data") == true)
+        XCTAssertTrue(display?.contains("不能视为完成") == true)
     }
 
     @MainActor

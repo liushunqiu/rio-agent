@@ -55,6 +55,7 @@ enum ConversationLoop {
 
                 // Error tracking
                 let hasErrors = results.contains { $0.status == .error }
+                let hasCancelled = results.contains { $0.status == .cancelled }
                 if hasErrors {
                     consecutiveErrors += 1
                     RioLogger.agent.warning("⚠️ 第 \(iterationCount) 轮: 工具执行有错误，连续错误次数: \(consecutiveErrors)")
@@ -65,6 +66,9 @@ enum ConversationLoop {
                         engine.appendMessage(msg)
                         break
                     }
+                } else if hasCancelled {
+                    consecutiveErrors = 0
+                    RioLogger.agent.info("⏹ 第 \(iterationCount) 轮: 工具执行已取消，停止后续对话循环")
                 } else {
                     consecutiveErrors = 0
                     engine.advancePlanStep()
@@ -84,6 +88,9 @@ enum ConversationLoop {
                     presentation: .internalOnly
                 )
                 engine.appendMessage(resultMessage)
+                if hasCancelled {
+                    break
+                }
                 continue
             }
 

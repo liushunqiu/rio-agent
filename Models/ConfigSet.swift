@@ -24,12 +24,18 @@ struct ConfigSet: Identifiable, Codable {
     }
     
     var isConfigured: Bool {
+        readinessIssue == nil
+    }
+
+    var readinessIssue: String? {
         let hasModel = !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasModel else { return "缺少模型标识" }
+
         switch provider {
         case .openAICompatible:
-            return hasModel && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "缺少 API 端点" : nil
         case .claude, .openAI:
-            return hasModel && !loadAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return loadAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "缺少 API Key" : nil
         }
     }
     
@@ -58,7 +64,12 @@ class ConfigSetManager: ObservableObject {
     static let shared = ConfigSetManager()
     static let storageKey = "config_sets_v2"
     
-    @Published var configSets: [ConfigSet] = []
+    @Published var configSets: [ConfigSet] = [] {
+        didSet {
+            revision &+= 1
+        }
+    }
+    @Published private(set) var revision: Int = 0
     
     init() {
         loadFromUserDefaults()

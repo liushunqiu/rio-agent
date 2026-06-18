@@ -3,6 +3,11 @@ import os
 
 @MainActor
 class ConversationManager: ObservableObject {
+    enum WorkingDirectoryUpdate: Equatable {
+        case preserve
+        case set(String?)
+    }
+
     @Published var conversations: [Conversation] = []
     @Published var currentConversation: Conversation?
 
@@ -15,8 +20,8 @@ class ConversationManager: ObservableObject {
 
     // MARK: - Public Methods
 
-    func createNewConversation() -> Conversation {
-        let conversation = Conversation()
+    func createNewConversation(workingDirectory: String? = nil) -> Conversation {
+        let conversation = Conversation(workingDirectory: workingDirectory)
         conversations.insert(conversation, at: 0)
         currentConversation = conversation
         debouncedSave()
@@ -35,18 +40,19 @@ class ConversationManager: ObservableObject {
         debouncedSave()
     }
 
-    func updateCurrentConversation(messages: [Message], workingDirectory: String? = nil) {
+    func updateCurrentConversation(
+        messages: [Message],
+        workingDirectory: WorkingDirectoryUpdate = .preserve
+    ) {
         guard var current = currentConversation else { return }
         let previous = current
         current.messages = messages
-        current.workingDirectory = workingDirectory
+        if case let .set(workingDirectory) = workingDirectory {
+            current.workingDirectory = workingDirectory
+        }
 
-        if current.title == "新对话", let firstUserMsg = messages.first(where: { $0.role == .user }) {
-            let text = firstUserMsg.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                let newTitle = text.count > 50 ? String(text.prefix(50)) + "..." : text
-                current.title = newTitle
-            }
+        if current.title == "新对话" {
+            current.title = Conversation(messages: messages).generatedTitle ?? current.title
         }
 
         guard current.messages != previous.messages
@@ -90,6 +96,28 @@ class ConversationManager: ObservableObject {
         }
 
         debouncedSave()
+    }
+
+    func updateWorkingDirectory(_ workingDirectory: String?) {
+        guard var current = currentConversation else { return }
+        guard current.workingDirectory != workingDirectory else { return }
+
+        current.workingDirectory = workingDirectory
+        currentConversation = current
+
+        if let index = conversations.firstIndex(where: { $0.id == current.id }) {
+            conversations[index] = current
+        } else {
+            conversations.insert(current, at: 0)
+        }
+
+        debouncedSave()
+    }
+
+    func flushPendingSave() {
+        saveDebounceTask?.cancel()
+        saveDebounceTask = nil
+        saveConversations()
     }
 
     // MARK: - Persistence

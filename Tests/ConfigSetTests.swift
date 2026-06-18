@@ -16,6 +16,7 @@ final class ConfigSetTests: XCTestCase {
         )
 
         XCTAssertTrue(configSet.isConfigured)
+        XCTAssertNil(configSet.readinessIssue)
     }
 
     func testCompatibleEndpointWithoutModelIsNotConfigured() {
@@ -27,6 +28,7 @@ final class ConfigSetTests: XCTestCase {
         )
 
         XCTAssertFalse(configSet.isConfigured)
+        XCTAssertEqual(configSet.readinessIssue, "缺少模型标识")
     }
 
     func testCompatibleEndpointWithBlankBaseURLIsNotConfigured() {
@@ -38,6 +40,7 @@ final class ConfigSetTests: XCTestCase {
         )
 
         XCTAssertFalse(configSet.isConfigured)
+        XCTAssertEqual(configSet.readinessIssue, "缺少 API 端点")
     }
 
     func testHostedProviderWithoutAPIKeyIsNotConfigured() {
@@ -49,6 +52,7 @@ final class ConfigSetTests: XCTestCase {
         )
 
         XCTAssertFalse(configSet.isConfigured)
+        XCTAssertEqual(configSet.readinessIssue, "缺少 API Key")
     }
 
     func testDeleteConfigSetRemovesStoredAPIKey() throws {
@@ -69,5 +73,25 @@ final class ConfigSetTests: XCTestCase {
 
         XCTAssertNil(KeychainManager.load(forKey: "config_set_\(configSet.id.uuidString)_api_key"))
         XCTAssertTrue(manager.configSets.isEmpty)
+    }
+
+    func testRevisionChangesWhenExistingConfigSetIsUpdated() {
+        let manager = ConfigSetManager.shared
+        let configSet = ConfigSet(
+            id: UUID(),
+            name: "Gateway",
+            provider: .openAICompatible,
+            baseURL: "https://one.example.com/v1",
+            model: "old-model"
+        )
+        manager.configSets = [configSet]
+        let revisionAfterAdd = manager.revision
+
+        var updated = configSet
+        updated.model = "new-model"
+        manager.updateConfigSet(updated)
+
+        XCTAssertGreaterThan(manager.revision, revisionAfterAdd)
+        XCTAssertEqual(manager.configSet(for: configSet.id)?.model, "new-model")
     }
 }

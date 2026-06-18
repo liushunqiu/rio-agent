@@ -15,7 +15,13 @@ class SearchFilesTool: Tool {
             throw ToolError.missingParameter("pattern")
         }
 
-        let searchPath = (arguments["path"] as? String) ?? ToolRegistry.shared.workingDirectory ?? "."
+        let searchPath: String
+        switch FileSystemToolSupport.resolvedScopedPath(from: arguments, toolName: name) {
+        case .success(let path):
+            searchPath = path
+        case .failure(let result):
+            return result
+        }
         let filePattern = arguments["file_pattern"] as? String
 
         return await Task.detached(priority: .userInitiated) {

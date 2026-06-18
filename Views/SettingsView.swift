@@ -34,12 +34,106 @@ enum SettingsTab: CaseIterable {
     }
 }
 
+enum SettingsLaunchContext: Equatable {
+    case planningModel
+    case executionModel
+    case routerModel
+    case multiAgentOrchestratorModel
+    case multiAgentWorkerAssignment
+    case multiAgentWorkerModel
+
+    var tab: SettingsTab {
+        switch self {
+        case .planningModel, .executionModel:
+            return .ai
+        case .routerModel, .multiAgentOrchestratorModel, .multiAgentWorkerAssignment, .multiAgentWorkerModel:
+            return .multiAgent
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .planningModel:
+            return "规划模型需要修复"
+        case .executionModel:
+            return "执行模型需要修复"
+        case .routerModel:
+            return "Router 配置需要修复"
+        case .multiAgentOrchestratorModel:
+            return "编排器模型配置需要修复"
+        case .multiAgentWorkerAssignment:
+            return "需要分配可执行 Worker"
+        case .multiAgentWorkerModel:
+            return "Worker 模型配置需要修复"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .planningModel:
+            return "补全用于任务拆解、复杂度判断和对话压缩的模型配置。"
+        case .executionModel:
+            return "补全用于回复生成、工具调用和文件操作的模型配置。"
+        case .routerModel:
+            return "检查 Router 绑定的模型配置、端点和模型名是否可用。"
+        case .multiAgentOrchestratorModel:
+            return "为主 Agent 选择一个已就绪的模型配置，确保任务拆分、汇总和最终回答可以执行。"
+        case .multiAgentWorkerAssignment:
+            return "至少启用一个 Worker，并为它分配可用的模型配置。"
+        case .multiAgentWorkerModel:
+            return "为失败的 Worker 选择一个已就绪的模型配置，避免任务分配后无法执行。"
+        }
+    }
+
+    var destinationLabel: String {
+        switch self {
+        case .planningModel:
+            return "AI 配置 → 规划模型"
+        case .executionModel:
+            return "AI 配置 → 执行模型"
+        case .routerModel:
+            return "Multi-Agent → 路由配置"
+        case .multiAgentOrchestratorModel:
+            return "Multi-Agent → 编排器"
+        case .multiAgentWorkerAssignment, .multiAgentWorkerModel:
+            return "Multi-Agent → 子 Agent 池"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .planningModel, .executionModel, .routerModel, .multiAgentOrchestratorModel:
+            return "wrench.and.screwdriver.fill"
+        case .multiAgentWorkerAssignment, .multiAgentWorkerModel:
+            return "person.crop.circle.badge.exclamationmark"
+        }
+    }
+}
+
+struct SettingsConfigurationDraft {
+    var planningConfigSetId: UUID?
+    var executionConfigSetId: UUID?
+    var enableStreaming: Bool
+    var maxContextMessages: Int
+    var singleAgentSystemPrompt: String
+
+    func applied(to configuration: AIConfiguration) -> AIConfiguration {
+        var updated = configuration
+        updated.planningConfigSetId = planningConfigSetId
+        updated.executionConfigSetId = executionConfigSetId
+        updated.enableStreaming = enableStreaming
+        updated.maxContextMessages = maxContextMessages
+        updated.singleAgentSystemPrompt = singleAgentSystemPrompt
+        return updated
+    }
+}
+
 struct SettingsView: View {
     @Binding var configuration: AIConfiguration
     @Binding var multiAgentConfig: MultiAgentConfig
     @ObservedObject var memory: AgentMemory
     @Environment(\.dismiss) var dismiss
-    @State private var selectedTab: SettingsTab = .ai
+    @State private var selectedTab: SettingsTab
     @ObservedObject private var configSetManager = ConfigSetManager.shared
 
     // Local state
@@ -50,15 +144,22 @@ struct SettingsView: View {
     @State private var singleAgentSystemPrompt: String
     @State private var memoryFilePath: String
     @State private var showingClearMemoryConfirmation = false
+    @State private var pendingDeleteMemoryNote: AgentMemory.MemoryNote?
+    @State private var promptApplyTask: Task<Void, Never>?
+    private let launchContext: SettingsLaunchContext?
 
     init(
         configuration: Binding<AIConfiguration>,
         multiAgentConfig: Binding<MultiAgentConfig>? = nil,
-        memory: AgentMemory
+        memory: AgentMemory,
+        initialTab: SettingsTab = .ai,
+        launchContext: SettingsLaunchContext? = nil
     ) {
         self._configuration = configuration
         self._multiAgentConfig = multiAgentConfig ?? .constant(MultiAgentConfig())
         self.memory = memory
+        self.launchContext = launchContext
+        self._selectedTab = State(initialValue: initialTab)
         let cfg = configuration.wrappedValue
         self._planningConfigSetId = State(initialValue: cfg.planningConfigSetId)
         self._executionConfigSetId = State(initialValue: cfg.executionConfigSetId)
@@ -68,19 +169,29 @@ struct SettingsView: View {
         self._memoryFilePath = State(initialValue: memory.memoryMarkdownPath())
     }
 
-    private func saveConfiguration() {
+    private func applyConfiguration() {
         reconcileSelectedConfigSets()
 
-        // Update configuration
-        configuration.planningConfigSetId = planningConfigSetId
-        configuration.executionConfigSetId = executionConfigSetId
-        configuration.enableStreaming = enableStreaming
-        configuration.maxContextMessages = maxContextMessages
-        configuration.singleAgentSystemPrompt = singleAgentSystemPrompt
+        configuration = SettingsConfigurationDraft(
+            planningConfigSetId: planningConfigSetId,
+            executionConfigSetId: executionConfigSetId,
+            enableStreaming: enableStreaming,
+            maxContextMessages: maxContextMessages,
+            singleAgentSystemPrompt: singleAgentSystemPrompt
+        ).applied(to: configuration)
 
         let pName = planningConfigSet?.name ?? "未设置"
         let eName = executionConfigSet?.name ?? "未设置"
-        RioLogger.config.info("💾 设置已保存 (规划: \(pName, privacy: .public), 执行: \(eName, privacy: .public))")
+        RioLogger.config.info("💾 设置已应用 (规划: \(pName, privacy: .public), 执行: \(eName, privacy: .public))")
+    }
+
+    private func schedulePromptApply() {
+        promptApplyTask?.cancel()
+        promptApplyTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            applyConfiguration()
+        }
     }
 
     var body: some View {
@@ -101,12 +212,19 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         configurationSummary
+                        if let launchContext {
+                            SettingsRecoveryBanner(context: launchContext)
+                        }
 
                         switch selectedTab {
                         case .ai:
                             darkAIConfigSection
                         case .multiAgent:
-                            MultiAgentSettingsView(config: $multiAgentConfig, aiConfig: currentAIConfigInfo)
+                            MultiAgentSettingsView(
+                                config: $multiAgentConfig,
+                                aiConfig: currentAIConfigInfo,
+                                launchContext: launchContext
+                            )
                         case .memory:
                             memoryManagementSection
                         case .about:
@@ -129,27 +247,69 @@ struct SettingsView: View {
         } message: {
             Text("这会删除所有已持久化的长期记忆条目。")
         }
+        .alert("删除记忆条目？", isPresented: deleteMemoryNoteConfirmationBinding) {
+            Button("取消", role: .cancel) {
+                pendingDeleteMemoryNote = nil
+            }
+            Button("删除", role: .destructive) {
+                if let pendingDeleteMemoryNote {
+                    memory.deleteMemoryNote(summary: pendingDeleteMemoryNote.summary)
+                }
+                pendingDeleteMemoryNote = nil
+            }
+        } message: {
+            Text(deleteMemoryNoteConfirmationMessage)
+        }
         .onAppear {
             reconcileSelectedConfigSets()
+            applyConfiguration()
         }
-        .onChange(of: configSetManager.configSets.map(\.id)) {
+        .onChange(of: configSetManager.revision) {
             reconcileSelectedConfigSets()
+            applyConfiguration()
+        }
+        .onChange(of: planningConfigSetId) { _, _ in applyConfiguration() }
+        .onChange(of: executionConfigSetId) { _, _ in applyConfiguration() }
+        .onChange(of: enableStreaming) { _, _ in applyConfiguration() }
+        .onChange(of: maxContextMessages) { _, _ in applyConfiguration() }
+        .onChange(of: singleAgentSystemPrompt) { _, _ in schedulePromptApply() }
+        .onDisappear {
+            promptApplyTask?.cancel()
+            applyConfiguration()
         }
     }
 
-    private func reconcileSelectedConfigSets() {
-        let sets = configSetManager.configSets
-        let fallbackId = sets.first?.id
+    private var deleteMemoryNoteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteMemoryNote != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingDeleteMemoryNote = nil
+                }
+            }
+        )
+    }
 
-        if planningConfigSetId == nil || !sets.contains(where: { $0.id == planningConfigSetId }) {
+    private var deleteMemoryNoteConfirmationMessage: String {
+        guard let pendingDeleteMemoryNote else {
+            return "这个操作无法撤销。"
+        }
+        return "将删除这条长期记忆：\n\(pendingDeleteMemoryNote.summary)\n\n这个操作无法撤销。"
+    }
+
+    private func reconcileSelectedConfigSets() {
+        let readySets = configSetManager.configSets.filter(\.isConfigured)
+        let fallbackId = readySets.first?.id
+
+        if planningConfigSetId == nil || !readySets.contains(where: { $0.id == planningConfigSetId }) {
             planningConfigSetId = executionConfigSetId.flatMap { id in
-                sets.contains(where: { $0.id == id }) ? id : nil
+                readySets.contains(where: { $0.id == id }) ? id : nil
             } ?? fallbackId
         }
 
-        if executionConfigSetId == nil || !sets.contains(where: { $0.id == executionConfigSetId }) {
+        if executionConfigSetId == nil || !readySets.contains(where: { $0.id == executionConfigSetId }) {
             executionConfigSetId = planningConfigSetId.flatMap { id in
-                sets.contains(where: { $0.id == id }) ? id : nil
+                readySets.contains(where: { $0.id == id }) ? id : nil
             } ?? fallbackId
         }
     }
@@ -175,7 +335,8 @@ struct SettingsView: View {
             currentClaudeModel: claudeSet?.model ?? "",
             currentOpenAIModel: openAISet?.model ?? "",
             currentCompatibleModel: customSet?.model ?? "",
-            allConfigSets: sets  // 传递所有配置集
+            allConfigSets: sets,  // 传递所有配置集
+            configSetRevision: configSetManager.revision
         )
     }
 
@@ -193,10 +354,10 @@ struct SettingsView: View {
             .padding(.top, 18)
 
             VStack(spacing: 6) {
-                SettingsSidebarItem(tab: .ai, selectedTab: $selectedTab)
-                SettingsSidebarItem(tab: .multiAgent, selectedTab: $selectedTab)
-                SettingsSidebarItem(tab: .memory, selectedTab: $selectedTab)
-                SettingsSidebarItem(tab: .about, selectedTab: $selectedTab)
+                SettingsSidebarItem(tab: .ai, selectedTab: $selectedTab, launchContext: launchContext)
+                SettingsSidebarItem(tab: .multiAgent, selectedTab: $selectedTab, launchContext: launchContext)
+                SettingsSidebarItem(tab: .memory, selectedTab: $selectedTab, launchContext: launchContext)
+                SettingsSidebarItem(tab: .about, selectedTab: $selectedTab, launchContext: launchContext)
             }
 
             Spacer()
@@ -229,22 +390,35 @@ struct SettingsView: View {
                 Text(selectedTab.title)
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(Theme.textPrimary)
-                Text(selectedTab.subtitle)
+                Text(headerSubtitle)
                     .font(.system(size: 12))
                     .foregroundColor(Theme.textTertiary)
             }
 
             Spacer()
 
-            Button("完成") {
-                saveConfiguration()
-                dismiss()
+            HStack(spacing: 8) {
+                Label("自动应用", systemImage: "checkmark.circle")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.statusSuccess)
+
+                Button("关闭") {
+                    applyConfiguration()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accentPrimary)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accentPrimary)
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 16)
+    }
+
+    private var headerSubtitle: String {
+        if let launchContext, launchContext.tab == selectedTab {
+            return launchContext.detail
+        }
+        return selectedTab.subtitle
     }
 
     private var configurationSummary: some View {
@@ -286,6 +460,14 @@ struct SettingsView: View {
         executionConfigSet?.name ?? "未设置"
     }
 
+    private var planningRecoveryMessage: String? {
+        launchContext == .planningModel ? launchContext?.detail : nil
+    }
+
+    private var executionRecoveryMessage: String? {
+        launchContext == .executionModel ? launchContext?.detail : nil
+    }
+
     // MARK: - AI Config Section
 
     @ViewBuilder
@@ -301,14 +483,16 @@ struct SettingsView: View {
                     title: "规划调用",
                     detail: "用于任务拆解、复杂度判断和对话压缩",
                     selectedId: $planningConfigSetId,
-                    configSets: configSetManager.configSets
+                    configSets: configSetManager.configSets,
+                    recoveryMessage: planningRecoveryMessage
                 )
 
                 ConfigSetPickerSection(
                     title: "执行调用",
                     detail: "用于对话回复、工具调用和文件操作",
                     selectedId: $executionConfigSetId,
-                    configSets: configSetManager.configSets
+                    configSets: configSetManager.configSets,
+                    recoveryMessage: executionRecoveryMessage
                 )
             }
 
@@ -421,7 +605,7 @@ struct SettingsView: View {
                     VStack(spacing: 10) {
                         ForEach(memory.persistedNotes) { note in
                             MemoryNoteCard(note: note) {
-                                memory.deleteMemoryNote(summary: note.summary)
+                                pendingDeleteMemoryNote = note
                             }
                         }
                     }
@@ -489,7 +673,9 @@ struct MemoryNoteCard: View {
                     .foregroundColor(Theme.textPrimary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button(role: .destructive, action: onDelete) {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 11, weight: .semibold))
                 }
@@ -519,8 +705,10 @@ struct MemoryNoteCard: View {
 struct SettingsSidebarItem: View {
     let tab: SettingsTab
     @Binding var selectedTab: SettingsTab
+    let launchContext: SettingsLaunchContext?
 
     private var isSelected: Bool { selectedTab == tab }
+    private var isRecoveryTarget: Bool { launchContext?.tab == tab }
 
     var body: some View {
         Button {
@@ -536,6 +724,12 @@ struct SettingsSidebarItem: View {
                     .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
                     .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
 
+                if isRecoveryTarget {
+                    Image(systemName: "wrench.and.screwdriver.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.statusWarning)
+                }
+
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -544,11 +738,24 @@ struct SettingsSidebarItem: View {
             .cornerRadius(Theme.radiusMD)
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.radiusMD)
-                    .stroke(isSelected ? Theme.borderDefault : Color.clear, lineWidth: 1)
+                    .stroke(
+                        isRecoveryTarget
+                            ? Theme.statusWarning.opacity(0.28)
+                            : (isSelected ? Theme.borderDefault : Color.clear),
+                        lineWidth: 1
+                    )
             )
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 10)
+        .help(sidebarHelpText)
+    }
+
+    private var sidebarHelpText: String {
+        if isRecoveryTarget, let launchContext {
+            return launchContext.detail
+        }
+        return tab.subtitle
     }
 }
 
@@ -578,6 +785,7 @@ struct SettingsMetric: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundColor(Theme.textPrimary)
+                    .help(value.isEmpty ? "未设置" : value)
             }
 
             Spacer(minLength: 0)
@@ -589,6 +797,81 @@ struct SettingsMetric: View {
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
                 .stroke(Theme.borderSubtle, lineWidth: 1)
+        )
+    }
+}
+
+struct SettingsRecoveryBanner: View {
+    let context: SettingsLaunchContext
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: Theme.radiusSM)
+                    .fill(Theme.statusWarning.opacity(0.14))
+                    .frame(width: 34, height: 34)
+
+                Image(systemName: context.icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(Theme.statusWarning)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(context.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+
+                Text(context.detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("修复位置：\(context.destinationLabel)")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundColor(Theme.statusWarning)
+                .padding(.top, 2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Theme.bgSecondary)
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.statusWarning.opacity(0.22), lineWidth: 1)
+        )
+    }
+}
+
+struct SectionRecoveryCallout: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Theme.statusWarning)
+                .padding(.top, 1)
+
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Theme.statusWarning.opacity(0.08))
+        .cornerRadius(Theme.radiusSM)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .stroke(Theme.statusWarning.opacity(0.2), lineWidth: 1)
         )
     }
 }
@@ -683,6 +966,9 @@ struct ProviderSelectionRow: View {
                         Text(provider.displayName)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(Theme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(provider.displayName)
                         Circle()
                             .fill(isConfigured ? Theme.statusSuccess : Theme.statusWarning)
                             .frame(width: 6, height: 6)
@@ -692,6 +978,7 @@ struct ProviderSelectionRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .foregroundColor(Theme.textTertiary)
+                        .help(model.isEmpty ? "未设置模型" : model)
                 }
 
                 Spacer()
@@ -777,18 +1064,51 @@ struct DarkTabButton: View {
 struct DarkSettingsSection<Content: View>: View {
     let title: String
     let icon: String
+    let recoveryMessage: String?
     @ViewBuilder let content: () -> Content
+
+    init(
+        title: String,
+        icon: String,
+        recoveryMessage: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.icon = icon
+        self.recoveryMessage = recoveryMessage
+        self.content = content
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.accentPrimary)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(recoveryMessage == nil ? Theme.accentPrimary : Theme.statusWarning)
 
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                }
+
+                if recoveryMessage != nil {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("正在修复")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(Theme.statusWarning)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.statusWarning.opacity(0.12))
+                    .cornerRadius(Theme.radiusSM)
+                }
+            }
+
+            if let recoveryMessage {
+                SectionRecoveryCallout(text: recoveryMessage)
             }
 
             content()
@@ -798,7 +1118,7 @@ struct DarkSettingsSection<Content: View>: View {
         .cornerRadius(Theme.radiusLG)
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusLG)
-                .stroke(Theme.borderSubtle, lineWidth: 1)
+                .stroke(recoveryMessage == nil ? Theme.borderSubtle : Theme.statusWarning.opacity(0.28), lineWidth: 1)
         )
     }
 }
@@ -885,9 +1205,24 @@ struct ConfigSetPickerSection: View {
     let detail: String
     @Binding var selectedId: UUID?
     let configSets: [ConfigSet]
+    let recoveryMessage: String?
+
+    init(
+        title: String,
+        detail: String,
+        selectedId: Binding<UUID?>,
+        configSets: [ConfigSet],
+        recoveryMessage: String? = nil
+    ) {
+        self.title = title
+        self.detail = detail
+        self._selectedId = selectedId
+        self.configSets = configSets
+        self.recoveryMessage = recoveryMessage
+    }
 
     var body: some View {
-        DarkSettingsSection(title: title, icon: "arrow.triangle.branch") {
+        DarkSettingsSection(title: title, icon: "arrow.triangle.branch", recoveryMessage: recoveryMessage) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(detail)
                     .font(.system(size: 11))
@@ -936,6 +1271,9 @@ struct ConfigSetPickerRow: View {
                         Text(configSet.name)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(Theme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(configSet.name)
                         Circle()
                             .fill(configSet.isConfigured ? Theme.statusSuccess : Theme.statusWarning)
                             .frame(width: 6, height: 6)
@@ -945,6 +1283,16 @@ struct ConfigSetPickerRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .foregroundColor(Theme.textTertiary)
+                        .help(configSet.model.isEmpty ? "未设置模型" : configSet.model)
+
+                    if let readinessIssue = configSet.readinessIssue {
+                        Text(readinessIssue)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.statusWarning)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(readinessIssue)
+                    }
                 }
 
                 Spacer()
@@ -953,10 +1301,14 @@ struct ConfigSetPickerRow: View {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 14))
                         .foregroundColor(Theme.accentPrimary)
+                } else if !configSet.isConfigured {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(Theme.statusWarning)
                 }
             }
             .padding(9)
-            .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(0.72))
+            .background(isSelected ? Theme.bgTertiary : Theme.bgInput.opacity(configSet.isConfigured ? 0.72 : 0.42))
             .cornerRadius(Theme.radiusMD)
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.radiusMD)
@@ -964,6 +1316,9 @@ struct ConfigSetPickerRow: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!configSet.isConfigured)
+        .opacity(configSet.isConfigured ? 1 : 0.72)
+        .help(configSet.readinessIssue.map { "暂不可选：\($0)" } ?? "")
     }
 }
 
@@ -971,18 +1326,51 @@ struct ConfigSetPickerRow: View {
 struct SettingsSection<Content: View>: View {
     let title: String
     let icon: String
+    let recoveryMessage: String?
     @ViewBuilder let content: () -> Content
+
+    init(
+        title: String,
+        icon: String,
+        recoveryMessage: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.icon = icon
+        self.recoveryMessage = recoveryMessage
+        self.content = content
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.accentPrimary)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(recoveryMessage == nil ? Theme.accentPrimary : Theme.statusWarning)
 
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                }
+
+                if recoveryMessage != nil {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("正在修复")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(Theme.statusWarning)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.statusWarning.opacity(0.12))
+                    .cornerRadius(Theme.radiusSM)
+                }
+            }
+
+            if let recoveryMessage {
+                SectionRecoveryCallout(text: recoveryMessage)
             }
 
             content()
@@ -992,7 +1380,7 @@ struct SettingsSection<Content: View>: View {
         .cornerRadius(Theme.radiusLG)
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusLG)
-                .stroke(Theme.borderSubtle, lineWidth: 1)
+                .stroke(recoveryMessage == nil ? Theme.borderSubtle : Theme.statusWarning.opacity(0.28), lineWidth: 1)
         )
     }
 }
@@ -1037,6 +1425,7 @@ struct AIConfigInfo {
     let currentOpenAIModel: String
     let currentCompatibleModel: String
     let allConfigSets: [ConfigSet]  // 新增：所有配置集
+    let configSetRevision: Int
 
     var availableProviders: [AIProvider] {
         var providers: [AIProvider] = []

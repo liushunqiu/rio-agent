@@ -9,7 +9,13 @@ class ListDirectoryTool: Tool {
     ]
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
-        let dirPath = (arguments["path"] as? String) ?? ToolRegistry.shared.workingDirectory ?? "."
+        let dirPath: String
+        switch FileSystemToolSupport.resolvedScopedPath(from: arguments, toolName: name) {
+        case .success(let path):
+            dirPath = path
+        case .failure(let result):
+            return result
+        }
 
         return await Task.detached(priority: .userInitiated) {
             do {

@@ -2,6 +2,11 @@ import Darwin
 import Foundation
 
 enum FileSystemToolSupport {
+    enum ScopedPathResolution {
+        case success(String)
+        case failure(ToolResult)
+    }
+
     static let skippedDirectoryNames: Set<String> = [
         ".next",
         ".build",
@@ -16,6 +21,29 @@ enum FileSystemToolSupport {
         "node_modules",
         "venv"
     ]
+
+    static func resolvedScopedPath(
+        from arguments: [String: Any],
+        parameterName: String = "path",
+        toolName: String
+    ) -> ScopedPathResolution {
+        let explicitPath = arguments[parameterName] as? String
+        guard let path = explicitPath ?? ToolRegistry.shared.workingDirectory else {
+            return .failure(ToolResult.error(
+                toolCallId: toolName,
+                error: "\(parameterName) is required when no working directory is selected"
+            ))
+        }
+
+        if explicitPath != nil, !PathSecurity.isAbsolutePath(path) {
+            return .failure(ToolResult.error(
+                toolCallId: toolName,
+                error: "\(parameterName) must be an absolute path. Resolve relative paths from the working directory before calling \(toolName)."
+            ))
+        }
+
+        return .success(PathSecurity.normalizedPath(path))
+    }
 
     static func shouldSkipDirectory(_ url: URL) -> Bool {
         skippedDirectoryNames.contains(url.lastPathComponent)

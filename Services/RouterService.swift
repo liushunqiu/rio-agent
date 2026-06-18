@@ -10,18 +10,47 @@ enum RoutingDecision {
         case .routeToTarget(let target, _, _, _): return target
         }
     }
+
+    var preferredWorkerCapability: AgentCapability? {
+        switch self {
+        case .skip:
+            return nil
+        case .routeToTarget(let target, _, _, _):
+            return AgentCapability.routingTarget(target)
+        }
+    }
 }
 
 enum RouterService {
     static func route(
         input: String,
-        service: AIService,
+        service: AIService?,
         model: String,
         config: RouterConfig
     ) async -> RoutingDecision? {
+        (await routeDetailed(
+            input: input,
+            service: service,
+            model: model,
+            config: config
+        )).decision
+    }
+
+    static func routeDetailed(
+        input: String,
+        service: AIService?,
+        model: String,
+        config: RouterConfig
+    ) async -> (decision: RoutingDecision?, failureReason: String?) {
         // 如果启用了 Qwen3.5-4B 路由器，使用专用路由逻辑
         if config.enableQwenRouter {
             return await routeWithQwen(input: input, config: config)
+        }
+
+        guard let service else {
+            let reason = "通用 Router 缺少可用 AIService"
+            RioLogger.service.error("\(reason, privacy: .public)")
+            return (nil, reason)
         }
         
         // 否则使用原有的通用路由逻辑
@@ -47,18 +76,23 @@ enum RouterService {
             )
 
             guard let content = response.content else {
-                RioLogger.service.warning("🔀 Router 返回内容为空")
-                return nil
+                let reason = "Router 返回内容为空"
+                RioLogger.service.warning("🔀 \(reason, privacy: .public)")
+                return (nil, reason)
             }
 
             RioLogger.service.debug("🔀 Router 原始响应: \(content, privacy: .public)")
 
             let decision = parseRoutingResponse(content)
             RioLogger.service.info("🔀 Router 解析结果: \(decision?.mode ?? "nil (解析失败)", privacy: .public)")
-            return decision
+            guard let decision else {
+                return (nil, "Router 响应不是有效 JSON 路由决策")
+            }
+            return (decision, nil)
         } catch {
-            RioLogger.service.error("路由调用失败: \(error.localizedDescription, privacy: .public)")
-            return nil
+            let reason = "路由调用失败：\(error.localizedDescription)"
+            RioLogger.service.error("\(reason, privacy: .public)")
+            return (nil, reason)
         }
     }
     
@@ -67,10 +101,17 @@ enum RouterService {
     private static func routeWithQwen(
         input: String,
         config: RouterConfig
-    ) async -> RoutingDecision? {
-        guard let url = URL(string: "\(config.qwenBaseUrl)/v1/chat/completions") else {
-            RioLogger.service.error("Qwen 路由 URL 无效: \(config.qwenBaseUrl, privacy: .public)")
-            return nil
+    ) async -> (decision: RoutingDecision?, failureReason: String?) {
+        if let readinessIssue = config.qwenReadinessIssue {
+            let reason = "Qwen 路由配置不可用：\(readinessIssue)"
+            RioLogger.service.error("\(reason, privacy: .public)")
+            return (nil, reason)
+        }
+
+        guard let url = config.qwenChatCompletionsURL else {
+            let reason = "Qwen 路由 URL 无效：\(config.qwenBaseUrl)"
+            RioLogger.service.error("\(reason, privacy: .public)")
+            return (nil, reason)
         }
         
         // 构建路由提示词
@@ -83,7 +124,7 @@ enum RouterService {
         
         // 构建请求体，参考用户提供的 Python 代码
         var body: [String: Any] = [
-            "model": config.qwenModel,
+            "model": config.qwenModel.trimmingCharacters(in: .whitespacesAndNewlines),
             "messages": messages,
             "max_tokens": config.maxTokens,
             "temperature": config.temperature,
@@ -110,10 +151,16 @@ enum RouterService {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                RioLogger.service.error("Qwen 路由请求失败")
-                return nil
+            guard let httpResponse = response as? HTTPURLResponse else {
+                let reason = "Qwen 路由响应不是 HTTP 响应"
+                RioLogger.service.error("\(reason, privacy: .public)")
+                return (nil, reason)
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let reason = "Qwen 路由请求失败：HTTP \(httpResponse.statusCode)\(responseSnippet(from: data))"
+                RioLogger.service.error("\(reason, privacy: .public)")
+                return (nil, reason)
             }
             
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -121,18 +168,34 @@ enum RouterService {
                   let firstChoice = choices.first,
                   let message = firstChoice["message"] as? [String: Any],
                   let content = message["content"] as? String else {
-                RioLogger.service.error("Qwen 路由响应解析失败")
-                return nil
+                let reason = "Qwen 路由响应解析失败\(responseSnippet(from: data))"
+                RioLogger.service.error("\(reason, privacy: .public)")
+                return (nil, reason)
             }
             
             RioLogger.service.debug("🔀 Qwen Router 原始响应: \(content, privacy: .public)")
             let decision = parseQwenRoutingResponse(content)
             RioLogger.service.info("🔀 Qwen Router 解析结果: \(decision?.mode ?? "nil (解析失败)", privacy: .public)")
-            return decision
+            guard let decision else {
+                return (nil, "Qwen Router 响应不是有效 JSON 路由决策")
+            }
+            return (decision, nil)
         } catch {
-            RioLogger.service.error("Qwen 路由调用失败: \(error.localizedDescription, privacy: .public)")
-            return nil
+            let reason = "Qwen 路由调用失败：\(error.localizedDescription)"
+            RioLogger.service.error("\(reason, privacy: .public)")
+            return (nil, reason)
         }
+    }
+
+    private static func responseSnippet(from data: Data) -> String {
+        guard let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !text.isEmpty else {
+            return ""
+        }
+
+        let snippet = text.count > 180 ? String(text.prefix(180)) + "..." : text
+        return "，响应：\(snippet)"
     }
     
     private static func buildQwenRoutingPrompt(targets: [RoutingTarget]) -> String {

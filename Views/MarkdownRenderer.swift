@@ -27,7 +27,8 @@ struct MarkdownParser {
             let idx = segmentIndex
             segmentIndex += 1
 
-            if let codeBlockStart = remaining.range(of: "```") {
+            if let fence = firstCodeFence(in: remaining) {
+                let codeBlockStart = fence.range
                 let beforeCode = remaining[..<codeBlockStart.lowerBound]
                 if !beforeCode.isEmpty {
                     segments.append(.text(id: "t\(idx)", content: String(beforeCode)))
@@ -40,7 +41,7 @@ struct MarkdownParser {
                 let codeStart = lineEnd < afterBackticks.endIndex ? afterBackticks.index(after: lineEnd) : afterBackticks.endIndex
                 let afterCodeStart = afterBackticks[codeStart...]
 
-                if let codeBlockEnd = afterCodeStart.range(of: "```") {
+                if let codeBlockEnd = closingCodeFenceRange(in: afterCodeStart, marker: fence.marker) {
                     let code = String(afterCodeStart[..<codeBlockEnd.lowerBound])
                     let trimmedCode = code.hasSuffix("\n") ? String(code.dropLast()) : code
                     segments.append(.codeBlock(id: "c\(idx)", language: language, code: trimmedCode))
@@ -58,6 +59,48 @@ struct MarkdownParser {
         }
 
         return segments
+    }
+
+    private static func firstCodeFence(in text: Substring) -> (range: Range<String.Index>, marker: String)? {
+        var index = text.startIndex
+        while index < text.endIndex {
+            guard text[index] == "`" else {
+                index = text.index(after: index)
+                continue
+            }
+
+            var end = index
+            var count = 0
+            while end < text.endIndex, text[end] == "`" {
+                count += 1
+                end = text.index(after: end)
+            }
+
+            if count >= 3 {
+                return (index..<end, String(repeating: "`", count: count))
+            }
+
+            index = end
+        }
+
+        return nil
+    }
+
+    private static func closingCodeFenceRange(in text: Substring, marker: String) -> Range<String.Index>? {
+        var lineStart = text.startIndex
+
+        while lineStart < text.endIndex {
+            let lineEnd = text[lineStart...].firstIndex(of: "\n") ?? text.endIndex
+            let line = text[lineStart..<lineEnd]
+            if line.trimmingCharacters(in: .whitespaces) == marker {
+                return lineStart..<lineEnd
+            }
+
+            guard lineEnd < text.endIndex else { break }
+            lineStart = text.index(after: lineEnd)
+        }
+
+        return nil
     }
 }
 
@@ -149,12 +192,10 @@ struct CodeBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                if !language.isEmpty {
-                    Text(language)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(Theme.textTertiary)
-                        .textCase(.uppercase)
-                }
+                Text(displayLanguage)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(Theme.textTertiary)
+                    .textCase(.uppercase)
 
                 Spacer()
 
@@ -179,6 +220,7 @@ struct CodeBlockView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .help(isExpanded ? "收起代码块" : "展开完整代码块")
                 }
 
                 Button(action: copyCode) {
@@ -197,6 +239,7 @@ struct CodeBlockView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .help(isCopied ? "代码已复制" : "复制代码")
                 .onHover { hovering in
                     isHovered = hovering
                 }
@@ -246,5 +289,10 @@ struct CodeBlockView: View {
     private var shouldCollapse: Bool {
         code.components(separatedBy: .newlines).count > collapsedLineLimit
             || code.count > 1200
+    }
+
+    private var displayLanguage: String {
+        let trimmed = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "code" : trimmed
     }
 }

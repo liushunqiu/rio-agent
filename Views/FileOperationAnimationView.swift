@@ -30,6 +30,8 @@ struct FileOperationAnimationView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(Theme.textSecondary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(fileName)
             }
 
             Spacer()
@@ -127,6 +129,8 @@ struct FileDiffAnimationView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(diffLine.type.textColor)
                             .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(diffLine.text)
 
                         Spacer()
                     }
@@ -242,6 +246,8 @@ struct FileWriteProgressView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(Theme.textPrimary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(fileName)
 
                 Text(formatFileSize(writtenBytes) + " / " + formatFileSize(fileSize))
                     .font(.system(size: 11, design: .monospaced))
@@ -304,12 +310,17 @@ struct EnhancedToolExecutionView: View {
                 Text(toolName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(toolName)
 
                 if let detail = detail {
                     Text(detail)
                         .font(.system(size: 12))
                         .foregroundColor(Theme.textSecondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(detail)
                 }
 
                 if let progress = progress, status == .executing {
@@ -321,7 +332,7 @@ struct EnhancedToolExecutionView: View {
 
                             RoundedRectangle(cornerRadius: 1.5)
                                 .fill(status.color)
-                                .frame(width: geometry.size.width * progress, height: 3)
+                                .frame(width: geometry.size.width * clampedProgress(progress), height: 3)
                         }
                     }
                     .frame(height: 3)
@@ -345,6 +356,11 @@ struct EnhancedToolExecutionView: View {
             RoundedRectangle(cornerRadius: Theme.radiusMD)
                 .stroke(status.color.opacity(0.2), lineWidth: 1)
         )
+    }
+
+    private func clampedProgress(_ progress: Double) -> Double {
+        guard progress.isFinite else { return 0 }
+        return min(max(progress, 0), 1)
     }
 }
 

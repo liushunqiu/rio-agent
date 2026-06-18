@@ -33,6 +33,33 @@ final class SafetyRegressionTests: XCTestCase {
         )
     }
 
+    func testPathSecurityRelativePathUsesDirectoryBoundary() {
+        XCTAssertEqual(
+            PathSecurity.relativePath(
+                "/Users/test/project/Sources/App.swift",
+                from: "/Users/test/project"
+            ),
+            "Sources/App.swift"
+        )
+        XCTAssertEqual(
+            PathSecurity.relativePath(
+                "/Users/test/project-backup/Sources/App.swift",
+                from: "/Users/test/project"
+            ),
+            "/Users/test/project-backup/Sources/App.swift"
+        )
+    }
+
+    func testPathSecurityRelativePathForWorkspaceRootUsesFolderName() {
+        XCTAssertEqual(
+            PathSecurity.relativePath(
+                "/Users/test/project",
+                from: "/Users/test/project"
+            ),
+            "project"
+        )
+    }
+
     func testCommandClassifierTreatsGitPushAsNonSafe() {
         XCTAssertNotEqual(CommandClassifier.classify("git push origin main"), .safe)
     }
@@ -185,6 +212,129 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertTrue(negativeMaxLines.error?.contains("max_lines") == true)
     }
 
+    func testFileToolsRejectRelativePathsBeforeFilesystemAccess() async throws {
+        let readTool = FileReadTool()
+        let writeTool = FileWriteTool()
+        let editTool = EditFileTool()
+
+        let readResult = try await readTool.execute(arguments: [
+            "path": "Sources/App.swift"
+        ])
+        let writeResult = try await writeTool.execute(arguments: [
+            "path": "Sources/App.swift",
+            "content": "new content"
+        ])
+        let editResult = try await editTool.execute(arguments: [
+            "path": "Sources/App.swift",
+            "old_text": "old",
+            "new_text": "new"
+        ])
+
+        XCTAssertEqual(readResult.status, .error)
+        XCTAssertTrue(readResult.error?.contains("absolute path") == true)
+        XCTAssertEqual(writeResult.status, .error)
+        XCTAssertTrue(writeResult.error?.contains("absolute path") == true)
+        XCTAssertEqual(editResult.status, .error)
+        XCTAssertTrue(editResult.error?.contains("absolute path") == true)
+    }
+
+    func testDirectoryToolsRejectRelativeExplicitPaths() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let results = try await withTemporaryWorkingDirectory(tempDir.path) {
+            [
+                try await FindFilesTool().execute(arguments: [
+                    "path": "Sources",
+                    "pattern": "*.swift"
+                ]),
+                try await SearchFilesTool().execute(arguments: [
+                    "path": "Sources",
+                    "pattern": "target"
+                ]),
+                try await ListDirectoryTool().execute(arguments: [
+                    "path": "Sources"
+                ])
+            ]
+        }
+
+        XCTAssertTrue(results.allSatisfy { $0.status == .error })
+        XCTAssertTrue(results.allSatisfy { $0.error?.contains("absolute path") == true })
+    }
+
+    func testDirectoryToolsAllowAbsoluteReadOnlyPathsOutsideWorkingDirectory() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+        let outsideFile = outsideDir.appendingPathComponent("Outside.swift")
+        try "let targetValue = 1".write(to: outsideFile, atomically: true, encoding: .utf8)
+
+        let results = try await withTemporaryWorkingDirectory(tempDir.path) {
+            [
+                try await FindFilesTool().execute(arguments: [
+                    "path": outsideDir.path,
+                    "pattern": "*.swift"
+                ]),
+                try await SearchFilesTool().execute(arguments: [
+                    "path": outsideDir.path,
+                    "pattern": "target"
+                ]),
+                try await ListDirectoryTool().execute(arguments: [
+                    "path": outsideDir.path
+                ])
+            ]
+        }
+
+        XCTAssertTrue(results.allSatisfy { $0.status == .success })
+        XCTAssertTrue(results[0].output.contains("Outside.swift"))
+        XCTAssertTrue(results[1].output.contains("targetValue"))
+        XCTAssertTrue(results[2].output.contains("Outside.swift"))
+    }
+
+    func testDirectoryToolsDefaultToWorkingDirectory() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let file = tempDir.appendingPathComponent("Keep.swift")
+        try "let targetValue = 1".write(to: file, atomically: true, encoding: .utf8)
+
+        let results = try await withTemporaryWorkingDirectory(tempDir.path) {
+            [
+                try await FindFilesTool().execute(arguments: ["pattern": "*.swift"]),
+                try await SearchFilesTool().execute(arguments: ["pattern": "targetValue"]),
+                try await ListDirectoryTool().execute(arguments: [:])
+            ]
+        }
+
+        XCTAssertTrue(results.allSatisfy { $0.status == .success })
+        XCTAssertTrue(results[0].output.contains("Keep.swift"))
+        XCTAssertTrue(results[1].output.contains("targetValue"))
+        XCTAssertTrue(results[2].output.contains("Directory: \(tempDir.path)"))
+    }
+
+    func testShellToolRejectsInvalidWorkingDirectoryBeforeExecution() async throws {
+        let relativeResult = try await ShellTool().execute(arguments: [
+            "command": "pwd",
+            "working_directory": "Sources"
+        ])
+        XCTAssertEqual(relativeResult.status, .error)
+        XCTAssertTrue(relativeResult.error?.contains("absolute path") == true)
+
+        let missingResult = try await ShellTool().execute(arguments: [
+            "command": "pwd",
+            "working_directory": "/tmp/rio-agent-missing-\(UUID().uuidString)"
+        ])
+        XCTAssertEqual(missingResult.status, .error)
+        XCTAssertTrue(missingResult.error?.contains("does not exist") == true)
+    }
+
     func testFileReadHonorsEncodingArgument() async throws {
         let tempDir = try makeTemporaryWorkingDirectory()
         defer {
@@ -290,5 +440,32 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertEqual(result.status, .error)
         XCTAssertEqual(try String(contentsOf: firstFile, encoding: .utf8), "alpha\n")
         XCTAssertEqual(try String(contentsOf: secondFile, encoding: .utf8), "bravo\n")
+    }
+
+    func testApplyPatchRejectsRelativePathsBeforeConfirmation() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        var confirmationCount = 0
+        let tool = ApplyPatchTool()
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .approved
+        }
+
+        let result = try await withTemporaryWorkingDirectory(tempDir.path) {
+            try await tool.execute(arguments: [
+                "patch": """
+                *** Add File: Sources/New.swift
+                let value = 1
+                """
+            ])
+        }
+
+        XCTAssertEqual(result.status, .error)
+        XCTAssertTrue(result.error?.contains("absolute path") == true)
+        XCTAssertEqual(confirmationCount, 0)
     }
 }

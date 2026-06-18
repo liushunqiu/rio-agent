@@ -39,6 +39,16 @@ class ShellTool: Tool {
 
         // Use argument working_directory, fall back to ToolRegistry's workingDirectory
         let workDir = (arguments["working_directory"] as? String) ?? ToolRegistry.shared.workingDirectory
+        if let workDir {
+            guard PathSecurity.isAbsolutePath(workDir) else {
+                return ToolResult.error(toolCallId: "shell", error: "working_directory must be an absolute path")
+            }
+
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: workDir, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return ToolResult.error(toolCallId: "shell", error: "working_directory does not exist or is not a directory: \(workDir)")
+            }
+        }
 
         // Check risk level
         let riskLevel = CommandClassifier.classify(command, workingDirectory: workDir)

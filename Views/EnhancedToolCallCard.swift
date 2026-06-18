@@ -1,4 +1,216 @@
 import SwiftUI
+import AppKit
+
+enum ToolResultDisplay {
+    static let emptyOutputPlaceholder = "工具执行完成，但没有返回输出。"
+    private static let collapsedOutputLineLimit = 8
+
+    static func label(for result: ToolResult) -> String {
+        switch result.status {
+        case .success:
+            return "输出"
+        case .error:
+            return "错误"
+        case .cancelled:
+            return "取消原因"
+        }
+    }
+
+    static func text(for result: ToolResult) -> String {
+        switch result.status {
+        case .success:
+            return result.output.isEmpty ? emptyOutputPlaceholder : result.output
+        case .error, .cancelled:
+            if let error = result.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+                return error
+            }
+            return result.output.isEmpty ? emptyOutputPlaceholder : result.output
+        }
+    }
+
+    static func shouldCollapse(_ result: ToolResult) -> Bool {
+        let displayText = text(for: result)
+        return displayText.components(separatedBy: .newlines).count > collapsedOutputLineLimit
+            || displayText.count > 1000
+    }
+}
+
+struct ToolResultOutputBlock: View {
+    let result: ToolResult
+    var fontSize: CGFloat = 11
+    var contentPadding: CGFloat = 8
+
+    @State private var isOutputExpanded = false
+    @State private var didCopy = false
+
+    private let collapsedOutputLineLimit = 8
+    private var displayText: String { ToolResultDisplay.text(for: result) }
+    private var shouldCollapse: Bool { ToolResultDisplay.shouldCollapse(result) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(ToolResultDisplay.label(for: result))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(labelColor)
+
+                Spacer()
+
+                if shouldCollapse {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isOutputExpanded.toggle()
+                        }
+                    }) {
+                        Text(isOutputExpanded ? "收起" : "展开全部")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isOutputExpanded ? "收起长输出" : "展开完整输出")
+                }
+
+                Button(action: copyDisplayText) {
+                    HStack(spacing: 4) {
+                        Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(didCopy ? "已复制" : "复制")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(didCopy ? Theme.statusSuccess : Theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("复制完整\(ToolResultDisplay.label(for: result))")
+            }
+
+            Text(displayText)
+                .font(.system(size: fontSize, design: .monospaced))
+                .foregroundColor(textColor)
+                .textSelection(.enabled)
+                .lineLimit(lineLimit)
+                .padding(contentPadding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(result.status == .error ? Theme.statusError.opacity(0.10) : Theme.codeBackground)
+                .cornerRadius(Theme.radiusSM)
+        }
+        .onChange(of: displayText) { _, _ in
+            isOutputExpanded = false
+            didCopy = false
+        }
+    }
+
+    private var lineLimit: Int? {
+        if result.status == .error || isOutputExpanded {
+            return nil
+        }
+        return collapsedOutputLineLimit
+    }
+
+    private var labelColor: Color {
+        result.status == .error ? Theme.statusError : Theme.textSecondary
+    }
+
+    private var textColor: Color {
+        result.status == .error ? Theme.statusError : Theme.textSecondary
+    }
+
+    private func copyDisplayText() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(displayText, forType: .string)
+        didCopy = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            didCopy = false
+        }
+    }
+}
+
+struct ToolArgumentRow: View {
+    let name: String
+    let value: Any
+    var keyWidth: CGFloat = 80
+    var fontSize: CGFloat = 11
+    var initiallyExpanded = false
+
+    @State private var isExpanded: Bool
+    @State private var didCopy = false
+
+    init(name: String, value: Any, keyWidth: CGFloat = 80, fontSize: CGFloat = 11, initiallyExpanded: Bool = false) {
+        self.name = name
+        self.value = value
+        self.keyWidth = keyWidth
+        self.fontSize = fontSize
+        self.initiallyExpanded = initiallyExpanded
+        _isExpanded = State(initialValue: initiallyExpanded)
+    }
+
+    private var displayValue: String {
+        String(describing: value)
+    }
+
+    private var shouldCollapse: Bool {
+        displayValue.count > 140 || displayValue.components(separatedBy: .newlines).count > 3
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(name)
+                .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                .foregroundColor(Theme.accentPrimary)
+                .frame(width: keyWidth, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(name)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(displayValue)
+                    .font(.system(size: fontSize, design: .monospaced))
+                    .foregroundColor(Theme.textSecondary)
+                    .lineLimit(shouldCollapse && !isExpanded ? 3 : nil)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(displayValue)
+
+                if shouldCollapse {
+                    HStack(spacing: 10) {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                isExpanded.toggle()
+                            }
+                        }) {
+                            Label(isExpanded ? "收起" : "展开", systemImage: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(Theme.textTertiary)
+                        .help(isExpanded ? "收起参数" : "展开完整参数")
+
+                        Button(action: copyValue) {
+                            Label(didCopy ? "已复制" : "复制", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(didCopy ? Theme.statusSuccess : Theme.textTertiary)
+                        .help("复制完整参数")
+                    }
+                }
+            }
+        }
+        .onChange(of: displayValue) { _, _ in
+            isExpanded = initiallyExpanded
+            didCopy = false
+        }
+    }
+
+    private func copyValue() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(displayValue, forType: .string)
+        didCopy = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            didCopy = false
+        }
+    }
+}
 
 // MARK: - Enhanced Tool Call Card
 
@@ -79,37 +291,14 @@ struct EnhancedToolCallCard: View {
                                 .foregroundColor(Theme.textSecondary)
                             
                             ForEach(Array(toolCall.arguments.sorted(by: { $0.key < $1.key })), id: \.key) { key, value in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(key)
-                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                        .foregroundColor(Theme.accentPrimary)
-                                        .frame(minWidth: 80, alignment: .leading)
-                                    
-                                    Text(String(describing: value.value))
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundColor(Theme.textSecondary)
-                                        .textSelection(.enabled)
-                                }
+                                ToolArgumentRow(name: key, value: value.value)
                             }
                         }
                     }
                     
                     // Execution result
                     if let result = executionResult, isCompleted {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("结果")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(Theme.textSecondary)
-                            
-                            Text(result.output)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(Theme.textSecondary)
-                                .textSelection(.enabled)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Theme.codeBackground)
-                                .cornerRadius(Theme.radiusSM)
-                        }
+                        ToolResultOutputBlock(result: result)
                     }
                 }
                 .padding(14)
@@ -235,8 +424,6 @@ struct EnhancedToolResultCard: View {
     
     @State private var isExpanded = false
 
-    private let collapsedOutputLineLimit = 8
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
@@ -286,58 +473,7 @@ struct EnhancedToolResultCard: View {
                     .overlay(Theme.borderSubtle)
                 
                 VStack(alignment: .leading, spacing: 10) {
-                    // Output
-                    if !result.output.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("输出")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(Theme.textSecondary)
-
-                                Spacer()
-
-                                if shouldCollapseOutput {
-                                    Button(action: {
-                                        withAnimation(.easeInOut(duration: 0.18)) {
-                                            isExpanded.toggle()
-                                        }
-                                    }) {
-                                        Text(isExpanded ? "收起" : "展开全部")
-                                            .font(.system(size: 10, weight: .medium))
-                                            .foregroundColor(Theme.textTertiary)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            
-                            Text(result.output)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(Theme.textSecondary)
-                                .textSelection(.enabled)
-                                .lineLimit(isExpanded || result.status == .error ? nil : collapsedOutputLineLimit)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Theme.codeBackground)
-                                .cornerRadius(Theme.radiusSM)
-                        }
-                    }
-                    
-                    // Error
-                    if let error = result.error {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("错误")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(Theme.statusError)
-                            
-                            Text(error)
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.statusError)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Theme.statusError.opacity(0.1))
-                                .cornerRadius(Theme.radiusSM)
-                        }
-                    }
+                    ToolResultOutputBlock(result: result)
                 }
                 .padding(14)
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -393,11 +529,6 @@ struct EnhancedToolResultCard: View {
         case .error: return Theme.statusError.opacity(0.3)
         case .cancelled: return Theme.textTertiary.opacity(0.3)
         }
-    }
-
-    private var shouldCollapseOutput: Bool {
-        result.output.components(separatedBy: .newlines).count > collapsedOutputLineLimit
-            || result.output.count > 1000
     }
 }
 

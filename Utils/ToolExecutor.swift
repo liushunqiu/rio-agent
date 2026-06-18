@@ -52,10 +52,28 @@ class ToolExecutor {
 
         var results: [ToolResult] = []
 
-        for toolCall in toolCalls {
+        for (index, toolCall) in toolCalls.enumerated() {
+            if Task.isCancelled {
+                appendCancelledResults(
+                    for: Array(toolCalls[index...]),
+                    to: &results,
+                    reason: "任务已取消，后续工具未执行"
+                )
+                break
+            }
+
             // 通知开始执行
             notifyStateChange(.pending(toolCall: toolCall))
             await Task.yield()
+
+            if Task.isCancelled {
+                appendCancelledResults(
+                    for: Array(toolCalls[index...]),
+                    to: &results,
+                    reason: "任务已取消，后续工具未执行"
+                )
+                break
+            }
 
             notifyStateChange(.executing(toolCall: toolCall))
 
@@ -68,6 +86,16 @@ class ToolExecutor {
             notifyStateChange(.completed(toolCall: toolCall, result: result))
 
             results.append(result)
+
+            if result.status == .cancelled {
+                let remainingToolCalls = toolCalls.dropFirst(index + 1)
+                appendCancelledResults(
+                    for: Array(remainingToolCalls),
+                    to: &results,
+                    reason: "任务已取消，后续工具未执行"
+                )
+                break
+            }
         }
 
         notifyStateChange(nil)
@@ -114,6 +142,8 @@ class ToolExecutor {
                 output: raw.output,
                 error: raw.error
             )
+        } catch is CancellationError {
+            return ToolResult.cancelled(toolCallId: toolCall.id, reason: "任务已取消")
         } catch {
             return ToolResult.error(toolCallId: toolCall.id, error: error.localizedDescription)
         }
@@ -135,14 +165,11 @@ class ToolExecutor {
             var indexedResults: [(Int, ToolCall, ToolResult)] = []
             for await item in group {
                 indexedResults.append(item)
+                await recordToolExecution(toolCall: item.1, result: item.2)
+                notifyStateChange(.completed(toolCall: item.1, result: item.2))
             }
 
             indexedResults.sort { $0.0 < $1.0 }
-            for (_, toolCall, result) in indexedResults {
-                await recordToolExecution(toolCall: toolCall, result: result)
-                notifyStateChange(.completed(toolCall: toolCall, result: result))
-            }
-
             notifyStateChange(nil)
             return indexedResults.map(\.2)
         }
@@ -154,6 +181,18 @@ class ToolExecutor {
             return true
         default:
             return false
+        }
+    }
+
+    private func appendCancelledResults(
+        for toolCalls: [ToolCall],
+        to results: inout [ToolResult],
+        reason: String
+    ) {
+        for toolCall in toolCalls {
+            let result = ToolResult.cancelled(toolCallId: toolCall.id, reason: reason)
+            results.append(result)
+            notifyStateChange(.completed(toolCall: toolCall, result: result))
         }
     }
 

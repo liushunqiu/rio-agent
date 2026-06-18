@@ -104,6 +104,10 @@ struct PipelineStage: Identifiable {
         return (endTime ?? Date()).timeIntervalSince(start)
     }
 
+    var hasExpandableContent: Bool {
+        !substeps.isEmpty || details.hasVisibleDetails
+    }
+
     mutating func start() {
         status = .running
         startTime = Date()
@@ -149,9 +153,15 @@ enum StageDetails {
     case router(decision: String, target: String?, confidence: Double?)
     case taskAnalysis(complexity: String, stepCount: Int, estimatedTime: String?)
     case dagPlanning(subTaskCount: Int, workerCount: Int, maxDepth: Int)
-    case execution(toolCalls: [String], completedCount: Int, totalCount: Int)
+    case execution(
+        toolCalls: [String],
+        completedCount: Int,
+        totalCount: Int,
+        failedCount: Int = 0,
+        cancelledCount: Int = 0
+    )
     case errorRecovery(retryCount: Int, analysisResult: String?)
-    case verification(passedChecks: Int, totalChecks: Int)
+    case verification(passedChecks: Int, totalChecks: Int, summary: String? = nil)
     case synthesis(workerResults: Int)
     case error(message: String)
     case skipped(reason: String)
@@ -167,6 +177,27 @@ enum StageDetails {
 
     func withCancelReason(_ reason: String) -> StageDetails {
         .cancelled(reason: reason)
+    }
+
+    var hasVisibleDetails: Bool {
+        switch self {
+        case .empty, .synthesis:
+            return false
+        case .verification(_, _, let summary):
+            return summary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .router(_, let target, _):
+            return target?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .taskAnalysis(_, _, let estimatedTime):
+            return estimatedTime?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .dagPlanning:
+            return true
+        case .execution(let toolCalls, _, _, _, _):
+            return !toolCalls.isEmpty
+        case .errorRecovery(_, let analysisResult):
+            return analysisResult?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .error(let message), .skipped(let message), .cancelled(let message):
+            return !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 }
 

@@ -31,6 +31,9 @@ class FileWriteTool: Tool {
         guard let content = arguments["content"] as? String else {
             throw ToolError.missingParameter("content")
         }
+        guard PathSecurity.isAbsolutePath(path) else {
+            return ToolResult.error(toolCallId: "write_file", error: "path must be an absolute path. Resolve relative paths from the working directory before calling write_file.")
+        }
 
         // Check if path is within working directory — auto-allow
         let normalizedPath = PathSecurity.normalizedPath(path)

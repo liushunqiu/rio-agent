@@ -205,7 +205,9 @@ struct EnhancedChatView: View {
     let isProcessing: Bool
     let currentToolCallId: String?
     let currentPipeline: ExecutionPipeline?
+    let singleAgentVerification: VerifierService.VerificationOutcome?
     let currentTaskPlan: TaskPlan?
+    let pendingUserDecision: AgentEngine.PendingUserDecision?
 
     /// 自动滚动跟随开关
     @State private var autoScrollEnabled = true
@@ -246,6 +248,17 @@ struct EnhancedChatView: View {
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(spacing: 6, pinnedViews: []) {
+                        if let currentPipeline {
+                            TranscriptRuntimeCard(
+                                pipeline: currentPipeline,
+                                singleAgentVerification: singleAgentVerification,
+                                taskPlan: currentTaskPlan,
+                                pendingUserDecision: pendingUserDecision
+                            )
+                            .padding(.horizontal, 28)
+                            .padding(.bottom, 10)
+                        }
+
                         ForEach(transcriptEntries) { entry in
                             switch entry {
                             case .message(let message):
@@ -377,6 +390,461 @@ struct EnhancedChatView: View {
     }
 }
 
+private struct TranscriptRuntimeCard: View {
+    let pipeline: ExecutionPipeline
+    let singleAgentVerification: VerifierService.VerificationOutcome?
+    let taskPlan: TaskPlan?
+    let pendingUserDecision: AgentEngine.PendingUserDecision?
+
+    private var exceptionalStage: PipelineStage? {
+        pipeline.stages.last(where: { $0.status == .failed || $0.status == .cancelled })
+    }
+
+    private var currentStage: PipelineStage? {
+        pipeline.currentStage
+    }
+
+    private var completedStageCount: Int {
+        pipeline.stages.filter { $0.status == .completed || $0.status == .skipped }.count
+    }
+
+    private var actionableSubTaskCount: Int {
+        taskPlan?.subTasks.filter(\.needsAttention).count ?? 0
+    }
+
+    private var prioritizedBlockedSubTask: SubTask? {
+        taskPlan?.subTasks.first(where: { $0.recoveryContext != nil && $0.needsAttention })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("当前流程")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                        .textCase(.uppercase)
+                    Text(headline)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                }
+
+                Spacer()
+
+                TranscriptStatusBadge(
+                    icon: statusIcon,
+                    text: statusText,
+                    tone: statusTone
+                )
+            }
+
+            HStack(spacing: 8) {
+                TranscriptMetaBadge(
+                    icon: "list.number",
+                    label: "阶段",
+                    value: "\(completedStageCount)/\(pipeline.stages.count)"
+                )
+                if let taskPlan {
+                    TranscriptMetaBadge(
+                        icon: "square.stack.3d.up",
+                        label: "子任务",
+                        value: "\(taskPlan.subTasks.count)"
+                    )
+                }
+                if actionableSubTaskCount > 0 {
+                    TranscriptMetaBadge(
+                        icon: "exclamationmark.bubble",
+                        label: "待处理",
+                        value: "\(actionableSubTaskCount)",
+                        tone: Theme.statusWarning
+                    )
+                }
+            }
+
+            if let focusText {
+                TranscriptInsightRow(
+                    icon: focusIcon,
+                    title: focusTitle,
+                    detail: focusText,
+                    tone: focusTone
+                )
+            }
+
+            TranscriptInsightRow(
+                icon: "sparkle.magnifyingglass",
+                title: "下一步建议",
+                detail: nextActionText,
+                tone: nextActionTone
+            )
+        }
+        .padding(14)
+        .frame(maxWidth: 820, alignment: .leading)
+        .background(Theme.bgSecondary.opacity(0.78))
+        .cornerRadius(Theme.radiusLG)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusLG)
+                .stroke(statusTone.opacity(0.20), lineWidth: 1)
+        )
+    }
+
+    private var headline: String {
+        if let pendingUserDecision {
+            switch pendingUserDecision {
+            case .overwriteAgentFile:
+                return "等待覆盖确认"
+            case .chooseExecutionModeForTask:
+                return "等待执行模式确认"
+            }
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .needsRetry:
+                return "答案需要修订"
+            case .unverified:
+                return "结果尚未验证"
+            case .verified:
+                break
+            }
+        }
+        if let exceptionalStage {
+            return exceptionalStage.status == .failed ? "流程需要处理" : "流程已停止"
+        }
+        if let currentStage {
+            return currentStage.type.title
+        }
+        if pipeline.overallStatus == .completed {
+            return "流程已完成"
+        }
+        return "等待开始"
+    }
+
+    private var statusText: String {
+        if pendingUserDecision != nil {
+            return "等待确认"
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .needsRetry: return "需修订"
+            case .unverified: return "未验证"
+            case .verified: return "已验证"
+            }
+        }
+        switch pipeline.overallStatus {
+        case .pending: return "待开始"
+        case .running: return "执行中"
+        case .completed: return "已完成"
+        case .cancelled: return "已停止"
+        case .failed: return "需处理"
+        case .skipped: return "已跳过"
+        }
+    }
+
+    private var statusIcon: String {
+        if pendingUserDecision != nil {
+            return "questionmark.circle.fill"
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .needsRetry: return "exclamationmark.shield.fill"
+            case .unverified: return "questionmark.app.dashed"
+            case .verified: return "checkmark.shield.fill"
+            }
+        }
+        switch pipeline.overallStatus {
+        case .pending: return "clock"
+        case .running: return "arrow.triangle.2.circlepath"
+        case .completed: return "checkmark.circle.fill"
+        case .cancelled: return "slash.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .skipped: return "minus.circle.fill"
+        }
+    }
+
+    private var statusTone: Color {
+        if pendingUserDecision != nil {
+            return Theme.statusWarning
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .verified: return Theme.statusSuccess
+            case .unverified: return Theme.statusWarning
+            case .needsRetry: return Theme.statusError
+            }
+        }
+        switch pipeline.overallStatus {
+        case .pending: return Theme.textTertiary
+        case .running: return Theme.statusInfo
+        case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
+        case .failed: return Theme.statusError
+        case .skipped: return Theme.textTertiary
+        }
+    }
+
+    private var focusTitle: String {
+        if pendingUserDecision != nil {
+            return "等待输入"
+        }
+        if singleAgentVerification != nil {
+            return "验证状态"
+        }
+        if let exceptionalStage {
+            return exceptionalStage.status == .failed ? "异常焦点" : "停止原因"
+        }
+        return "当前焦点"
+    }
+
+    private var focusIcon: String {
+        if pendingUserDecision != nil {
+            return "questionmark.circle"
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .verified:
+                return "checkmark.seal"
+            case .unverified:
+                return "exclamationmark.bubble"
+            case .needsRetry:
+                return "exclamationmark.triangle"
+            }
+        }
+        if let exceptionalStage {
+            return exceptionalStage.status == .failed ? "bolt.horizontal.circle.fill" : "pause.circle.fill"
+        }
+        return currentStage?.type.icon ?? "point.3.connected.trianglepath.dotted"
+    }
+
+    private var focusTone: Color {
+        if pendingUserDecision != nil {
+            return Theme.statusWarning
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .verified:
+                return Theme.statusSuccess
+            case .unverified:
+                return Theme.statusWarning
+            case .needsRetry:
+                return Theme.statusError
+            }
+        }
+        if let exceptionalStage {
+            return exceptionalStage.status == .failed ? Theme.statusError : Theme.textTertiary
+        }
+        return Theme.statusInfo
+    }
+
+    private var focusText: String? {
+        if let pendingUserDecision {
+            switch pendingUserDecision {
+            case .overwriteAgentFile:
+                return "系统正在等待你确认是否覆盖已有 AGENT.md。回复“是”继续覆盖，回复其他内容取消覆盖，也可以直接输入新任务。"
+            case .chooseExecutionModeForTask:
+                return "系统已经完成执行模式判断，正在等待你决定继续多 Agent，还是改为单 Agent。"
+            }
+        }
+        if let singleAgentVerification {
+            return singleAgentVerification.summary
+        }
+        if let exceptionalStage {
+            return stageSummary(for: exceptionalStage)
+        }
+        if let currentStage {
+            return stageSummary(for: currentStage)
+        }
+        if pipeline.overallStatus == .completed {
+            return "执行已经结束，建议开始核对结果、文件改动和验证状态。"
+        }
+        return nil
+    }
+
+    private var nextActionText: String {
+        if let pendingUserDecision {
+            switch pendingUserDecision {
+            case .overwriteAgentFile:
+                return "先确认是否覆盖 AGENT.md。回复“是”继续覆盖，回复其他内容取消覆盖，也可以直接输入新任务。"
+            case .chooseExecutionModeForTask:
+                return "先确认执行模式。回复“是”继续多 Agent；回复其他内容改走单 Agent，避免继续空等。"
+            }
+        }
+        if let singleAgentVerification {
+            switch singleAgentVerification.status {
+            case .needsRetry:
+                return "当前答案和证据不一致，先根据验证摘要修订结论，再继续输出。"
+            case .unverified:
+                return "当前缺少足够的完成证据，优先补充读回、测试或命令验证。"
+            case .verified:
+                return "结果已经通过验证，下一步优先复核关键结论、工具输出和文件变更。"
+            }
+        }
+        if let exceptionalStage {
+            switch exceptionalStage.status {
+            case .failed:
+                if let recoveryContext = prioritizedBlockedSubTask?.recoveryContext {
+                    return recoveryContext.recoveryActionDetail
+                }
+                return "先阅读异常焦点和错误横幅，再修复对应的模型、路由或 Worker 配置。"
+            case .cancelled:
+                return "如果停止不是预期行为，恢复上一条任务后重新执行；否则直接开始新任务。"
+            default:
+                break
+            }
+        }
+
+        if let currentStage {
+            return "当前正在进行 \(currentStage.type.title)。如果长时间无进展，优先检查该阶段的执行输出与模型配置。"
+        }
+
+        if pipeline.overallStatus == .completed {
+            return "结果已生成，建议优先复核关键结论、工具输出和文件变更。"
+        }
+
+        return "当前没有活动流程，提交新任务即可开始。"
+    }
+
+    private var nextActionTone: Color {
+        if pendingUserDecision != nil {
+            return Theme.statusWarning
+        }
+        if singleAgentVerification != nil {
+            return statusTone
+        }
+        if exceptionalStage != nil {
+            return statusTone
+        }
+        if pipeline.overallStatus == .completed {
+            return Theme.statusSuccess
+        }
+        return Theme.accentPrimary
+    }
+
+    private func stageSummary(for stage: PipelineStage) -> String {
+        switch stage.details {
+        case .empty:
+            return "等待阶段细节更新。"
+        case .router(let decision, let target, let confidence):
+            var parts = [decision]
+            if let target, !target.isEmpty {
+                parts.append("目标 \(target)")
+            }
+            if let confidence {
+                parts.append("置信度 \(Int((confidence * 100).rounded()))%")
+            }
+            return parts.joined(separator: " · ")
+        case .taskAnalysis(let complexity, let stepCount, let estimatedTime):
+            var parts = ["复杂度 \(complexity)", "\(stepCount) 个步骤"]
+            if let estimatedTime, !estimatedTime.isEmpty {
+                parts.append(estimatedTime)
+            }
+            return parts.joined(separator: " · ")
+        case .dagPlanning(let subTaskCount, let workerCount, let maxDepth):
+            return "\(subTaskCount) 个子任务 · \(workerCount) 个 Worker · 深度 \(maxDepth)"
+        case .execution(_, let completed, let total, let failed, let cancelled):
+            var parts = ["\(completed)/\(total) 已结束"]
+            if failed > 0 { parts.append("失败 \(failed)") }
+            if cancelled > 0 { parts.append("停止 \(cancelled)") }
+            if failed == 0 && cancelled == 0 { parts.append("无阻塞") }
+            return parts.joined(separator: " · ")
+        case .errorRecovery(let retryCount, let analysis):
+            if let analysis, !analysis.isEmpty {
+                return "第 \(retryCount) 次重试 · \(analysis)"
+            }
+            return "第 \(retryCount) 次重试"
+        case .verification(let passed, let total, _):
+            return "通过 \(passed)/\(total) 项检查"
+        case .synthesis(let workerResults):
+            return "汇总 \(workerResults) 个结果"
+        case .error(let message):
+            return message
+        case .skipped(let reason):
+            return reason
+        case .cancelled(let reason):
+            return reason
+        }
+    }
+}
+
+private struct TranscriptStatusBadge: View {
+    let icon: String
+    let text: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundColor(tone)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(tone.opacity(0.10))
+        .cornerRadius(Theme.radiusSM)
+    }
+}
+
+private struct TranscriptMetaBadge: View {
+    let icon: String
+    let label: String
+    let value: String
+    var tone: Color = Theme.accentPrimary
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(tone)
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+            Text(value)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Theme.textPrimary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusSM)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .stroke(tone.opacity(0.14), lineWidth: 1)
+        )
+    }
+}
+
+private struct TranscriptInsightRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let tone: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(tone)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(detail)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusMD)
+    }
+}
+
 private enum TranscriptEntry: Identifiable {
     case message(Message)
     case activity([Message])
@@ -452,6 +920,19 @@ private struct AgentActivityGroupView: View {
         toolCalls.filter { toolResultsById[$0.id]?.status == .error }.count
     }
 
+    private var cancelledCount: Int {
+        toolCalls.filter { toolResultsById[$0.id]?.status == .cancelled }.count
+    }
+
+    private var latestFailedToolCall: ToolCall? {
+        toolCalls.last(where: { toolResultsById[$0.id]?.status == .error })
+    }
+
+    private var latestFailedResult: ToolResult? {
+        guard let latestFailedToolCall else { return nil }
+        return toolResultsById[latestFailedToolCall.id]
+    }
+
     private var totalThinkingDuration: TimeInterval {
         messages.compactMap(\.thinkingDuration).reduce(0, +)
     }
@@ -477,9 +958,17 @@ private struct AgentActivityGroupView: View {
         return parts.isEmpty ? "内部处理" : parts.joined(separator: " · ")
     }
 
+    private var titleText: String {
+        if hasFailure { return "执行异常" }
+        if isRunning { return "正在执行" }
+        if completedCount > 0 { return "执行记录" }
+        return "内部处理"
+    }
+
     private var statusColor: Color {
         if hasFailure { return Theme.statusError }
         if isRunning { return Theme.statusInfo }
+        if completedCount > 0 { return Theme.statusSuccess }
         return Theme.textTertiary
     }
 
@@ -495,14 +984,16 @@ private struct AgentActivityGroupView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(statusColor)
 
-                    Text(isRunning ? "正在执行" : "执行摘要")
+                    Text(titleText)
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(isRunning ? Theme.statusInfo : Theme.textSecondary)
+                        .foregroundColor(statusColor == Theme.textTertiary ? Theme.textSecondary : statusColor)
 
                     Text(summaryText)
                         .font(.system(size: 11))
                         .foregroundColor(Theme.textTertiary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(summaryText)
 
                     Spacer()
 
@@ -528,6 +1019,15 @@ private struct AgentActivityGroupView: View {
 
             if isExpanded || hasFailure || isRunning {
                 VStack(alignment: .leading, spacing: 6) {
+                    if hasFailure {
+                        ActivityFailureSummaryCard(
+                            failedCount: failedCount,
+                            cancelledCount: cancelledCount,
+                            latestFailedToolName: latestFailedToolCall?.name,
+                            latestFailureReason: latestFailedResult.map(ToolResultDisplay.text)
+                        )
+                    }
+
                     ForEach(messages) { message in
                         if let thinking = message.thinkingContent, !thinking.isEmpty {
                             ActivityThinkingRow(
@@ -582,6 +1082,188 @@ private struct AgentActivityGroupView: View {
         let minutes = Int(duration / 60)
         let seconds = Int(duration.truncatingRemainder(dividingBy: 60))
         return "\(minutes)m \(seconds)s"
+    }
+}
+
+private struct ActivityFailureSummaryCard: View {
+    let failedCount: Int
+    let cancelledCount: Int
+    let latestFailedToolName: String?
+    let latestFailureReason: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("异常摘要")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                        .textCase(.uppercase)
+                    Text(headline)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                }
+
+                Spacer()
+
+                ActivitySummaryBadge(
+                    icon: "exclamationmark.triangle.fill",
+                    text: "\(failedCount) 个失败",
+                    tone: Theme.statusError
+                )
+            }
+
+            HStack(spacing: 8) {
+                ActivitySummaryMetric(
+                    icon: "wrench.and.screwdriver",
+                    label: "失败工具",
+                    value: "\(failedCount)",
+                    tone: Theme.statusError
+                )
+                if cancelledCount > 0 {
+                    ActivitySummaryMetric(
+                        icon: "slash.circle",
+                        label: "已取消",
+                        value: "\(cancelledCount)",
+                        tone: Theme.textTertiary
+                    )
+                }
+            }
+
+            if let latestFailedToolName, !latestFailedToolName.isEmpty {
+                ActivityInsightRow(
+                    icon: "hammer.circle.fill",
+                    title: "最近失败工具",
+                    detail: latestFailedToolName,
+                    tone: Theme.statusError
+                )
+            }
+
+            if let latestFailureReason, !latestFailureReason.isEmpty {
+                ActivityInsightRow(
+                    icon: "text.bubble.fill",
+                    title: "失败原因",
+                    detail: latestFailureReason,
+                    tone: Theme.statusError
+                )
+            }
+
+            ActivityInsightRow(
+                icon: "sparkle.magnifyingglass",
+                title: "下一步建议",
+                detail: nextActionText,
+                tone: Theme.statusWarning
+            )
+        }
+        .padding(10)
+        .background(Theme.statusError.opacity(0.08))
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(Theme.statusError.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var headline: String {
+        if failedCount == 1 {
+            return "有 1 个工具调用失败"
+        }
+        return "有 \(failedCount) 个工具调用失败"
+    }
+
+    private var nextActionText: String {
+        if let latestFailureReason {
+            if latestFailureReason.localizedCaseInsensitiveContains("权限")
+                || latestFailureReason.localizedCaseInsensitiveContains("permission") {
+                return "先检查当前工具是否需要额外权限，再决定是否重试。"
+            }
+            if latestFailureReason.localizedCaseInsensitiveContains("不存在")
+                || latestFailureReason.localizedCaseInsensitiveContains("not found") {
+                return "先确认目标文件、目录或命令是否存在，再继续执行后续步骤。"
+            }
+        }
+        return "先查看失败工具的参数和输出，再决定是修复输入、切换配置，还是直接重试该步骤。"
+    }
+}
+
+private struct ActivitySummaryBadge: View {
+    let icon: String
+    let text: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(text)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundColor(tone)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tone.opacity(0.10))
+        .cornerRadius(Theme.radiusSM)
+    }
+}
+
+private struct ActivitySummaryMetric: View {
+    let icon: String
+    let label: String
+    let value: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(tone)
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+            Text(value)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Theme.textPrimary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusSM)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .stroke(tone.opacity(0.16), lineWidth: 1)
+        )
+    }
+}
+
+private struct ActivityInsightRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let tone: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(tone)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(detail)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Theme.bgInput)
+        .cornerRadius(Theme.radiusSM)
     }
 }
 
@@ -690,10 +1372,14 @@ private struct ActivityToolRow: View {
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundColor(Theme.textSecondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(toolCall.name)
 
                     Text(statusText)
                         .font(.system(size: 10))
                         .foregroundColor(statusColor)
+                        .lineLimit(1)
+                        .help(statusText)
 
                     Spacer()
 
@@ -710,34 +1396,12 @@ private struct ActivityToolRow: View {
                 VStack(alignment: .leading, spacing: 8) {
                     if !toolCall.arguments.isEmpty {
                         ForEach(Array(toolCall.arguments.sorted(by: { $0.key < $1.key })), id: \.key) { key, value in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(key)
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundColor(Theme.textTertiary)
-                                    .frame(width: 86, alignment: .leading)
-
-                                Text(String(describing: value.value))
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(Theme.textSecondary.opacity(0.85))
-                                    .lineLimit(3)
-                                    .textSelection(.enabled)
-                            }
+                            ToolArgumentRow(name: key, value: value.value, keyWidth: 86, fontSize: 10)
                         }
                     }
 
                     if let result {
-                        let text = result.error ?? result.output
-                        if !text.isEmpty {
-                            Text(text)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(result.status == .error ? Theme.statusError : Theme.textTertiary)
-                                .lineLimit(result.status == .error ? nil : 4)
-                                .textSelection(.enabled)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Theme.codeBackground.opacity(0.75))
-                                .cornerRadius(Theme.radiusSM)
-                        }
+                        ToolResultOutputBlock(result: result, fontSize: 10, contentPadding: 8)
                     }
                 }
                 .padding(.leading, 22)

@@ -47,6 +47,13 @@ class ApplyPatchTool: Tool {
             return ToolResult.error(toolCallId: name, error: "No valid operations found in patch")
         }
 
+        if let relativeOperation = operations.first(where: { !PathSecurity.isAbsolutePath($0.path) }) {
+            return ToolResult.error(
+                toolCallId: name,
+                error: "Patch paths must be absolute paths. Resolve relative paths from the working directory before calling apply_patch. Invalid path: \(relativeOperation.path)"
+            )
+        }
+
         // Check for cross-directory operations and collect confirmation
         let needsConfirmation = operations.contains { op in
             !isWithinWorkingDirectory(op.path)

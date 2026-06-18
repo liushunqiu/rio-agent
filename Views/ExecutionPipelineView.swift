@@ -32,6 +32,22 @@ struct ExecutionPipelineView: View {
 
             Divider().overlay(Theme.borderSubtle)
 
+            if let exceptionalStage {
+                PipelineInsightBanner(
+                    icon: exceptionalStage.status == .failed ? "exclamationmark.triangle.fill" : "slash.circle.fill",
+                    title: exceptionalStage.status == .failed ? "异常总览" : "停止总览",
+                    detail: exceptionalStageSummary,
+                    tone: exceptionalStage.status == .failed ? Theme.statusError : Theme.textTertiary
+                )
+            } else if let currentStage = pipeline.currentStage {
+                PipelineInsightBanner(
+                    icon: currentStage.type.icon,
+                    title: "当前焦点",
+                    detail: currentStageSummary(for: currentStage),
+                    tone: Theme.statusInfo
+                )
+            }
+
             // Stages
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(pipeline.stages.enumerated()), id: \.element.id) { index, stage in
@@ -64,10 +80,24 @@ struct ExecutionPipelineView: View {
                 .stroke(pipelineColor.opacity(0.3), lineWidth: 1.5)
         )
         .onAppear {
-            // 默认展开正在运行的阶段
-            if let currentStage = pipeline.currentStage {
-                expandedStages.insert(currentStage.id)
-            }
+            expandRelevantStages()
+        }
+        .onChange(of: pipeline.stages.map(\.status)) { _, _ in
+            expandRelevantStages()
+        }
+    }
+
+    private func expandRelevantStages() {
+        if let currentStage = pipeline.currentStage,
+           currentStage.hasExpandableContent {
+            expandedStages.insert(currentStage.id)
+            return
+        }
+
+        if let latestExceptionalStage = pipeline.stages.last(where: {
+            ($0.status == .failed || $0.status == .cancelled) && $0.hasExpandableContent
+        }) {
+            expandedStages.insert(latestExceptionalStage.id)
         }
     }
 
@@ -105,6 +135,64 @@ struct ExecutionPipelineView: View {
             let minutes = Int(duration / 60)
             let seconds = Int(duration.truncatingRemainder(dividingBy: 60))
             return "\(minutes)m \(seconds)s"
+        }
+    }
+
+    private var exceptionalStage: PipelineStage? {
+        pipeline.stages.last(where: { $0.status == .failed || $0.status == .cancelled })
+    }
+
+    private var exceptionalStageSummary: String {
+        guard let exceptionalStage else { return "" }
+        let action = exceptionalStage.status == .failed
+            ? "建议先修复该阶段，再继续当前流程。"
+            : "如需继续，恢复任务文本后重新发起执行。"
+        return "\(exceptionalStage.type.title) · \(currentStageSummary(for: exceptionalStage)) \(action)"
+    }
+
+    private func currentStageSummary(for stage: PipelineStage) -> String {
+        switch stage.details {
+        case .empty:
+            return "等待阶段细节更新。"
+        case .router(let decision, let target, let confidence):
+            var parts = [decision]
+            if let target, !target.isEmpty {
+                parts.append("目标 \(target)")
+            }
+            if let confidence {
+                parts.append("置信度 \(Int((confidence * 100).rounded()))%")
+            }
+            return parts.joined(separator: " · ")
+        case .taskAnalysis(let complexity, let stepCount, let estimatedTime):
+            var parts = ["复杂度 \(complexity)", "\(stepCount) 个步骤"]
+            if let estimatedTime, !estimatedTime.isEmpty {
+                parts.append(estimatedTime)
+            }
+            return parts.joined(separator: " · ")
+        case .dagPlanning(let subTaskCount, let workerCount, let maxDepth):
+            return "\(subTaskCount) 个子任务 · \(workerCount) 个 Worker · 深度 \(maxDepth)"
+        case .execution(_, let completed, let total, let failed, let cancelled):
+            var parts = ["\(completed)/\(total) 已结束"]
+            if failed > 0 { parts.append("失败 \(failed)") }
+            if cancelled > 0 { parts.append("停止 \(cancelled)") }
+            if failed == 0 && cancelled == 0 { parts.append("无阻塞") }
+            return parts.joined(separator: " · ")
+        case .errorRecovery(let retryCount, let analysis):
+            if let analysis, !analysis.isEmpty {
+                return "第 \(retryCount) 次重试 · \(analysis)"
+            }
+            return "第 \(retryCount) 次重试"
+        case .verification(let passed, let total, let summary):
+            return "通过 \(passed)/\(total) 项检查"
+                + (summary?.isEmpty == false ? " · \(summary!)" : "")
+        case .synthesis(let workerResults):
+            return "汇总 \(workerResults) 个结果"
+        case .error(let message):
+            return message
+        case .cancelled(let reason):
+            return reason
+        case .skipped(let reason):
+            return reason
         }
     }
 }
@@ -151,7 +239,8 @@ struct StageRow: View {
                         Text(stageSummary)
                             .font(.system(size: 11))
                             .foregroundColor(Theme.textSecondary)
-                            .lineLimit(1)
+                            .lineLimit(stageSummaryLineLimit)
+                            .help(stageSummary)
                     }
 
                     Spacer()
@@ -166,7 +255,7 @@ struct StageRow: View {
                             .foregroundColor(stageColor)
                     }
 
-                    if !stage.substeps.isEmpty {
+                    if stage.hasExpandableContent {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(Theme.textTertiary)
@@ -180,7 +269,7 @@ struct StageRow: View {
             .buttonStyle(.plain)
 
             // Expanded details
-            if isExpanded {
+            if isExpanded && stage.hasExpandableContent {
                 VStack(alignment: .leading, spacing: 8) {
                     // Stage-specific details
                     StageDetailsView(details: stage.details)
@@ -239,11 +328,14 @@ struct StageRow: View {
             return "复杂度: \(complexity) · \(stepCount) 个步骤"
         case .dagPlanning(let subTaskCount, let workerCount, _):
             return "\(subTaskCount) 个子任务 · \(workerCount) 个 Worker"
-        case .execution(_, let completed, let total):
-            return "已执行 \(completed)/\(total) 个工具调用"
+        case .execution(_, let completed, let total, let failed, let cancelled):
+            var parts = ["已执行 \(completed)/\(total)"]
+            if failed > 0 { parts.append("\(failed) 个失败") }
+            if cancelled > 0 { parts.append("\(cancelled) 个取消") }
+            return parts.joined(separator: " · ")
         case .errorRecovery(let retryCount, _):
             return "第 \(retryCount) 次重试"
-        case .verification(let passed, let total):
+        case .verification(let passed, let total, _):
             return "通过 \(passed)/\(total) 项检查"
         case .synthesis(let workerResults):
             return "汇总 \(workerResults) 个结果"
@@ -253,6 +345,15 @@ struct StageRow: View {
             return "已停止: \(reason)"
         case .skipped(let reason):
             return "已跳过: \(reason)"
+        }
+    }
+
+    private var stageSummaryLineLimit: Int {
+        switch stage.status {
+        case .failed, .cancelled:
+            return 2
+        default:
+            return 1
         }
     }
 
@@ -294,13 +395,37 @@ struct StageDetailsView: View {
             case .dagPlanning(_, _, let maxDepth):
                 DetailRow(icon: "arrow.down.to.line", label: "最大依赖深度", value: "\(maxDepth)")
 
-            case .execution(let toolCalls, _, _):
-                if !toolCalls.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        DetailRow(icon: "wrench.and.screwdriver", label: "工具列表", value: "")
-                        ForEach(toolCalls, id: \.self) { tool in
+            case .execution(let toolCalls, let completed, let total, let failed, let cancelled):
+                VStack(alignment: .leading, spacing: 4) {
+                    DetailRow(
+                        icon: executionStatusIcon(failed: failed, cancelled: cancelled),
+                        label: "执行结果",
+                        value: executionStatusText(completed: completed, total: total, failed: failed, cancelled: cancelled),
+                        color: executionStatusColor(failed: failed, cancelled: cancelled)
+                    )
+
+                    if !toolCalls.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "wrench.and.screwdriver")
+                                .font(.system(size: 10))
+                                .foregroundColor(Theme.textTertiary)
+                                .frame(width: 14)
+                            Text("工具列表")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(Theme.textTertiary)
+                        }
+                        ForEach(Array(displayedToolCalls.enumerated()), id: \.offset) { _, tool in
                             Text("• \(tool)")
                                 .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(Theme.textTertiary)
+                                .padding(.leading, 20)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(tool)
+                        }
+                        if hiddenToolCallCount > 0 {
+                            Text("另有 \(hiddenToolCallCount) 个工具调用")
+                                .font(.system(size: 10))
                                 .foregroundColor(Theme.textTertiary)
                                 .padding(.leading, 20)
                         }
@@ -312,22 +437,60 @@ struct StageDetailsView: View {
                     DetailRow(icon: "text.bubble", label: "Critic 分析", value: analysis)
                 }
 
-            case .verification(_, _):
-                EmptyView()
+            case .verification(_, _, let summary):
+                if let summary, !summary.isEmpty {
+                    DetailRow(icon: "checkmark.shield", label: "验证摘要", value: summary, color: Theme.textSecondary, lineLimit: 6, isSelectable: true)
+                }
 
             case .synthesis(_):
                 EmptyView()
 
             case .error(let message):
-                DetailRow(icon: "exclamationmark.triangle", label: "错误", value: message, color: Theme.statusError)
+                DetailRow(icon: "exclamationmark.triangle", label: "错误", value: message, color: Theme.statusError, lineLimit: 8, isSelectable: true)
 
             case .skipped(let reason):
                 DetailRow(icon: "info.circle", label: "跳过原因", value: reason, color: Theme.textTertiary)
 
             case .cancelled(let reason):
-                DetailRow(icon: "slash.circle", label: "停止原因", value: reason, color: Theme.textTertiary)
+                DetailRow(icon: "slash.circle", label: "停止原因", value: reason, color: Theme.textTertiary, lineLimit: 6, isSelectable: true)
             }
         }
+    }
+
+    private var displayedToolCalls: [String] {
+        if case .execution(let toolCalls, _, _, _, _) = details {
+            return Array(toolCalls.prefix(12))
+        }
+        return []
+    }
+
+    private var hiddenToolCallCount: Int {
+        if case .execution(let toolCalls, _, _, _, _) = details {
+            return max(0, toolCalls.count - displayedToolCalls.count)
+        }
+        return 0
+    }
+
+    private func executionStatusText(completed: Int, total: Int, failed: Int, cancelled: Int) -> String {
+        var parts = ["\(completed)/\(total) 已结束"]
+        if failed > 0 { parts.append("\(failed) 个失败") }
+        if cancelled > 0 { parts.append("\(cancelled) 个取消") }
+        if failed == 0 && cancelled == 0 && completed > 0 {
+            parts.append("无失败")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func executionStatusIcon(failed: Int, cancelled: Int) -> String {
+        if failed > 0 { return "xmark.circle" }
+        if cancelled > 0 { return "slash.circle" }
+        return "checkmark.circle"
+    }
+
+    private func executionStatusColor(failed: Int, cancelled: Int) -> Color {
+        if failed > 0 { return Theme.statusError }
+        if cancelled > 0 { return Theme.textTertiary }
+        return Theme.statusSuccess
     }
 }
 
@@ -336,6 +499,8 @@ struct DetailRow: View {
     let label: String
     let value: String
     var color: Color = Theme.textSecondary
+    var lineLimit: Int = 3
+    var isSelectable: Bool = false
 
     var body: some View {
         if !value.isEmpty {
@@ -349,11 +514,26 @@ struct DetailRow: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(Theme.textTertiary)
 
-                Text(value)
-                    .font(.system(size: 10))
-                    .foregroundColor(color)
-                    .lineLimit(3)
+                valueText
             }
+        }
+    }
+
+    @ViewBuilder
+    private var valueText: some View {
+        if isSelectable {
+            Text(value)
+                .font(.system(size: 10))
+                .foregroundColor(color)
+                .lineLimit(lineLimit)
+                .textSelection(.enabled)
+                .help(value)
+        } else {
+            Text(value)
+                .font(.system(size: 10))
+                .foregroundColor(color)
+                .lineLimit(lineLimit)
+                .help(value)
         }
     }
 }
@@ -372,6 +552,9 @@ struct SubstepRow: View {
             Text(substep.title)
                 .font(.system(size: 11))
                 .foregroundColor(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(substep.title)
 
             Spacer()
 
@@ -506,6 +689,42 @@ struct StatusIndicator: View {
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary
         }
+    }
+}
+
+struct PipelineInsightBanner: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let tone: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(tone)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(detail)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(tone.opacity(0.08))
+        .cornerRadius(Theme.radiusMD)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                .stroke(tone.opacity(0.18), lineWidth: 1)
+        )
     }
 }
 

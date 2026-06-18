@@ -86,4 +86,74 @@ final class StreamingDedupRegressionTests: XCTestCase {
         XCTAssertEqual(assistantMessages.first?.content, "我先使用 list_directory 工具查看目录结构。")
         XCTAssertEqual(correctionMessages.count, 1)
     }
+
+    func testConversationLoopStopsAfterCancelledToolResult() async throws {
+        let engine = await MainActor.run { AgentEngine() }
+        var invocationCount = 0
+
+        await MainActor.run {
+            ToolRegistry.shared.register(CancelledLoopTestTool())
+            engine.appendMessage(.user("run command"))
+        }
+
+        try await ConversationLoop.run(engine: await MainActor.run { engine }) { _ in
+            invocationCount += 1
+            return AIResponse(
+                content: nil,
+                reasoningContent: nil,
+                toolCalls: [
+                    ToolCall(id: "cancelled-command", name: "cancel_test_tool")
+                ],
+                usage: nil
+            )
+        }
+
+        let toolResultMessages = await MainActor.run {
+            engine.messages.filter { $0.toolResults != nil }
+        }
+
+        XCTAssertEqual(invocationCount, 1)
+        XCTAssertEqual(toolResultMessages.count, 1)
+        XCTAssertEqual(toolResultMessages.first?.toolResults?.first?.status, .cancelled)
+    }
+}
+
+private struct CancelledLoopTestTool: Tool {
+    let name = "cancel_test_tool"
+    let description = "Cancellation test tool"
+    let parameters: [String: ToolParameter] = [:]
+
+    func execute(arguments: [String: Any]) async throws -> ToolResult {
+        ToolResult.cancelled(toolCallId: name, reason: "用户停止任务")
+    }
+}
+
+final class ConversationLoopSourceTests: XCTestCase {
+    func testCancelledToolResultsDoNotAdvancePlanSteps() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/ConversationLoop.swift"))
+
+        XCTAssertTrue(
+            source.contains("let hasCancelled = results.contains { $0.status == .cancelled }"),
+            "ConversationLoop should explicitly distinguish cancelled tool results from successful results."
+        )
+        XCTAssertTrue(
+            source.contains("} else if hasCancelled {"),
+            "Cancelled tool results should take a separate branch before plan advancement."
+        )
+        XCTAssertTrue(
+            source.contains("if hasCancelled {\n                    break\n                }\n                continue"),
+            "Cancelled tool results should stop the loop after preserving the result message."
+        )
+
+        let cancelledBranch = try XCTUnwrap(source.range(of: "} else if hasCancelled {"))
+        let advanceCall = try XCTUnwrap(source.range(of: "engine.advancePlanStep()"))
+        XCTAssertLessThan(
+            cancelledBranch.lowerBound,
+            advanceCall.lowerBound,
+            "The cancelled branch should be evaluated before advancePlanStep is reachable."
+        )
+    }
 }

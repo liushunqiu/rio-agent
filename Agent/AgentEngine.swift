@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 
 @MainActor
 class AgentEngine: ObservableObject {
+    enum PendingUserDecision: Equatable {
+        case overwriteAgentFile(directory: String)
+        case chooseExecutionModeForTask(String)
+    }
+
     struct RuntimeModelRole: Identifiable, Equatable {
         let id: String
         let title: String
@@ -18,9 +23,20 @@ class AgentEngine: ObservableObject {
         let analysis: TaskPlanner.TaskAnalysis
     }
 
+    private struct PendingInitConfirmation {
+        let directory: String
+    }
+
     @Published var messages: [Message] = []
     @Published var isProcessing = false
-    @Published var error: String?
+    @Published var error: String? {
+        didSet {
+            if error == nil {
+                errorRecoveryContext = nil
+            }
+        }
+    }
+    @Published var errorRecoveryContext: ErrorRecoveryContext?
     @Published var currentToolExecution: ToolExecutionState?
     @Published var currentTaskPlan: TaskPlan?
     @Published var currentSingleAgentPlan: SingleAgentPlan?
@@ -61,8 +77,22 @@ class AgentEngine: ObservableObject {
     var currentToolCallId: String? {
         return currentToolExecution?.id
     }
-    var pendingInitConfirmation = false
+    private var pendingInitConfirmation: PendingInitConfirmation?
     private var pendingExecutionStrategyConfirmation: PendingExecutionStrategyConfirmation?
+
+    var pendingUserDecision: PendingUserDecision? {
+        if let pendingInitConfirmation {
+            return .overwriteAgentFile(directory: pendingInitConfirmation.directory)
+        }
+        if let pendingExecutionStrategyConfirmation {
+            return .chooseExecutionModeForTask(pendingExecutionStrategyConfirmation.input)
+        }
+        return nil
+    }
+
+    var canAcceptUserInput: Bool {
+        !isProcessing || pendingUserDecision != nil
+    }
 
     /// Pipeline 构建器（单次执行期间有效）
     private var pipelineBuilder: PipelineBuilder?
@@ -137,6 +167,7 @@ class AgentEngine: ObservableObject {
     private var recentSingleAgentEvidence: [String] = []
     private var recentSingleAgentToolErrors: [String] = []
     private var isAwaitingSingleAgentVerificationRetry = false
+    @Published var singleAgentVerificationSummary: VerifierService.VerificationOutcome?
     var textToolCallRedirectCount = 0
 
     init(configuration: AIConfiguration = AIConfiguration(), multiAgentConfig: MultiAgentConfig = MultiAgentConfig()) {
@@ -171,6 +202,9 @@ class AgentEngine: ObservableObject {
               let configSet = ConfigSetManager.shared.configSet(for: id) else {
             return nil
         }
+        guard configSet.readinessIssue == nil else {
+            return nil
+        }
         let provider = configSet.provider
         let baseURL = configSet.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = configSet.loadAPIKey().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,11 +221,65 @@ class AgentEngine: ObservableObject {
         ConfigSetManager.shared.configSet(for: id)
     }
 
-    private func missingServiceMessage(role: String, provider: AIProvider) -> String {
-        if provider == .openAICompatible {
-            return "\(role)未配置 API 端点。请前往 设置 → AI 配置 → 自定义端点填写服务地址。"
+    private func missingServiceMessage(role: String, configSetId: UUID?) -> String {
+        guard let configSet = configSet(for: configSetId) else {
+            return "\(role)未选择模型配置。请前往 设置 → AI 配置，先添加并选择一个模型配置。"
         }
-        return "\(role)未配置 API Key。请前往 设置 → AI 配置 → \(provider.displayName) 填写 API Key。"
+
+        if let readinessIssue = configSet.readinessIssue {
+            return "\(role)配置「\(configSet.name)」不可用：\(readinessIssue)。请前往 设置 → AI 配置 → 模型配置补全。"
+        }
+
+        return "\(role)配置「\(configSet.name)」未能创建服务。请检查提供商、端点地址和 API Key 是否匹配。"
+    }
+
+    private func serviceRecoveryContext(for role: String) -> ErrorRecoveryContext {
+        if role.localizedCaseInsensitiveContains("主 Agent")
+            || role.localizedCaseInsensitiveContains("编排器")
+            || role.localizedCaseInsensitiveContains("orchestrator") {
+            return .multiAgentOrchestratorModel
+        }
+        if role.localizedCaseInsensitiveContains("规划") {
+            return .planningModel
+        }
+        if role.localizedCaseInsensitiveContains("Router") {
+            return .routerModel
+        }
+        return .executionModel
+    }
+
+    private func presentError(_ message: String, recoveryContext: ErrorRecoveryContext? = nil) {
+        error = message
+        errorRecoveryContext = recoveryContext
+    }
+
+    private func routerFallbackMessage(title: String, reason: String?, guidance: String) -> String {
+        let cleanedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasonDetail = cleanedReason?.isEmpty == false ? "原因：\(cleanedReason!)。" : ""
+        return "\(title)，已继续执行标准流程。\(reasonDetail)\(guidance)"
+    }
+
+    private func applyRouterDecision(input: String, decision: RoutingDecision) {
+        // 安全兜底：如果 Router 判断为 skip，但用户消息包含明确的任务关键词，
+        // 则覆盖 skip 决策，允许执行模型使用工具。
+        let finalDecision = Self.applySkipSafetyOverride(
+            input: input,
+            decision: decision
+        )
+        if case .skip = decision, case .routeToTarget = finalDecision {
+            RioLogger.agent.warning("🔀 Router 原始决策为 skip，已被安全兜底覆盖为 process")
+        }
+        currentRouterDecision = finalDecision
+        multiAgentEngine?.setRouterPreferredCapability(finalDecision.preferredWorkerCapability)
+        trackRouterStage(decision: finalDecision)
+
+        switch finalDecision {
+        case .skip(let reason):
+            RioLogger.service.info("🔀 Router 决策: SKIP - \(reason, privacy: .public)")
+            // skip 意味着无需工具调用，但仍需让 AI 回答问题，因此继续执行但禁用工具。
+        case .routeToTarget(let target, _, let confidence, let reasoning):
+            RioLogger.service.info("🔀 Router 决策: \(target, privacy: .public) (置信度: \(confidence, privacy: .public)) - \(reasoning, privacy: .public)")
+        }
     }
 
     private func setupMultiAgentEngine() {
@@ -237,6 +325,7 @@ class AgentEngine: ObservableObject {
             routerConfigSet: configSet(for: multiAgentConfig.router.configSetId),
             isProcessing: isProcessing,
             usesMultiAgent: usesMultiAgentForCurrentPlan,
+            currentPipeline: currentPipeline,
             lastMessageRole: messages.last?.role
         )
     }
@@ -331,8 +420,8 @@ class AgentEngine: ObservableObject {
     func submitUserInput(
         _ input: String,
         onComplete: @escaping @MainActor () -> Void = {}
-    ) {
-        guard !isProcessing else { return }
+    ) -> Bool {
+        guard canAcceptUserInput else { return false }
 
         currentProcessingTask?.cancel()
         currentProcessingTask = Task { @MainActor [weak self] in
@@ -343,14 +432,12 @@ class AgentEngine: ObservableObject {
             }
             await self.processUserInput(input)
         }
+        return true
     }
 
     func processUserInput(_ input: String) async {
         let trimmedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty else { return }
-
-        // Record current task in memory
-        memory.setCurrentTask(trimmedInput)
         
         // 检查是否是命令（以/开头）
         if trimmedInput.hasPrefix("/") {
@@ -359,57 +446,87 @@ class AgentEngine: ObservableObject {
         }
 
         // 处理 /init 确认流程
-        if pendingInitConfirmation {
-            pendingInitConfirmation = false
-            let userMessage = Message.user(input)
-            messages.append(userMessage)
-
-            let confirmWords = ["是", "yes", "y", "确认", "ok", "好"]
-            if confirmWords.contains(where: { trimmedInput.lowercased().hasPrefix($0) }) {
-                if let dir = workingDirectory {
-                    await performInit(directory: dir)
-                }
-            } else {
+        if let pendingInitConfirmation {
+            self.pendingInitConfirmation = nil
+            if isAffirmativeResponse(trimmedInput) {
+                let userMessage = Message.user(input)
+                messages.append(userMessage)
+                memory.setCurrentTask(Self.initTaskDescription(for: pendingInitConfirmation.directory))
+                await performInit(directory: pendingInitConfirmation.directory)
+            } else if isNegativeResponse(trimmedInput) {
+                let userMessage = Message.user(input)
+                messages.append(userMessage)
                 let cancelMessage = Message.system("已取消重新生成 AGENT.md。", source: executionMessageSource)
                 messages.append(cancelMessage)
+                isProcessing = false
+            } else {
+                let resumeMessage = Message.system(
+                    "已取消重新生成 AGENT.md，并继续处理你的新请求。",
+                    source: executionMessageSource
+                )
+                messages.append(resumeMessage)
+                isProcessing = false
+                await processUserInput(input)
             }
             return
         }
 
         if let pendingExecutionStrategyConfirmation {
             self.pendingExecutionStrategyConfirmation = nil
-            let userMessage = Message.user(input)
-            messages.append(userMessage)
+            if isAffirmativeResponse(trimmedInput, extraWords: ["继续", "continue"]) {
+                let userMessage = Message.user(input)
+                messages.append(userMessage)
+                memory.setCurrentTask(pendingExecutionStrategyConfirmation.input)
 
-            let confirmWords = ["是", "yes", "y", "确认", "ok", "好", "继续", "continue"]
-            let useMultiAgent = confirmWords.contains { trimmedInput.lowercased().hasPrefix($0) }
-            let modeMessage = Message.system(
-                useMultiAgent ? "已确认使用 Multi-Agent 模式。" : "已切换为单 Agent 模式。",
-                source: planningMessageSource
-            )
-            messages.append(modeMessage)
+                let modeMessage = Message.system("已确认使用 Multi-Agent 模式。", source: planningMessageSource)
+                messages.append(modeMessage)
 
-            await executePreparedTask(
-                input: pendingExecutionStrategyConfirmation.input,
-                taskAnalysis: pendingExecutionStrategyConfirmation.analysis,
-                useDAG: useMultiAgent,
-                appendUserMessage: false
-            )
+                await executePreparedTask(
+                    input: pendingExecutionStrategyConfirmation.input,
+                    taskAnalysis: pendingExecutionStrategyConfirmation.analysis,
+                    useDAG: true,
+                    appendUserMessage: false
+                )
+            } else if isNegativeResponse(trimmedInput) {
+                let userMessage = Message.user(input)
+                messages.append(userMessage)
+                memory.setCurrentTask(pendingExecutionStrategyConfirmation.input)
+
+                let modeMessage = Message.system("已切换为单 Agent 模式。", source: planningMessageSource)
+                messages.append(modeMessage)
+
+                await executePreparedTask(
+                    input: pendingExecutionStrategyConfirmation.input,
+                    taskAnalysis: pendingExecutionStrategyConfirmation.analysis,
+                    useDAG: false,
+                    appendUserMessage: false
+                )
+            } else {
+                let resumeMessage = Message.system(
+                    "已取消本次执行模式确认，并继续处理你的新请求。",
+                    source: planningMessageSource
+                )
+                messages.append(resumeMessage)
+                isProcessing = false
+                await processUserInput(input)
+            }
             return
         }
 
         // For a normal user turn, render the message immediately so a brand-new
         // conversation switches out of the landing view before router/planning work finishes.
+        memory.setCurrentTask(trimmedInput)
         let userMessage = Message.user(input)
         messages.append(userMessage)
         onUserMessageAdded?()
         isProcessing = true
         isCancelled = false
         error = nil
-        currentTaskPlan = nil
+        errorRecoveryContext = nil
+        resetTaskExecutionStateForNewRun()
+        multiAgentEngine?.clearRouterPreferredCapability()
 
         // MARK: - Router interception (本地路由模型前置拦截)
-        currentRouterDecision = nil
         currentRouterStageId = nil
         currentTaskAnalysisStageId = nil
         currentDAGPlanningStageId = nil
@@ -426,44 +543,60 @@ class AgentEngine: ObservableObject {
             RioLogger.service.info("🔀 Router 已启用，开始路由分析...")
             RioLogger.service.debug("🔀 RouterConfig - configSetId: \(self.multiAgentConfig.router.configSetId?.uuidString ?? "nil", privacy: .public)")
             RioLogger.service.debug("🔀 RouterConfig - model: '\(self.multiAgentConfig.router.model, privacy: .public)'")
-            if let configSetId = multiAgentConfig.router.configSetId,
-               let routerService = createService(configSetId: configSetId) {
-                let routerConfig = multiAgentConfig.router
+            let routerConfig = multiAgentConfig.router
+            if routerConfig.enableQwenRouter {
+                if let readinessIssue = routerConfig.qwenReadinessIssue {
+                    let message = "Qwen Router 配置不可用：\(readinessIssue)。请前往 设置 → Multi-Agent → 路由配置补全。"
+                    RioLogger.service.warning("⚠️ \(message, privacy: .public)")
+                    presentError(message, recoveryContext: .routerModel)
+                    trackRouterStage(decision: nil)
+                } else {
+                    let routeResult = await RouterService.routeDetailed(
+                        input: trimmedInput,
+                        service: nil,
+                        model: routerConfig.qwenModel,
+                        config: routerConfig
+                    )
+                    if let decision = routeResult.decision {
+                        applyRouterDecision(input: trimmedInput, decision: decision)
+                    } else {
+                        let message = routerFallbackMessage(
+                            title: "Qwen Router 暂不可用",
+                            reason: routeResult.failureReason,
+                            guidance: "请检查 vLLM 服务连接、模型名称和路由 JSON 响应。"
+                        )
+                        RioLogger.service.warning("⚠️ \(message, privacy: .public)")
+                        presentError(message, recoveryContext: .routerModel)
+                        trackRouterStage(decision: nil)
+                    }
+                }
+            } else if let configSetId = routerConfig.configSetId,
+                      let routerService = createService(configSetId: configSetId) {
                 let model = routerConfig.model.isEmpty ? configuration.executionModel : routerConfig.model
                 RioLogger.service.info("🔀 Router 使用模型: \(model, privacy: .public)")
 
-                if let decision = await RouterService.route(
+                let routeResult = await RouterService.routeDetailed(
                     input: trimmedInput,
                     service: routerService,
                     model: model,
                     config: routerConfig
-                ) {
-                    // 安全兜底：如果 Router 判断为 skip，但用户消息包含明确的任务关键词，
-                    // 则覆盖 skip 决策，允许执行模型使用工具。
-                    let finalDecision = Self.applySkipSafetyOverride(
-                        input: trimmedInput,
-                        decision: decision
-                    )
-                    if case .skip = decision, case .routeToTarget = finalDecision {
-                        RioLogger.agent.warning("🔀 Router 原始决策为 skip，已被安全兜底覆盖为 process")
-                    }
-                    currentRouterDecision = finalDecision
-                    trackRouterStage(decision: finalDecision)
-
-                    switch finalDecision {
-                    case .skip(let reason):
-                        RioLogger.service.info("🔀 Router 决策: SKIP - \(reason, privacy: .public)")
-                        // skip 意味着无需工具调用，但仍需让 AI 回答问题，因此继续执行但禁用工具
-                    case .routeToTarget(let target, _, let confidence, let reasoning):
-                        RioLogger.service.info("🔀 Router 决策: \(target, privacy: .public) (置信度: \(confidence, privacy: .public)) - \(reasoning, privacy: .public)")
-                        // TODO: 根据 target 路由到特定 Worker（未来扩展）
-                    }
+                )
+                if let decision = routeResult.decision {
+                    applyRouterDecision(input: trimmedInput, decision: decision)
                 } else {
-                    RioLogger.service.warning("⚠️ Router 调用失败，继续执行标准流程")
+                    let message = routerFallbackMessage(
+                        title: "Router 暂不可用",
+                        reason: routeResult.failureReason,
+                        guidance: "请检查路由模型配置、网络连接和路由 JSON 响应。"
+                    )
+                    RioLogger.service.warning("⚠️ \(message, privacy: .public)")
+                    presentError(message, recoveryContext: .routerModel)
                     trackRouterStage(decision: nil)
                 }
             } else {
-                RioLogger.service.warning("⚠️ Router 已启用但未配置 configSetId 或 API Key，跳过路由")
+                let message = missingServiceMessage(role: "Router", configSetId: multiAgentConfig.router.configSetId)
+                RioLogger.service.warning("⚠️ Router 已启用但不可用：\(message, privacy: .public) 跳过路由")
+                presentError(message, recoveryContext: .routerModel)
             }
         } else {
             RioLogger.service.debug("⏭️ Router 未启用，跳过路由阶段")
@@ -586,7 +719,10 @@ class AgentEngine: ObservableObject {
                 } else {
                     RioLogger.agent.warning("⚠️ Multi-Agent 引擎未初始化，回退到单 Agent 模式")
                     guard let executionService else {
-                        error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
+                        presentError(
+                            missingServiceMessage(role: "执行模型", configSetId: configuration.executionConfigSetId),
+                            recoveryContext: .executionModel
+                        )
                         isProcessing = false
                         return
                     }
@@ -602,7 +738,10 @@ class AgentEngine: ObservableObject {
                 publishSingleAgentPlanIfNeeded(input: input, analysis: taskAnalysis)
                 currentSingleAgentPlan?.status = .executing
                 guard let executionService else {
-                    error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
+                    presentError(
+                        missingServiceMessage(role: "执行模型", configSetId: configuration.executionConfigSetId),
+                        recoveryContext: .executionModel
+                    )
                     isProcessing = false
                     return
                 }
@@ -616,17 +755,13 @@ class AgentEngine: ObservableObject {
         } catch is CancellationError {
             RioLogger.agent.info("⏹️ 用户取消了当前任务")
         } catch {
-            self.error = error.localizedDescription
+            presentError(error.localizedDescription)
             if !useDAG {
                 currentSingleAgentPlan?.status = .failed
             }
         }
 
-        completeExecutionStage()
-        if !useDAG, currentSingleAgentPlan?.status != .failed {
-            currentSingleAgentPlan?.status = .completed
-            currentSingleAgentPlan?.currentStep = currentSingleAgentPlan?.steps.count ?? 0
-        }
+        finalizePreparedTaskExecution(useDAG: useDAG)
 
         // Auto-compact if too many messages (save tokens)
         await autoCompactIfNeeded()
@@ -635,8 +770,44 @@ class AgentEngine: ObservableObject {
         pipelineBuilder?.finish()
         currentPipeline = pipelineBuilder?.build()
         pipelineBuilder = nil
+        multiAgentEngine?.clearRouterPreferredCapability()
 
         isProcessing = false
+    }
+
+    func finalizePreparedTaskExecution(useDAG: Bool) {
+        if isCancelled {
+            cancelActivePipelineStage()
+            return
+        }
+
+        if useDAG {
+            switch currentTaskPlan?.status {
+            case .cancelled:
+                cancelActivePipelineStage()
+            case .failed:
+                failActivePipelineStage()
+            default:
+                completeExecutionStage()
+            }
+            return
+        }
+
+        switch currentSingleAgentPlan?.status {
+        case .cancelled:
+            cancelActivePipelineStage()
+            return
+        case .failed:
+            failActivePipelineStage()
+            return
+        default:
+            break
+        }
+
+        completeExecutionStage()
+
+        currentSingleAgentPlan?.status = .completed
+        currentSingleAgentPlan?.currentStep = currentSingleAgentPlan?.steps.count ?? 0
     }
 
     private func shouldUseMultiAgent(for taskAnalysis: TaskPlanner.TaskAnalysis) -> Bool {
@@ -652,8 +823,15 @@ class AgentEngine: ObservableObject {
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
         multiAgentEngine?.cancelProcessing()
+        multiAgentEngine?.clearRouterPreferredCapability()
         isProcessing = false
+        error = nil
+        errorRecoveryContext = nil
         currentToolExecution = nil
+        currentRouterDecision = nil
+        resetSingleAgentVerificationState()
+        pendingInitConfirmation = nil
+        pendingExecutionStrategyConfirmation = nil
         currentSingleAgentPlan?.status = .cancelled
         cancelActivePipelineStage()
         pipelineBuilder?.finish()
@@ -698,6 +876,8 @@ class AgentEngine: ObservableObject {
             return
         }
 
+        memory.setCurrentTask(Self.initTaskDescription(for: dir))
+
         let agentMDPath = "\(dir)/AGENT.md"
 
         // 检查 AGENT.md 是否已存在
@@ -710,7 +890,7 @@ class AgentEngine: ObservableObject {
 
             // 等待用户确认：将控制权交给对话循环，下一条用户消息会决定是否继续
             // 使用一个标记让 processUserInput 知道下一步是确认 /init
-            pendingInitConfirmation = true
+            pendingInitConfirmation = PendingInitConfirmation(directory: dir)
             return
         }
 
@@ -771,14 +951,18 @@ class AgentEngine: ObservableObject {
         写入成功后，简要说明你发现了什么以及生成了哪些内容。
         """
 
-        let userMessage = Message.user(initPrompt)
+        let userMessage = Message.user(
+            initPrompt,
+            source: executionMessageSource,
+            presentation: .internalOnly
+        )
         messages.append(userMessage)
 
         isProcessing = true
         error = nil
 
         guard let executionService else {
-            error = missingServiceMessage(role: "执行模型", provider: configuration.executionProvider)
+            error = missingServiceMessage(role: "执行模型", configSetId: configuration.executionConfigSetId)
             isProcessing = false
             return
         }
@@ -794,6 +978,22 @@ class AgentEngine: ObservableObject {
         }
 
         isProcessing = false
+    }
+
+    private static func initTaskDescription(for directory: String) -> String {
+        "初始化 \(directory) 下的 AGENT.md"
+    }
+
+    private func isAffirmativeResponse(_ input: String, extraWords: [String] = []) -> Bool {
+        let normalizedInput = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let confirmWords = ["是", "yes", "y", "确认", "ok", "好"] + extraWords
+        return confirmWords.contains(where: { normalizedInput.hasPrefix($0) })
+    }
+
+    private func isNegativeResponse(_ input: String) -> Bool {
+        let normalizedInput = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cancelWords = ["否", "不", "no", "n", "取消", "算了"]
+        return cancelWords.contains(where: { normalizedInput.hasPrefix($0) })
     }
 
     private func showHelp() {
@@ -846,6 +1046,17 @@ class AgentEngine: ObservableObject {
 
         let result = await engine.processTask(input)
 
+        if let finalPlan = engine.currentPlan {
+            currentTaskPlan = finalPlan
+            syncPipeline(with: finalPlan)
+            if finalPlan.status == .failed {
+                let failedSubTasks = finalPlan.subTasks.filter { $0.status == .failed }
+                errorRecoveryContext = engine.errorRecoveryContext ?? failedSubTasks
+                    .compactMap(\.recoveryContext)
+                    .first
+            }
+        }
+
         cancellable.cancel()
 
         let assistantMessage = Message.assistant(result, source: multiAgentMessageSource)
@@ -895,6 +1106,8 @@ class AgentEngine: ObservableObject {
 
         if shouldVerifySingleAgentCompletion(for: content) {
             let verification = await verifySingleAgentCompletion(output: content)
+            singleAgentVerificationSummary = verification
+            trackSingleAgentVerificationOutcome(verification)
             switch verification.status {
             case .verified, .unverified:
                 let finalizedContent = attachVerificationNoteIfNeeded(
@@ -902,13 +1115,13 @@ class AgentEngine: ObservableObject {
                     verification: verification
                 )
                 finalizeAssistantMessage(finalizedContent)
-                resetSingleAgentVerificationState()
+                resetSingleAgentVerificationState(clearVisibleSummary: false)
                 return true
             case .needsRetry:
                 if isAwaitingSingleAgentVerificationRetry {
                     let finalizedContent = content + "\n\n未验证说明：\(verification.summary)"
                     finalizeAssistantMessage(finalizedContent)
-                    resetSingleAgentVerificationState()
+                    resetSingleAgentVerificationState(clearVisibleSummary: false)
                     return true
                 }
 
@@ -931,7 +1144,7 @@ class AgentEngine: ObservableObject {
         }
 
         finalizeAssistantMessage(content)
-        resetSingleAgentVerificationState()
+        resetSingleAgentVerificationState(clearVisibleSummary: false)
         return true
     }
 
@@ -1286,10 +1499,13 @@ class AgentEngine: ObservableObject {
         return content + "\n\n未验证说明：\(verification.summary)"
     }
 
-    private func resetSingleAgentVerificationState() {
+    private func resetSingleAgentVerificationState(clearVisibleSummary: Bool = true) {
         recentSingleAgentEvidence.removeAll()
         recentSingleAgentToolErrors.removeAll()
         isAwaitingSingleAgentVerificationRetry = false
+        if clearVisibleSummary {
+            singleAgentVerificationSummary = nil
+        }
     }
 
     private func finalizeAssistantMessage(_ content: String) {
@@ -1322,6 +1538,43 @@ class AgentEngine: ObservableObject {
         messages[lastIndex].isStreaming = false
         messages[lastIndex].presentation = .internalOnly
     }
+
+    private func trackSingleAgentVerificationOutcome(_ verification: VerifierService.VerificationOutcome) {
+        guard let builder = pipelineBuilder else { return }
+
+        let details = StageDetails.verification(
+            passedChecks: verification.status == .verified ? 1 : 0,
+            totalChecks: 1,
+            summary: verification.summary
+        )
+
+        switch verification.status {
+        case .verified:
+            syncSingleStage(
+                id: &currentVerificationStageId,
+                builder: builder,
+                type: .verification,
+                details: details,
+                status: .completed
+            )
+        case .unverified:
+            syncSingleStage(
+                id: &currentVerificationStageId,
+                builder: builder,
+                type: .verification,
+                details: details,
+                status: .completed
+            )
+        case .needsRetry:
+            syncSingleStage(
+                id: &currentVerificationStageId,
+                builder: builder,
+                type: .verification,
+                details: details,
+                status: .failed
+            )
+        }
+    }
     
     func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
         let toolNames = toolCalls.map(\.name)
@@ -1331,7 +1584,7 @@ class AgentEngine: ObservableObject {
         let results = await toolExecutor.executeToolCalls(toolCalls)
 
         updateExecutionProgress(
-            completed: results.count,
+            results: results,
             total: toolCalls.count,
             toolNames: toolNames
         )
@@ -1367,15 +1620,18 @@ class AgentEngine: ObservableObject {
     // MARK: - Conversation Management
 
     func clearConversation() {
+        cancelActiveProcessingForContextReset()
         messages.removeAll()
         error = nil
         currentToolExecution = nil
         currentTaskPlan = nil
         currentSingleAgentPlan = nil
+        currentRouterDecision = nil
         resetPipelineState(clearVisiblePipeline: true)
-        pendingInitConfirmation = false
+        pendingInitConfirmation = nil
         pendingExecutionStrategyConfirmation = nil
         resetUsageTracking()
+        resetSingleAgentVerificationState()
         memory.clearSession()
         clearActivePlan()
     }
@@ -1407,22 +1663,31 @@ class AgentEngine: ObservableObject {
     }
 
     func loadConversation(_ conversation: Conversation) {
-        currentProcessingTask?.cancel()
-        currentProcessingTask = nil
-        multiAgentEngine?.cancelProcessing()
-        isProcessing = false
-        isCancelled = true
-        currentToolExecution = nil
+        cancelActiveProcessingForContextReset()
 
         messages = conversation.messages
         workingDirectory = conversation.workingDirectory
         error = nil
         currentTaskPlan = nil
         currentSingleAgentPlan = nil
+        currentRouterDecision = nil
         resetPipelineState(clearVisiblePipeline: true)
         pendingExecutionStrategyConfirmation = nil
-        pendingInitConfirmation = false
+        pendingInitConfirmation = nil
         resetUsageTracking()
+        resetSingleAgentVerificationState()
+        clearActivePlan()
+        memory.clearSession()
+    }
+
+    private func cancelActiveProcessingForContextReset() {
+        currentProcessingTask?.cancel()
+        currentProcessingTask = nil
+        multiAgentEngine?.cancelProcessing()
+        multiAgentEngine?.clearRouterPreferredCapability()
+        isProcessing = false
+        isCancelled = true
+        currentToolExecution = nil
     }
 
     func exportConversation() -> Conversation {
@@ -1473,8 +1738,7 @@ class AgentEngine: ObservableObject {
 
             if let toolResults = message.toolResults {
                 for tr in toolResults {
-                    let icon = tr.status == .success ? "✅" : "❌"
-                    md += "### \(icon) Tool Result\n\n```\n\(String(tr.output.prefix(500)))\n```\n\n"
+                    md += markdownToolResultBlock(for: tr)
                 }
             }
         }
@@ -1502,6 +1766,28 @@ class AgentEngine: ObservableObject {
             self.error = "导出失败: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    private func markdownToolResultBlock(for result: ToolResult) -> String {
+        let icon = result.status == .success ? "✅" : (result.status == .cancelled ? "⏹" : "❌")
+        let label = ToolResultDisplay.label(for: result)
+        let text = ToolResultDisplay.text(for: result)
+        let fence = markdownFence(for: text)
+        return "### \(icon) Tool Result · \(label)\n\n\(fence)\n\(text)\n\(fence)\n\n"
+    }
+
+    private func markdownFence(for text: String) -> String {
+        var longestBacktickRun = 0
+        var currentRun = 0
+        for character in text {
+            if character == "`" {
+                currentRun += 1
+                longestBacktickRun = max(longestBacktickRun, currentRun)
+            } else {
+                currentRun = 0
+            }
+        }
+        return String(repeating: "`", count: max(3, longestBacktickRun + 1))
     }
 
     private var normalizedContextMessageLimit: Int? {
@@ -1533,6 +1819,15 @@ class AgentEngine: ObservableObject {
         if clearVisiblePipeline {
             currentPipeline = nil
         }
+    }
+
+    private func resetTaskExecutionStateForNewRun() {
+        currentToolExecution = nil
+        currentTaskPlan = nil
+        currentSingleAgentPlan = nil
+        currentRouterDecision = nil
+        resetSingleAgentVerificationState()
+        clearActivePlan()
     }
 
     /// 安全兜底：如果 Router 错误地将任务型消息判为 skip，
@@ -1658,7 +1953,9 @@ class AgentEngine: ObservableObject {
                 details: .execution(
                     toolCalls: [],
                     completedCount: completedSubTaskCount(in: plan),
-                    totalCount: plan.subTasks.count
+                    totalCount: plan.subTasks.count,
+                    failedCount: failedSubTaskCount(in: plan),
+                    cancelledCount: cancelledSubTaskCount(in: plan)
                 ),
                 status: .running
             )
@@ -1673,7 +1970,9 @@ class AgentEngine: ObservableObject {
                 details: .execution(
                     toolCalls: [],
                     completedCount: completedSubTaskCount(in: plan),
-                    totalCount: plan.subTasks.count
+                    totalCount: plan.subTasks.count,
+                    failedCount: failedSubTaskCount(in: plan),
+                    cancelledCount: cancelledSubTaskCount(in: plan)
                 ),
                 status: .completed
             )
@@ -1872,6 +2171,14 @@ class AgentEngine: ObservableObject {
         plan.subTasks.filter { $0.status == .completed }.count
     }
 
+    private func failedSubTaskCount(in plan: TaskPlan) -> Int {
+        plan.subTasks.filter { $0.status == .failed }.count
+    }
+
+    private func cancelledSubTaskCount(in plan: TaskPlan) -> Int {
+        plan.subTasks.filter { $0.status == .cancelled }.count
+    }
+
     private func verifiedSubTaskCount(in plan: TaskPlan) -> Int {
         plan.subTasks.filter { $0.verificationStatus == .verified }.count
     }
@@ -1898,20 +2205,42 @@ class AgentEngine: ObservableObject {
         let stageId = builder.addStage(.execution, details: .execution(
             toolCalls: toolNames,
             completedCount: 0,
-            totalCount: toolNames.count
+            totalCount: toolNames.count,
+            failedCount: 0,
+            cancelledCount: 0
         ))
         currentExecutionStageId = stageId
         builder.startStage(stageId)
         updatePipelineUI()
     }
 
-    private func updateExecutionProgress(completed: Int, total: Int, toolNames: [String]) {
+    private func updateExecutionProgress(results: [ToolResult], total: Int, toolNames: [String]) {
+        let failed = results.filter { $0.status == .error }.count
+        let cancelled = results.filter { $0.status == .cancelled }.count
+        updateExecutionProgress(
+            completed: results.count,
+            total: total,
+            toolNames: toolNames,
+            failed: failed,
+            cancelled: cancelled
+        )
+    }
+
+    private func updateExecutionProgress(
+        completed: Int,
+        total: Int,
+        toolNames: [String],
+        failed: Int,
+        cancelled: Int
+    ) {
         guard let builder = pipelineBuilder, let stageId = currentExecutionStageId else { return }
 
         builder.updateStageDetails(stageId, details: .execution(
             toolCalls: toolNames,
             completedCount: completed,
-            totalCount: total
+            totalCount: total,
+            failedCount: failed,
+            cancelledCount: cancelled
         ))
         updatePipelineUI()
     }
@@ -1973,11 +2302,23 @@ class AgentEngine: ObservableObject {
             .substeps
             .filter { $0.status == .completed || $0.status == .cancelled || $0.status == .failed || $0.status == .skipped }
             .count ?? 0
+        let failedCount = builder.build().stages
+            .first(where: { $0.id == stageId })?
+            .substeps
+            .filter { $0.status == .failed }
+            .count ?? 0
+        let cancelledCount = builder.build().stages
+            .first(where: { $0.id == stageId })?
+            .substeps
+            .filter { $0.status == .cancelled }
+            .count ?? 0
 
         updateExecutionProgress(
             completed: completedCount,
             total: executionStageToolNames.count,
-            toolNames: executionStageToolNames
+            toolNames: executionStageToolNames,
+            failed: failedCount,
+            cancelled: cancelledCount
         )
     }
 

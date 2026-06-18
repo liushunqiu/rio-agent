@@ -38,4 +38,37 @@ final class FileReferenceParserTests: XCTestCase {
             "请分析\n@file:/tmp/project/Model.swift"
         )
     }
+
+    func testRemovingReferencesOutsideWorkingDirectoryKeepsOnlyMatchingPaths() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift
+        @file:/tmp/other/Legacy.swift
+        @file:/tmp/project/Sources/Model.swift
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.removingReferencesOutsideWorkingDirectory(
+                from: text,
+                workingDirectory: "/tmp/project"
+            ),
+            "请分析\n@file:/tmp/project/App.swift\n@file:/tmp/project/Sources/Model.swift"
+        )
+    }
+
+    func testRemovingReferencesOutsideWorkingDirectoryClearsAllWhenWorkspaceIsMissing() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift
+        @file:/tmp/project/Model.swift
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.removingReferencesOutsideWorkingDirectory(
+                from: text,
+                workingDirectory: nil
+            ),
+            "请分析"
+        )
+    }
 }

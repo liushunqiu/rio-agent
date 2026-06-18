@@ -7,23 +7,25 @@ struct RuntimeModelRoleBuilder {
         routerConfigSet: ConfigSet?,
         isProcessing: Bool,
         usesMultiAgent: Bool,
+        currentPipeline: ExecutionPipeline?,
         lastMessageRole: MessageRole?
     ) -> [AgentEngine.RuntimeModelRole] {
         var roles: [AgentEngine.RuntimeModelRole] = []
+        let activeRole = singleAgentActiveRole(
+            isProcessing: isProcessing,
+            usesMultiAgent: usesMultiAgent,
+            currentPipeline: currentPipeline,
+            lastMessageRole: lastMessageRole
+        )
 
         if multiAgentConfig.router.enabled {
-            let routerModel = multiAgentConfig.router.model.isEmpty
-                ? configuration.executionModel
-                : multiAgentConfig.router.model
-            let routerProvider = routerConfigSet?.provider.displayName
-                ?? configuration.executionProvider.displayName
-            roles.append(AgentEngine.RuntimeModelRole(
-                id: "router",
-                title: "Router",
-                providerName: routerProvider,
-                modelName: routerModel,
-                isActive: isProcessing && lastMessageRole != .assistant
-            ))
+            let routerRole = routerRuntimeRole(
+                configuration: configuration,
+                multiAgentConfig: multiAgentConfig,
+                routerConfigSet: routerConfigSet,
+                isActive: activeRole == .router
+            )
+            roles.append(routerRole)
         }
 
         roles.append(AgentEngine.RuntimeModelRole(
@@ -31,7 +33,7 @@ struct RuntimeModelRoleBuilder {
             title: "Planning",
             providerName: configuration.planningProvider.displayName,
             modelName: configuration.planningModel,
-            isActive: isProcessing && !usesMultiAgent
+            isActive: activeRole == .planning
         ))
 
         roles.append(AgentEngine.RuntimeModelRole(
@@ -39,10 +41,40 @@ struct RuntimeModelRoleBuilder {
             title: "Execution",
             providerName: configuration.executionProvider.displayName,
             modelName: configuration.executionModel,
-            isActive: isProcessing && !usesMultiAgent
+            isActive: activeRole == .execution
         ))
 
         return rolesWithModelNames(roles)
+    }
+
+    private static func routerRuntimeRole(
+        configuration: AIConfiguration,
+        multiAgentConfig: MultiAgentConfig,
+        routerConfigSet: ConfigSet?,
+        isActive: Bool
+    ) -> AgentEngine.RuntimeModelRole {
+        if multiAgentConfig.router.enableQwenRouter {
+            return AgentEngine.RuntimeModelRole(
+                id: "router",
+                title: "Qwen Router",
+                providerName: "Qwen / vLLM",
+                modelName: multiAgentConfig.router.qwenModel,
+                isActive: isActive
+            )
+        }
+
+        let routerModel = multiAgentConfig.router.model.isEmpty
+            ? configuration.executionModel
+            : multiAgentConfig.router.model
+        let routerProvider = routerConfigSet?.provider.displayName
+            ?? configuration.executionProvider.displayName
+        return AgentEngine.RuntimeModelRole(
+            id: "router",
+            title: "Router",
+            providerName: routerProvider,
+            modelName: routerModel,
+            isActive: isActive
+        )
     }
 
     static func multiAgentRoles(
@@ -94,5 +126,33 @@ struct RuntimeModelRoleBuilder {
 
     private static func rolesWithModelNames(_ roles: [AgentEngine.RuntimeModelRole]) -> [AgentEngine.RuntimeModelRole] {
         roles.filter { !$0.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private enum SingleAgentActiveRole {
+        case router
+        case planning
+        case execution
+    }
+
+    private static func singleAgentActiveRole(
+        isProcessing: Bool,
+        usesMultiAgent: Bool,
+        currentPipeline: ExecutionPipeline?,
+        lastMessageRole: MessageRole?
+    ) -> SingleAgentActiveRole? {
+        guard isProcessing, !usesMultiAgent else { return nil }
+
+        if let stage = currentPipeline?.currentStage {
+            switch stage.type {
+            case .router:
+                return .router
+            case .taskAnalysis, .dagPlanning:
+                return .planning
+            case .execution, .errorRecovery, .verification, .synthesis:
+                return .execution
+            }
+        }
+
+        return lastMessageRole == .assistant ? .execution : .planning
     }
 }

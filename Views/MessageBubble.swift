@@ -377,17 +377,7 @@ struct ToolCallCard: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(toolCall.arguments.sorted(by: { $0.key < $1.key })), id: \.key) { key, value in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(key)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundColor(Theme.accentPrimary)
-                                .frame(minWidth: 80, alignment: .leading)
-
-                            Text(String(describing: value.value))
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(Theme.textSecondary)
-                                .textSelection(.enabled)
-                        }
+                        ToolArgumentRow(name: key, value: value.value, fontSize: 12)
                     }
                 }
                 .padding(14)
@@ -406,8 +396,6 @@ struct ToolCallCard: View {
 struct ToolResultCard: View {
     let result: ToolResult
     @State private var isExpanded = false
-
-    private let collapsedOutputLineLimit = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -438,46 +426,7 @@ struct ToolResultCard: View {
                     .overlay(Theme.borderSubtle)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    if !result.output.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("输出")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(Theme.textSecondary)
-
-                                Spacer()
-
-                                if shouldCollapseOutput {
-                                    Button(action: { withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() } }) {
-                                        Text(isExpanded ? "收起" : "展开全部")
-                                            .font(.system(size: 10, weight: .medium))
-                                            .foregroundColor(Theme.textTertiary)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-
-                            Text(result.output)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(Theme.textSecondary)
-                                .textSelection(.enabled)
-                                .lineLimit(isExpanded || result.status == .error ? nil : collapsedOutputLineLimit)
-                                .padding(10)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Theme.codeBackground)
-                                .cornerRadius(Theme.radiusSM)
-                        }
-                    }
-
-                    if let error = result.error {
-                        Text(error)
-                            .font(.system(size: 12))
-                            .foregroundColor(Theme.statusError)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Theme.statusError.opacity(0.1))
-                            .cornerRadius(Theme.radiusSM)
-                    }
+                    ToolResultOutputBlock(result: result, fontSize: 12, contentPadding: 10)
                 }
                 .padding(14)
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -513,10 +462,5 @@ struct ToolResultCard: View {
         case .error: return "执行失败"
         case .cancelled: return "已取消"
         }
-    }
-
-    private var shouldCollapseOutput: Bool {
-        result.output.components(separatedBy: .newlines).count > collapsedOutputLineLimit
-            || result.output.count > 1000
     }
 }
