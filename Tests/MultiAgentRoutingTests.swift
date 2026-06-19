@@ -293,6 +293,77 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertTrue(routerRole?.isActive == true)
     }
 
+    @MainActor
+    func testGenericRouterRuntimeRoleDoesNotFallbackToExecutionModelWhenConfigIsMissing() {
+        let configuration = AIConfiguration()
+
+        var multiAgentConfig = MultiAgentConfig()
+        multiAgentConfig.router.enabled = true
+        multiAgentConfig.router.model = "stale-router-model"
+
+        let routerPipeline = makePipelineWithRunningStage(.router)
+        let roles = RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: nil,
+            isProcessing: true,
+            usesMultiAgent: false,
+            currentPipeline: routerPipeline,
+            lastMessageRole: .user
+        )
+
+        let routerRole = roles.first { $0.id == "router" }
+        XCTAssertEqual(routerRole?.providerName, "未配置")
+        XCTAssertEqual(routerRole?.modelName, "未选择模型配置")
+        XCTAssertTrue(routerRole?.isActive == true)
+    }
+
+    @MainActor
+    func testGenericRouterRuntimeRoleUsesConfigSetModelWhenRouterModelIsBlank() {
+        let configuration = AIConfiguration()
+        let routerSet = ConfigSet(
+            name: "Router Set",
+            provider: .openAICompatible,
+            baseURL: "https://router.example.com/v1",
+            model: "router-config-model"
+        )
+
+        var multiAgentConfig = MultiAgentConfig()
+        multiAgentConfig.router.enabled = true
+        multiAgentConfig.router.configSetId = routerSet.id
+        multiAgentConfig.router.model = "   "
+
+        let roles = RuntimeModelRoleBuilder.singleAgentRoles(
+            configuration: configuration,
+            multiAgentConfig: multiAgentConfig,
+            routerConfigSet: routerSet,
+            isProcessing: false,
+            usesMultiAgent: false,
+            currentPipeline: nil,
+            lastMessageRole: nil
+        )
+
+        let routerRole = roles.first { $0.id == "router" }
+        XCTAssertEqual(routerRole?.providerName, AIProvider.openAICompatible.displayName)
+        XCTAssertEqual(routerRole?.modelName, "router-config-model")
+    }
+
+    func testGenericRouterExecutionUsesConfigSetModelWhenRouterModelIsBlank() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/AgentEngine.swift"))
+
+        XCTAssertTrue(
+            source.contains("let configuredRouterModel = routerConfig.model.trimmingCharacters(in: .whitespacesAndNewlines)"),
+            "Generic Router execution should trim the optional model override before deciding whether it is configured."
+        )
+        XCTAssertTrue(
+            source.contains("? (configSet(for: configSetId)?.model ?? configuration.executionModel)"),
+            "Generic Router execution should prefer the bound Router config set's model before falling back to the execution model."
+        )
+    }
+
     func testQwenRouterServiceRejectsInvalidConfigBeforeRequest() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

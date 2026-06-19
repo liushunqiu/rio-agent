@@ -178,14 +178,25 @@ class ClaudeService: AIService {
         for message in messages {
             // Collect system messages into a system prompt
             if message.role == .system {
-                if !message.content.isEmpty {
+                if let toolResults = message.toolResults, !toolResults.isEmpty {
+                    var contentBlocks: [[String: Any]] = []
+                    if !message.content.isEmpty {
+                        contentBlocks.append(["type": "text", "text": message.content])
+                    }
+                    contentBlocks.append(contentsOf: toolResultBlocks(from: toolResults))
+                    apiMessages.append([
+                        "role": "user",
+                        "content": contentBlocks
+                    ])
+                } else if !message.content.isEmpty {
                     systemPromptParts.append(message.content)
                 }
                 continue
             }
 
+            let hasToolResults = message.toolResults?.isEmpty == false
             var apiMessage: [String: Any] = [
-                "role": message.role == .user ? "user" : "assistant"
+                "role": hasToolResults || message.role == .user ? "user" : "assistant"
             ]
 
             // Build content array
@@ -207,17 +218,7 @@ class ClaudeService: AIService {
             }
 
             if let toolResults = message.toolResults, !toolResults.isEmpty {
-                for tr in toolResults {
-                    var resultBlock: [String: Any] = [
-                        "type": "tool_result",
-                        "tool_use_id": tr.toolCallId,
-                        "content": tr.status == .error ? (tr.error ?? "Unknown error") : tr.output
-                    ]
-                    if tr.status == .error {
-                        resultBlock["is_error"] = true
-                    }
-                    contentBlocks.append(resultBlock)
-                }
+                contentBlocks.append(contentsOf: toolResultBlocks(from: toolResults))
             }
 
             if contentBlocks.isEmpty && !message.content.isEmpty {
@@ -258,6 +259,20 @@ class ClaudeService: AIService {
         }
 
         return body
+    }
+
+    private func toolResultBlocks(from toolResults: [ToolResult]) -> [[String: Any]] {
+        toolResults.map { tr in
+            var resultBlock: [String: Any] = [
+                "type": "tool_result",
+                "tool_use_id": tr.toolCallId,
+                "content": tr.modelContent
+            ]
+            if tr.status != .success {
+                resultBlock["is_error"] = true
+            }
+            return resultBlock
+        }
     }
 
     // MARK: - Response Parser

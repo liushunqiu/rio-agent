@@ -99,14 +99,21 @@ struct ExecutionPipelineView: View {
         .onAppear {
             expandRelevantStages()
         }
-        .onChange(of: pipeline.stages.map(\.status)) { _, _ in
+        .onChange(of: expansionSignal) { _, _ in
             expandRelevantStages()
+        }
+    }
+
+    private var expansionSignal: [String] {
+        pipeline.stages.map { stage in
+            "\(stage.id.uuidString):\(stage.status):\(stage.hasExpandableContent):\(stage.substeps.count)"
         }
     }
 
     private func expandRelevantStages() {
         if let currentStage = pipeline.currentStage,
            currentStage.hasExpandableContent {
+            isCollapsed = false
             expandedStages.insert(currentStage.id)
             return
         }
@@ -217,8 +224,11 @@ struct ExecutionPipelineView: View {
             }
             return "第 \(retryCount) 次重试"
         case .verification(let passed, let total, let summary):
-            return "通过 \(passed)/\(total) 项检查"
-                + (summary?.isEmpty == false ? " · \(summary!)" : "")
+            var parts = ["通过 \(passed)/\(total) 项检查"]
+            if let summary, !summary.isEmpty {
+                parts.append(summary)
+            }
+            return parts.joined(separator: " · ")
         case .synthesis(let workerResults):
             return "汇总 \(workerResults) 个结果"
         case .error(let message):

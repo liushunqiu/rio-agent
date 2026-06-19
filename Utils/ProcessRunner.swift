@@ -7,6 +7,7 @@ private final class ProcessRunState: @unchecked Sendable {
     private var errorData = Data()
     private var didResume = false
     private var didTimeout = false
+    private var didCancel = false
 
     func appendOutput(_ data: Data) {
         lock.lock()
@@ -26,7 +27,13 @@ private final class ProcessRunState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func snapshotAndMarkResumed(additionalOutput: Data, additionalError: Data) -> (output: Data, error: Data, timedOut: Bool, shouldResume: Bool) {
+    func markCancelled() {
+        lock.lock()
+        didCancel = true
+        lock.unlock()
+    }
+
+    func snapshotAndMarkResumed(additionalOutput: Data, additionalError: Data) -> (output: Data, error: Data, timedOut: Bool, cancelled: Bool, shouldResume: Bool) {
         lock.lock()
         defer { lock.unlock() }
 
@@ -39,15 +46,38 @@ private final class ProcessRunState: @unchecked Sendable {
 
         let shouldResume = !didResume
         didResume = true
-        return (outputData, errorData, didTimeout, shouldResume)
+        return (outputData, errorData, didTimeout, didCancel, shouldResume)
     }
 
-    func markResumed() -> Bool {
+}
+
+private final class ProcessCancellationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var didCancel = false
+
+    func setProcess(_ process: Process) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        guard !didResume else { return false }
-        didResume = true
-        return true
+        self.process = process
+        let shouldCancel = didCancel
+        lock.unlock()
+        return shouldCancel
+    }
+
+    func clearProcess(_ process: Process) {
+        lock.lock()
+        if self.process === process {
+            self.process = nil
+        }
+        lock.unlock()
+    }
+
+    func cancel() -> Process? {
+        lock.lock()
+        didCancel = true
+        let activeProcess = process
+        lock.unlock()
+        return activeProcess
     }
 }
 
@@ -63,93 +93,121 @@ class ProcessRunner {
         workingDirectory: String? = nil,
         timeout: TimeInterval = 30
     ) async throws -> ProcessResult {
-        return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            let state = ProcessRunState()
+        let state = ProcessRunState()
+        let cancellationState = ProcessCancellationState()
 
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command] + arguments
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let process = Process()
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
 
-            if let workDir = workingDirectory {
-                process.currentDirectoryURL = URL(fileURLWithPath: workDir)
-            }
+                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                process.arguments = ["-c", command] + arguments
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
 
-            // 设置超时
-            let timeoutWorkItem = DispatchWorkItem {
-                if process.isRunning {
-                    state.markTimedOut()
-                    self.terminateProcessGroup(for: process)
+                if let workDir = workingDirectory {
+                    process.currentDirectoryURL = URL(fileURLWithPath: workDir)
                 }
-            }
 
-            timeoutQueue.asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
-
-            outputPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    handle.readabilityHandler = nil
-                    return
+                // 设置超时
+                let timeoutWorkItem = DispatchWorkItem {
+                    if process.isRunning {
+                        state.markTimedOut()
+                        self.terminateProcessGroup(for: process)
+                    }
                 }
-                state.appendOutput(data)
-            }
 
-            errorPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    handle.readabilityHandler = nil
-                    return
+                timeoutQueue.asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
+                if cancellationState.setProcess(process) {
+                    state.markCancelled()
+                    terminateProcessGroup(for: process)
                 }
-                state.appendError(data)
-            }
 
-            process.terminationHandler = { process in
-                timeoutWorkItem.cancel()
-                outputPipe.fileHandleForReading.readabilityHandler = nil
-                errorPipe.fileHandleForReading.readabilityHandler = nil
+                outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        return
+                    }
+                    state.appendOutput(data)
+                }
 
-                let remainingOutput = outputPipe.fileHandleForReading.availableData
-                let remainingError = errorPipe.fileHandleForReading.availableData
-                let snapshot = state.snapshotAndMarkResumed(
-                    additionalOutput: remainingOutput,
-                    additionalError: remainingError
-                )
+                errorPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        return
+                    }
+                    state.appendError(data)
+                }
 
-                guard snapshot.shouldResume else { return }
+                process.terminationHandler = { process in
+                    timeoutWorkItem.cancel()
+                    cancellationState.clearProcess(process)
+                    outputPipe.fileHandleForReading.readabilityHandler = nil
+                    errorPipe.fileHandleForReading.readabilityHandler = nil
 
-                if snapshot.timedOut {
-                    continuation.resume(throwing: ProcessError.timeout)
-                } else {
-                    let output = String(data: snapshot.output, encoding: .utf8) ?? ""
-                    let errorOutput = String(data: snapshot.error, encoding: .utf8) ?? ""
-
-                    let result = ProcessResult(
-                        exitCode: process.terminationStatus,
-                        output: output,
-                        error: errorOutput
+                    let remainingOutput = outputPipe.fileHandleForReading.availableData
+                    let remainingError = errorPipe.fileHandleForReading.availableData
+                    let snapshot = state.snapshotAndMarkResumed(
+                        additionalOutput: remainingOutput,
+                        additionalError: remainingError
                     )
 
-                    continuation.resume(returning: result)
-                }
-            }
+                    guard snapshot.shouldResume else { return }
 
-            do {
-                try process.run()
-            } catch {
-                timeoutWorkItem.cancel()
-                outputPipe.fileHandleForReading.readabilityHandler = nil
-                errorPipe.fileHandleForReading.readabilityHandler = nil
-                if state.markResumed() {
-                    continuation.resume(throwing: ProcessError.launchFailed(error.localizedDescription))
+                    if snapshot.cancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else if snapshot.timedOut {
+                        continuation.resume(throwing: ProcessError.timeout)
+                    } else {
+                        let output = String(data: snapshot.output, encoding: .utf8) ?? ""
+                        let errorOutput = String(data: snapshot.error, encoding: .utf8) ?? ""
+
+                        let result = ProcessResult(
+                            exitCode: process.terminationStatus,
+                            output: output,
+                            error: errorOutput
+                        )
+
+                        continuation.resume(returning: result)
+                    }
+                }
+
+                do {
+                    try process.run()
+                    if Task.isCancelled {
+                        state.markCancelled()
+                        terminateProcessGroup(for: process)
+                    }
+                } catch {
+                    timeoutWorkItem.cancel()
+                    cancellationState.clearProcess(process)
+                    outputPipe.fileHandleForReading.readabilityHandler = nil
+                    errorPipe.fileHandleForReading.readabilityHandler = nil
+                    let snapshot = state.snapshotAndMarkResumed(additionalOutput: Data(), additionalError: Data())
+                    if snapshot.shouldResume {
+                        if snapshot.cancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(throwing: ProcessError.launchFailed(error.localizedDescription))
+                        }
+                    }
                 }
             }
-        }
+        }, onCancel: {
+            state.markCancelled()
+            if let process = cancellationState.cancel() {
+                self.terminateProcessGroup(for: process)
+            }
+        })
     }
 
     private func terminateProcessGroup(for process: Process) {
+        guard process.isRunning else { return }
+
         let pid = process.processIdentifier
         if pid > 0 {
             terminateProcessTree(rootPID: pid, signal: SIGTERM)

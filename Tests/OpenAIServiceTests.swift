@@ -29,6 +29,32 @@ final class OpenAIServiceTests: XCTestCase {
         XCTAssertEqual(messages[1]["content"] as? String, "I ran the tool")
     }
 
+    func testBuildRequestBodySendsCancellationReasonAsToolContent() throws {
+        let service = OpenAIService(apiKey: "test")
+        let message = Message(
+            role: .system,
+            content: "",
+            toolResults: [
+                .cancelled(toolCallId: "call-1", reason: "用户停止任务")
+            ],
+            presentation: .internalOnly
+        )
+
+        let body = service.buildRequestBody(
+            messages: [message],
+            tools: [],
+            model: "gpt-test",
+            stream: false,
+            maxTokens: 123
+        )
+
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0]["role"] as? String, "tool")
+        XCTAssertEqual(messages[0]["tool_call_id"] as? String, "call-1")
+        XCTAssertEqual(messages[0]["content"] as? String, "用户停止任务")
+    }
+
     func testParseResponseExtractsUsageReasoningAndToolCalls() throws {
         let json = """
         {

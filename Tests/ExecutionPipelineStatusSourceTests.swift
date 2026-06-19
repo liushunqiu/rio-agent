@@ -34,6 +34,14 @@ final class ExecutionPipelineStatusSourceTests: XCTestCase {
             "Multi-Agent execution stages should reflect failed subtasks in the shared pipeline UI."
         )
         XCTAssertTrue(
+            engineSource.contains("private func finishedSubTaskCount(in plan: TaskPlan) -> Int"),
+            "Multi-Agent execution-stage progress should count all finished subtasks, not only successful ones."
+        )
+        XCTAssertTrue(
+            engineSource.contains("completedCount: finishedSubTaskCount(in: plan)"),
+            "The execution-stage completedCount field is rendered as ended work, so failed and cancelled subtasks must be included in that numerator."
+        )
+        XCTAssertTrue(
             viewSource.contains("if failed > 0 { parts.append(\"\\(failed) 个失败\") }"),
             "Execution stage summaries should call out failed work instead of only saying execution completed."
         )

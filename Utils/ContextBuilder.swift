@@ -94,7 +94,7 @@ class ContextBuilder {
 
         if let toolResults = message.toolResults {
             for tr in toolResults {
-                total += 6 + tokenTracker.estimateTokens(tr.output)
+                total += 6 + tokenTracker.estimateTokens(tr.modelContent)
             }
         }
 
@@ -147,7 +147,8 @@ class ContextBuilder {
 
             var didCompress = false
             let compressedResults = toolResults.map { result -> ToolResult in
-                guard result.output.count > maxToolOutputLength else {
+                let modelContent = result.modelContent
+                guard modelContent.count > maxToolOutputLength else {
                     return result
                 }
                 didCompress = true
@@ -155,15 +156,11 @@ class ContextBuilder {
                 // 保留首尾内容，中间截断 — 首部通常包含关键信息，尾部包含总结
                 let prefixLen = maxToolOutputLength * 2 / 3
                 let suffixLen = maxToolOutputLength / 3
-                let prefix = String(result.output.prefix(prefixLen))
-                let suffix = String(result.output.suffix(suffixLen))
+                let prefix = String(modelContent.prefix(prefixLen))
+                let suffix = String(modelContent.suffix(suffixLen))
+                let compressed = "\(prefix)\n\n[... truncated \(modelContent.count - maxToolOutputLength) chars ...]\n\n\(suffix)"
 
-                return ToolResult(
-                    toolCallId: result.toolCallId,
-                    status: result.status,
-                    output: "\(prefix)\n\n[... truncated \(result.output.count - maxToolOutputLength) chars ...]\n\n\(suffix)",
-                    error: result.error
-                )
+                return result.replacingModelContent(compressed)
             }
 
             guard didCompress else {

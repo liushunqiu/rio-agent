@@ -235,14 +235,52 @@ class AgentEngine: ObservableObject {
 
     private func missingServiceMessage(role: String, configSetId: UUID?) -> String {
         guard let configSet = configSet(for: configSetId) else {
-            return "\(role)未选择模型配置。请前往 设置 → AI 配置，先添加并选择一个模型配置。"
+            return "\(role)未选择模型配置。\(serviceRecoveryInstruction(for: role, issue: .missingSelection))"
         }
 
         if let readinessIssue = configSet.readinessIssue {
-            return "\(role)配置「\(configSet.name)」不可用：\(readinessIssue)。请前往 设置 → AI 配置 → 模型配置补全。"
+            return "\(role)配置「\(configSet.name)」不可用：\(readinessIssue)。\(serviceRecoveryInstruction(for: role, issue: .readiness))"
         }
 
-        return "\(role)配置「\(configSet.name)」未能创建服务。请检查提供商、端点地址和 API Key 是否匹配。"
+        return "\(role)配置「\(configSet.name)」未能创建服务。\(serviceRecoveryInstruction(for: role, issue: .creation))"
+    }
+
+    private enum ServiceMessageIssue {
+        case missingSelection
+        case readiness
+        case creation
+    }
+
+    private func serviceRecoveryInstruction(for role: String, issue: ServiceMessageIssue) -> String {
+        switch serviceRecoveryContext(for: role) {
+        case .routerModel:
+            switch issue {
+            case .missingSelection:
+                return "请前往 设置 → Multi-Agent → 路由配置，选择一个可用模型配置。"
+            case .readiness:
+                return "请前往 设置 → Multi-Agent → 路由配置，补全 Router 绑定的模型配置。"
+            case .creation:
+                return "请前往 设置 → Multi-Agent → 路由配置，检查 Router 绑定的模型、提供商、端点和 API Key。"
+            }
+        case .multiAgentOrchestratorModel:
+            switch issue {
+            case .missingSelection:
+                return "请前往 设置 → Multi-Agent → 主 Agent，选择一个可用模型配置。"
+            case .readiness:
+                return "请前往 设置 → Multi-Agent → 主 Agent，补全编排器绑定的模型配置。"
+            case .creation:
+                return "请前往 设置 → Multi-Agent → 主 Agent，检查编排器绑定的模型、提供商、端点和 API Key。"
+            }
+        case .planningModel, .executionModel, .multiAgentWorkerAssignment, .multiAgentWorkerModel:
+            switch issue {
+            case .missingSelection:
+                return "请前往 设置 → AI 配置，先添加并选择一个模型配置。"
+            case .readiness:
+                return "请前往 设置 → AI 配置 → 模型配置补全。"
+            case .creation:
+                return "请检查提供商、端点地址和 API Key 是否匹配。"
+            }
+        }
     }
 
     private func serviceRecoveryContext(for role: String) -> ErrorRecoveryContext {
@@ -267,7 +305,12 @@ class AgentEngine: ObservableObject {
 
     private func routerFallbackMessage(title: String, reason: String?, guidance: String) -> String {
         let cleanedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reasonDetail = cleanedReason?.isEmpty == false ? "原因：\(cleanedReason!)。" : ""
+        let reasonDetail: String
+        if let cleanedReason, !cleanedReason.isEmpty {
+            reasonDetail = "原因：\(cleanedReason)。"
+        } else {
+            reasonDetail = ""
+        }
         return "\(title)，已继续执行标准流程。\(reasonDetail)\(guidance)"
     }
 
@@ -576,7 +619,10 @@ class AgentEngine: ObservableObject {
                 }
             } else if let configSetId = routerConfig.configSetId,
                       let routerService = createService(configSetId: configSetId) {
-                let model = routerConfig.model.isEmpty ? configuration.executionModel : routerConfig.model
+                let configuredRouterModel = routerConfig.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                let model = configuredRouterModel.isEmpty
+                    ? (configSet(for: configSetId)?.model ?? configuration.executionModel)
+                    : configuredRouterModel
                 RioLogger.service.info("🔀 Router 使用模型: \(model, privacy: .public)")
 
                 let routeResult = await RouterService.routeDetailed(
@@ -710,7 +756,7 @@ class AgentEngine: ObservableObject {
         }
 
         toolRegistry.setupConfirmationCallbacks { [weak self] title, message, allowsTrustForSession in
-            return await self?.showConfirmation(
+            return await self?.showToolExecutionConfirmation(
                 title: title,
                 message: message,
                 allowsTrustForSession: allowsTrustForSession
@@ -1648,6 +1694,38 @@ class AgentEngine: ObservableObject {
         }
     }
 
+    private func showToolExecutionConfirmation(
+        title: String,
+        message: String,
+        allowsTrustForSession: Bool
+    ) async -> ConfirmationResult {
+        guard let toolCall = ToolExecutionContext.currentToolCall else {
+            return await showConfirmation(
+                title: title,
+                message: message,
+                allowsTrustForSession: allowsTrustForSession
+            )
+        }
+
+        let confirmingState = ToolExecutionState.confirming(toolCall: toolCall)
+        currentToolExecution = confirmingState
+        syncExecutionSubstep(with: confirmingState)
+
+        let result = await showConfirmation(
+            title: title,
+            message: message,
+            allowsTrustForSession: allowsTrustForSession
+        )
+
+        if result != .denied, currentToolExecution?.id == toolCall.id {
+            let executingState = ToolExecutionState.executing(toolCall: toolCall)
+            currentToolExecution = executingState
+            syncExecutionSubstep(with: executingState)
+        }
+
+        return result
+    }
+
     // MARK: - Conversation Management
 
     func clearConversation() {
@@ -2003,7 +2081,7 @@ class AgentEngine: ObservableObject {
                 type: .execution,
                 details: .execution(
                     toolCalls: [],
-                    completedCount: completedSubTaskCount(in: plan),
+                    completedCount: finishedSubTaskCount(in: plan),
                     totalCount: plan.subTasks.count,
                     failedCount: failedSubTaskCount(in: plan),
                     cancelledCount: cancelledSubTaskCount(in: plan)
@@ -2020,7 +2098,7 @@ class AgentEngine: ObservableObject {
                 type: .execution,
                 details: .execution(
                     toolCalls: [],
-                    completedCount: completedSubTaskCount(in: plan),
+                    completedCount: finishedSubTaskCount(in: plan),
                     totalCount: plan.subTasks.count,
                     failedCount: failedSubTaskCount(in: plan),
                     cancelledCount: cancelledSubTaskCount(in: plan)
@@ -2264,8 +2342,10 @@ class AgentEngine: ObservableObject {
         Set(plan.subTasks.compactMap { $0.assignedWorker?.id }).count
     }
 
-    private func completedSubTaskCount(in plan: TaskPlan) -> Int {
-        plan.subTasks.filter { $0.status == .completed }.count
+    private func finishedSubTaskCount(in plan: TaskPlan) -> Int {
+        plan.subTasks.filter {
+            $0.status == .completed || $0.status == .failed || $0.status == .cancelled
+        }.count
     }
 
     private func failedSubTaskCount(in plan: TaskPlan) -> Int {

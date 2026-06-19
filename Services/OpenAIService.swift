@@ -242,16 +242,10 @@ class OpenAIService: AIService {
 
             if let toolResults = message.toolResults, !toolResults.isEmpty {
                 for tr in toolResults {
-                    let content: String
-                    if tr.status == .error {
-                        content = tr.error ?? "Unknown error"
-                    } else {
-                        content = tr.output
-                    }
                     let resultMsg: [String: Any] = [
                         "role": "tool",
                         "tool_call_id": tr.toolCallId,
-                        "content": content
+                        "content": tr.modelContent
                     ]
                     apiMessages.append(resultMsg)
                 }

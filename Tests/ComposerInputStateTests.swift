@@ -14,7 +14,10 @@ final class ComposerInputStateTests: XCTestCase {
 
         XCTAssertEqual(
             composer.selectedFiles,
-            ["/tmp/project/App.swift", "/tmp/project/Model.swift"]
+            [
+                PathSecurity.normalizedPath("/tmp/project/App.swift"),
+                PathSecurity.normalizedPath("/tmp/project/Model.swift")
+            ]
         )
         XCTAssertTrue(composer.canSend)
     }
@@ -79,7 +82,7 @@ final class ComposerInputStateTests: XCTestCase {
         composer.removeFileReferencesOutsideWorkingDirectory("/tmp/project")
 
         XCTAssertEqual(composer.text, "请处理\n@file:/tmp/project/App.swift")
-        XCTAssertEqual(composer.selectedFiles, ["/tmp/project/App.swift"])
+        XCTAssertEqual(composer.selectedFiles, [PathSecurity.normalizedPath("/tmp/project/App.swift")])
     }
 
     func testRemovingFileReferencesWithoutWorkingDirectoryKeepsTaskTextOnly() {

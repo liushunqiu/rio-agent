@@ -23,6 +23,14 @@ final class FileOperationAnimationSourceTests: XCTestCase {
             source.contains(".help(detail)"),
             "Enhanced tool execution rows should expose full detail text."
         )
+        XCTAssertTrue(
+            source.contains("switch (oldLine, newLine)"),
+            "Diff generation should handle missing old/new lines explicitly instead of relying on forced unwraps."
+        )
+        XCTAssertFalse(
+            source.contains("oldLine!") || source.contains("newLine!"),
+            "Diff generation should not force-unwrap optional lines."
+        )
     }
 
     func testEnhancedToolExecutionProgressIsClampedBeforeDrawing() throws {

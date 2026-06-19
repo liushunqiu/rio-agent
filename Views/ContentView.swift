@@ -22,7 +22,8 @@ struct ContentView: View {
                 onSelect: { conversation in
                     prepareForConversationContextChange()
                     conversationManager.selectConversation(conversation)
-                    agentEngine.loadConversation(conversation)
+                    let selectedConversation = conversationManager.currentConversation ?? conversation
+                    agentEngine.loadConversation(selectedConversation)
                 },
                 onDelete: { conversation in
                     let deletesCurrentConversation = conversationManager.currentConversation?.id == conversation.id
@@ -1549,8 +1550,8 @@ struct InputArea: View {
                 SelectedFileTags(
                     selectedFiles: composer.selectedFiles,
                     workingDirectory: workingDirectory,
-                    isRemovable: pendingUserDecision == nil,
-                    removalDisabledReason: "请先完成当前确认，再调整文件上下文"
+                    isRemovable: canEditContext,
+                    removalDisabledReason: fileContextLockHelpText
                 ) { filePath in
                     composer.removeFileReference(filePath)
                     text = composer.text
@@ -1592,8 +1593,8 @@ struct InputArea: View {
                     // Folder selector
                     FolderSelector(
                         workingDirectory: $workingDirectory,
-                        isLocked: pendingUserDecision != nil,
-                        lockHelpText: "请先完成当前确认，再调整工作目录"
+                        isLocked: !canEditContext,
+                        lockHelpText: workingDirectoryLockHelpText
                     )
                     
                     // File picker button
@@ -1617,8 +1618,8 @@ struct InputArea: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(workingDirectory == nil || pendingUserDecision != nil)
-                    .opacity(workingDirectory == nil || pendingUserDecision != nil ? 0.52 : 1)
+                    .disabled(workingDirectory == nil || !canEditContext)
+                    .opacity(workingDirectory == nil || !canEditContext ? 0.52 : 1)
                     .help(filePickerHelpText)
 
                     if !composer.selectedFiles.isEmpty {
@@ -1746,15 +1747,25 @@ struct InputArea: View {
             composer.removeFileReferencesOutsideWorkingDirectory(newValue)
             text = composer.text
         }
+        .onChange(of: canEditContext) { _, canEditContext in
+            if !canEditContext {
+                composer.isShowingFilePicker = false
+            }
+        }
     }
 
     private var canSend: Bool {
         composer.canSend && canAcceptInput
     }
 
+    private var canEditContext: Bool {
+        canAcceptInput && pendingUserDecision == nil
+    }
+
     private var fileContextNotice: String? {
-        guard workingDirectory == nil else { return nil }
         guard composer.text.hasSuffix("@") else { return nil }
+        guard canEditContext else { return fileContextLockHelpText }
+        guard workingDirectory == nil else { return nil }
         return "可以先写任务；需要添加文件上下文时，再选择工作目录。"
     }
 
@@ -1783,7 +1794,7 @@ struct InputArea: View {
                 text = newValue
                 composer.updateTextFromUserInput(
                     newValue,
-                    canOpenFilePicker: workingDirectory != nil && pendingUserDecision == nil
+                    canOpenFilePicker: workingDirectory != nil && canEditContext
                 )
             }
         )
@@ -1801,6 +1812,9 @@ struct InputArea: View {
 
     private var inputPlaceholder: String {
         guard let pendingUserDecision else {
+            if !canAcceptInput {
+                return "当前任务执行中，完成或停止后可继续输入"
+            }
             return "描述任务，Cmd+Return 发送，@ 添加上下文"
         }
 
@@ -1816,17 +1830,40 @@ struct InputArea: View {
         guard pendingUserDecision == nil else {
             return "提交回复或新任务 (Cmd+Return)"
         }
+        if !canAcceptInput {
+            return "当前任务执行中，完成或停止后可继续发送"
+        }
         return "发送 (Cmd+Return)"
     }
 
     private var filePickerHelpText: String {
-        if pendingUserDecision != nil {
-            return "请先完成当前确认，再调整文件上下文"
+        if !canEditContext {
+            return fileContextLockHelpText
         }
         if workingDirectory == nil {
             return "可以先写任务；需要添加文件上下文时，再选择工作目录"
         }
         return "添加文件上下文"
+    }
+
+    private var fileContextLockHelpText: String {
+        if pendingUserDecision != nil {
+            return "请先完成当前确认，再调整文件上下文"
+        }
+        if !canAcceptInput {
+            return "当前任务正在执行，完成或停止后再调整文件上下文"
+        }
+        return "当前状态下无法调整文件上下文"
+    }
+
+    private var workingDirectoryLockHelpText: String {
+        if pendingUserDecision != nil {
+            return "请先完成当前确认，再调整工作目录"
+        }
+        if !canAcceptInput {
+            return "当前任务正在执行，完成或停止后再调整工作目录"
+        }
+        return "当前状态下无法调整工作目录"
     }
 }
 
@@ -1906,6 +1943,8 @@ struct FolderSelector: View {
     }
 
     private func pickFolder() {
+        guard !isLocked else { return }
+
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -1923,6 +1962,7 @@ struct FolderSelector: View {
     }
 
     private func clearFolder() {
+        guard !isLocked else { return }
         workingDirectory = nil
     }
 }
@@ -1990,6 +2030,7 @@ struct ErrorBanner: View {
     var onDismiss: (() -> Void)? = nil
     @State private var isExpanded = false
     @State private var didCopy = false
+    @State private var copyResetID: UUID?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -2103,6 +2144,7 @@ struct ErrorBanner: View {
         .onChange(of: message) { _, _ in
             isExpanded = false
             didCopy = false
+            copyResetID = nil
         }
     }
 
@@ -2135,9 +2177,13 @@ struct ErrorBanner: View {
     private func copyErrorMessage() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(message, forType: .string)
+        let resetID = UUID()
+        copyResetID = resetID
         didCopy = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            guard copyResetID == resetID else { return }
             didCopy = false
+            copyResetID = nil
         }
     }
 }

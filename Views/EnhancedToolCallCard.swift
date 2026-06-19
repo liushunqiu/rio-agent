@@ -42,6 +42,7 @@ struct ToolResultOutputBlock: View {
 
     @State private var isOutputExpanded = false
     @State private var didCopy = false
+    @State private var copyResetID: UUID?
 
     private let collapsedOutputLineLimit = 8
     private var displayText: String { ToolResultDisplay.text(for: result) }
@@ -96,6 +97,7 @@ struct ToolResultOutputBlock: View {
         .onChange(of: displayText) { _, _ in
             isOutputExpanded = false
             didCopy = false
+            copyResetID = nil
         }
     }
 
@@ -117,9 +119,13 @@ struct ToolResultOutputBlock: View {
     private func copyDisplayText() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(displayText, forType: .string)
+        let resetID = UUID()
+        copyResetID = resetID
         didCopy = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            guard copyResetID == resetID else { return }
             didCopy = false
+            copyResetID = nil
         }
     }
 }
@@ -133,6 +139,7 @@ struct ToolArgumentRow: View {
 
     @State private var isExpanded: Bool
     @State private var didCopy = false
+    @State private var copyResetID: UUID?
 
     init(name: String, value: Any, keyWidth: CGFloat = 80, fontSize: CGFloat = 11, initiallyExpanded: Bool = false) {
         self.name = name
@@ -199,15 +206,20 @@ struct ToolArgumentRow: View {
         .onChange(of: displayValue) { _, _ in
             isExpanded = initiallyExpanded
             didCopy = false
+            copyResetID = nil
         }
     }
 
     private func copyValue() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(displayValue, forType: .string)
+        let resetID = UUID()
+        copyResetID = resetID
         didCopy = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            guard copyResetID == resetID else { return }
             didCopy = false
+            copyResetID = nil
         }
     }
 }

@@ -167,6 +167,7 @@ struct MessageContent: View {
 struct MessageFooter: View {
     let message: Message
     @State private var isCopied = false
+    @State private var copyResetID: UUID?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -206,12 +207,16 @@ struct MessageFooter: View {
     private func copyContent() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(message.content, forType: .string)
+        let resetID = UUID()
+        copyResetID = resetID
         withAnimation(.easeInOut(duration: 0.15)) {
             isCopied = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            guard copyResetID == resetID else { return }
             withAnimation(.easeInOut(duration: 0.15)) {
                 isCopied = false
+                copyResetID = nil
             }
         }
     }

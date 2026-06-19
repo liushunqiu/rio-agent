@@ -17,7 +17,10 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "NewChatPage should switch its hero title to a waiting-for-confirmation state."
         )
         XCTAssertTrue(
-            newChatSource.contains("private var sendButtonTitle: String {\n        pendingUserDecision != nil ? \"提交回复\" : \"开始\"\n    }"),
+            newChatSource.contains("private var sendButtonTitle: String")
+                && newChatSource.contains("if pendingUserDecision != nil { return \"提交回复\" }")
+                && newChatSource.contains("if !canAcceptInput { return \"处理中\" }")
+                && newChatSource.contains("return \"开始\""),
             "NewChatPage should relabel the primary action while waiting for confirmation."
         )
         XCTAssertTrue(
@@ -93,7 +96,7 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "Once the user has started writing, the landing page should step back from long onboarding copy and switch to a calmer helper state."
         )
         XCTAssertTrue(
-            newChatSource.contains("private var shouldShowQuickPromptGrid: Bool {\n        pendingUserDecision == nil && trimmedComposerText.isEmpty\n    }"),
+            newChatSource.contains("private var shouldShowQuickPromptGrid: Bool {\n        canAcceptInput && pendingUserDecision == nil && trimmedComposerText.isEmpty\n    }"),
             "Quick-prompt visibility should follow the actual composer state instead of staying visually dominant after editing begins."
         )
         XCTAssertTrue(
@@ -109,7 +112,10 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "The landing-page footer hint should render conditionally so pending confirmation mode can avoid repeating guidance that is already handled by the dedicated confirmation copy."
         )
         XCTAssertTrue(
-            newChatSource.contains("pendingUserDecision != nil ? \"当前说明\" : \"任务模板\""),
+            newChatSource.contains("private var quickPromptSectionTitle: String")
+                && newChatSource.contains("if pendingUserDecision != nil { return \"当前说明\" }")
+                && newChatSource.contains("if !canAcceptInput { return \"当前状态\" }")
+                && newChatSource.contains("return \"任务模板\""),
             "NewChatPage should use a work-oriented templates label instead of marketing-style quick-start framing."
         )
         XCTAssertTrue(
@@ -169,7 +175,7 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "The landing page should collapse its default summary area into a lighter helper row when the session is still completely empty."
         )
         XCTAssertTrue(
-            newChatSource.contains("private var shouldShowCompactStartSummary: Bool {\n        pendingUserDecision == nil"),
+            newChatSource.contains("private var shouldShowCompactStartSummary: Bool {\n        canAcceptInput\n            && pendingUserDecision == nil"),
             "The compact start summary should follow the real empty-state truth rather than always rendering three status pills."
         )
         XCTAssertTrue(
@@ -181,8 +187,12 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "Pending confirmation should only keep the workspace summary visible when it carries real context instead of repeating an empty waiting state."
         )
         XCTAssertTrue(
-            newChatSource.contains("private var sendHint: String? {\n        guard pendingUserDecision == nil else { return nil }\n        return canSend ? \"Cmd+Return 发送\" : \"先写清楚任务\"\n    }"),
+            newChatSource.contains("private var sendHint: String? {\n        guard pendingUserDecision == nil else { return nil }\n        if !canAcceptInput { return \"当前任务处理中\" }\n        return canSend ? \"Cmd+Return 发送\" : \"先写清楚任务\"\n    }"),
             "Pending confirmation should drop the footer send hint once the page already has a dedicated confirmation title, explanation and primary action."
+        )
+        XCTAssertTrue(
+            newChatSource.contains("当前任务正在执行。可以先整理下一步草稿，完成或停止后再发送。"),
+            "The landing page should replace quick prompts with an honest running-state hint when input is temporarily unavailable."
         )
         XCTAssertTrue(
             newChatSource.contains(".disabled(!canSend)"),

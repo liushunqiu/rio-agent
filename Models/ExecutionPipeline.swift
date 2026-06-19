@@ -27,6 +27,9 @@ struct ExecutionPipeline: Identifiable {
     }
 
     var overallStatus: PipelineStageStatus {
+        if stages.isEmpty {
+            return .pending
+        }
         if stages.contains(where: { $0.status == .failed }) {
             return .failed
         }

@@ -42,6 +42,32 @@ struct ToolResult: Codable, Equatable {
     static func cancelled(toolCallId: String, reason: String = "用户取消") -> ToolResult {
         ToolResult(toolCallId: toolCallId, status: .cancelled, output: "", error: reason)
     }
+
+    var modelContent: String {
+        switch status {
+        case .success:
+            return output
+        case .error:
+            if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+                return error
+            }
+            return output.isEmpty ? "Unknown error" : output
+        case .cancelled:
+            if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+                return error
+            }
+            return output.isEmpty ? "工具执行已取消" : output
+        }
+    }
+
+    func replacingModelContent(_ content: String) -> ToolResult {
+        switch status {
+        case .success:
+            return ToolResult(toolCallId: toolCallId, status: status, output: content, error: error)
+        case .error, .cancelled:
+            return ToolResult(toolCallId: toolCallId, status: status, output: output, error: content)
+        }
+    }
 }
 
 // MARK: - Tool Execution State

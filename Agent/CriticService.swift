@@ -99,17 +99,20 @@ class CriticService {
         switch (primaryIsHighQuality, secondaryResult.map({ $0.count >= 50 }) ?? false) {
         case (true, true):
             // 两者均产出高质量分析，合并两份结果
+            guard let primaryResult, let secondaryResult else {
+                return fallbackFeedback(errors: errors)
+            }
             return await mergeCriticAnalyses(
-                primaryAnalysis: primaryResult!,
-                secondaryAnalysis: secondaryResult!,
+                primaryAnalysis: primaryResult,
+                secondaryAnalysis: secondaryResult,
                 errors: errors
             )
         case (true, false):
             // 仅主模型高质量，直接返回主模型结果
-            return primaryResult!
+            return primaryResult ?? fallbackFeedback(errors: errors)
         case (false, true):
             // 仅备用模型高质量，返回备用模型结果
-            return secondaryResult!
+            return secondaryResult ?? fallbackFeedback(errors: errors)
         case (false, false):
             // 两者均未产出高质量结果，降级为基础反馈
             return fallbackFeedback(errors: errors)

@@ -62,6 +62,20 @@ final class ToolExecutorTests: XCTestCase {
     }
 
     @MainActor
+    func testToolExecutionContextExposesCurrentToolCallDuringExecution() async throws {
+        let contextTool = ContextCapturingTool(name: "execute_command")
+        let registry = ToolRegistry(tools: [contextTool])
+        let executor = ToolExecutor(toolRegistry: registry, memory: AgentMemory())
+
+        let results = await executor.executeToolCalls([
+            ToolCall(id: "context-command", name: "execute_command")
+        ])
+
+        XCTAssertEqual(results.first?.status, .success)
+        XCTAssertEqual(contextTool.capturedToolCallId, "context-command")
+    }
+
+    @MainActor
     func testSequentialToolExecutionSkipsRemainingToolsAfterCancellation() async throws {
         let followUpTool = CountingTool(name: "write_file")
         let registry = ToolRegistry(tools: [
@@ -124,6 +138,22 @@ private final class CountingTool: Tool {
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
         executionCount += 1
+        return ToolResult.success(toolCallId: name, output: name)
+    }
+}
+
+private final class ContextCapturingTool: Tool {
+    let name: String
+    let description = "Context capturing test tool"
+    let parameters: [String: ToolParameter] = [:]
+    private(set) var capturedToolCallId: String?
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func execute(arguments: [String: Any]) async throws -> ToolResult {
+        capturedToolCallId = ToolExecutionContext.currentToolCall?.id
         return ToolResult.success(toolCallId: name, output: name)
     }
 }

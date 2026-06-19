@@ -163,7 +163,11 @@ struct MessageSourceHeader: View {
         if message.isFinalAnswer {
             return "最终答复"
         }
-        return message.source?.agentName?.isEmpty == false ? message.source!.agentName! : fallbackTitle
+        if let agentName = message.source?.agentName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agentName.isEmpty {
+            return agentName
+        }
+        return fallbackTitle
     }
 
     private var modelLabel: String? {
@@ -334,7 +338,10 @@ struct EnhancedChatView: View {
                     }
                 )
                 .onPreferenceChange(BottomOffsetPreferenceKey.self) { contentBottom in
-                    let newOffset = max(0, visibleViewportHeight - contentBottom)
+                    let newOffset = Self.distanceFromBottom(
+                        contentBottom: contentBottom,
+                        viewportHeight: visibleViewportHeight
+                    )
                     bottomOffset = newOffset
                     if autoScrollEnabled && newOffset > 140 && !isProcessing {
                         autoScrollEnabled = false
@@ -345,7 +352,7 @@ struct EnhancedChatView: View {
                 }
                 // 新消息到达时滚动
                 .onChange(of: messages.count) { oldCount, newCount in
-                    if newCount > oldCount && (autoScrollEnabled || isProcessing) {
+                    if newCount > oldCount && autoScrollEnabled {
                         scrollToBottom(proxy: proxy, animated: true)
                     }
                 }
@@ -407,6 +414,10 @@ struct EnhancedChatView: View {
         } else {
             action()
         }
+    }
+
+    static func distanceFromBottom(contentBottom: CGFloat, viewportHeight: CGFloat) -> CGFloat {
+        max(0, contentBottom - viewportHeight)
     }
 }
 

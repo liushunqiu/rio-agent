@@ -4,9 +4,15 @@ import Foundation
 @MainActor
 class AgentMemory: ObservableObject {
     struct MemoryNote: Equatable, Identifiable {
-        var id: String { summary }
+        let id: String
         let summary: String
         let body: [String]
+
+        init(id: String = UUID().uuidString, summary: String, body: [String]) {
+            self.id = id
+            self.summary = summary
+            self.body = body
+        }
     }
     
     // MARK: - Memory Types
@@ -475,14 +481,23 @@ class AgentMemory: ObservableObject {
                 let lines = chunk.components(separatedBy: .newlines)
                 let bodyLines = lines.dropFirst().filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 guard let summary = bodyLines.first else { return nil }
-                return MemoryNote(summary: summary, body: Array(bodyLines.dropFirst()))
+                return MemoryNote(
+                    id: "\(index)-\(summary)",
+                    summary: summary,
+                    body: Array(bodyLines.dropFirst())
+                )
             }
         return chunks.reversed()
     }
 
-    func deleteMemoryNote(summary: String) {
-        let remaining = persistedNotes.filter { $0.summary != summary }
+    func deleteMemoryNote(id: String) {
+        let remaining = persistedNotes.filter { $0.id != id }
         saveMemoryNotes(remaining)
+    }
+
+    func deleteMemoryNote(summary: String) {
+        guard let note = persistedNotes.first(where: { $0.summary == summary }) else { return }
+        deleteMemoryNote(id: note.id)
     }
 
     func clearMemoryMarkdown() {

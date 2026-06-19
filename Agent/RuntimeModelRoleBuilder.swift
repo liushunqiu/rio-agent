@@ -63,15 +63,22 @@ struct RuntimeModelRoleBuilder {
             )
         }
 
-        let routerModel = multiAgentConfig.router.model.isEmpty
-            ? configuration.executionModel
-            : multiAgentConfig.router.model
-        let routerProvider = routerConfigSet?.provider.displayName
-            ?? configuration.executionProvider.displayName
+        guard let routerConfigSet else {
+            return AgentEngine.RuntimeModelRole(
+                id: "router",
+                title: "Router",
+                providerName: "未配置",
+                modelName: "未选择模型配置",
+                isActive: isActive
+            )
+        }
+
+        let configuredModel = multiAgentConfig.router.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let routerModel = configuredModel.isEmpty ? routerConfigSet.model : configuredModel
         return AgentEngine.RuntimeModelRole(
             id: "router",
             title: "Router",
-            providerName: routerProvider,
+            providerName: routerConfigSet.provider.displayName,
             modelName: routerModel,
             isActive: isActive
         )

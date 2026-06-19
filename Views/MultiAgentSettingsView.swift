@@ -229,6 +229,41 @@ struct MultiAgentSettingsView: View {
         aiConfig.hasAnyProvider
     }
 
+    private var taskStrategyMetricValue: String {
+        taskStrategy.displayName
+    }
+
+    private var taskStrategyMetricDetail: String {
+        switch taskStrategy {
+        case .automatic:
+            return "复杂任务自动拆分，简单任务直接由单 Agent 执行"
+        case .manual:
+            return "复杂任务拆分前先暂停，等待你确认执行模式"
+        }
+    }
+
+    private var taskStrategyMetricTone: Color {
+        switch taskStrategy {
+        case .automatic:
+            return Theme.accentPrimary
+        case .manual:
+            return Theme.statusWarning
+        }
+    }
+
+    private var pipelineSummaryText: String {
+        switch (routerEnabled, enableCritic) {
+        case (true, true):
+            return "Router → Planner → Executor → Critic 流水线已启用。简单任务由单 Agent 直接执行，复杂任务按当前策略拆分为 DAG 并行执行。"
+        case (true, false):
+            return "Router → Planner → Executor 流水线已启用，Critic 审查当前关闭。复杂任务按当前策略拆分为 DAG 并行执行。"
+        case (false, true):
+            return "Planner → Executor → Critic 流水线已启用，Router 前置路由当前关闭。复杂任务按当前策略拆分为 DAG 并行执行。"
+        case (false, false):
+            return "Planner → Executor 流水线已启用，Router 前置路由和 Critic 审查当前关闭。复杂任务按当前策略拆分为 DAG 并行执行。"
+        }
+    }
+
     private var orchestratorRecoveryMessage: String? {
         switch launchContext {
         case .planningModel, .multiAgentOrchestratorModel:
@@ -267,10 +302,10 @@ struct MultiAgentSettingsView: View {
                 )
                 MultiAgentMetric(
                     title: "工作模式",
-                    value: "自动流水线",
-                    detail: "由规划层按复杂度自动选择执行策略",
+                    value: taskStrategyMetricValue,
+                    detail: taskStrategyMetricDetail,
                     icon: "arrow.triangle.branch",
-                    tone: Theme.accentPrimary
+                    tone: taskStrategyMetricTone
                 )
                 MultiAgentMetric(
                     title: "并行上限",
@@ -283,7 +318,7 @@ struct MultiAgentSettingsView: View {
 
             SettingsSection(title: "流水线配置", icon: "switch.2") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Router → Planner → Executor → Critic 四层流水线始终启用。简单任务由单 Agent 直接执行（带 Critic 重试），复杂任务自动拆分为 DAG 并行执行。")
+                    Text(pipelineSummaryText)
                         .font(.system(size: 11))
                         .foregroundColor(Theme.textTertiary)
 

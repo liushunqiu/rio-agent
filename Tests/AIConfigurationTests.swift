@@ -283,6 +283,58 @@ final class AIConfigurationTests: XCTestCase {
         XCTAssertEqual(applied.router.configSetId, readySet.id)
     }
 
+    func testAIConfigInfoAvailableProvidersRequireReadyConfigSets() {
+        let incompleteCompatible = ConfigSet(
+            id: UUID(),
+            name: "Incomplete Compatible",
+            provider: .openAICompatible,
+            baseURL: "https://example.com/v1",
+            model: "   "
+        )
+        let info = AIConfigInfo(
+            hasClaudeKey: false,
+            hasOpenAIKey: false,
+            hasCompatibleEndpoint: true,
+            claudeApiKey: "",
+            openAIApiKey: "",
+            compatibleApiKey: "",
+            currentClaudeModel: "",
+            currentOpenAIModel: "",
+            currentCompatibleModel: incompleteCompatible.model,
+            allConfigSets: [incompleteCompatible],
+            configSetRevision: 1
+        )
+
+        XCTAssertEqual(info.availableProviders, [])
+        XCTAssertFalse(info.hasAnyProvider)
+    }
+
+    func testAIConfigInfoAvailableProvidersIncludeConfiguredSets() {
+        let readyCompatible = ConfigSet(
+            id: UUID(),
+            name: "Ready Compatible",
+            provider: .openAICompatible,
+            baseURL: "https://example.com/v1",
+            model: "ready-model"
+        )
+        let info = AIConfigInfo(
+            hasClaudeKey: false,
+            hasOpenAIKey: false,
+            hasCompatibleEndpoint: false,
+            claudeApiKey: "",
+            openAIApiKey: "",
+            compatibleApiKey: "",
+            currentClaudeModel: "",
+            currentOpenAIModel: "",
+            currentCompatibleModel: readyCompatible.model,
+            allConfigSets: [readyCompatible],
+            configSetRevision: 1
+        )
+
+        XCTAssertEqual(info.availableProviders, [.openAICompatible])
+        XCTAssertTrue(info.hasAnyProvider)
+    }
+
     func testDecodingLegacySingleAgentPromptMigratesToLayeredBasePrompt() throws {
         let data = """
         {

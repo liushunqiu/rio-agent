@@ -2,6 +2,36 @@ import XCTest
 @testable import RioAgent
 
 final class ProcessRunnerTests: XCTestCase {
+    func testCancellationTerminatesChildProcesses() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rio-agent-process-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let marker = tempDir.appendingPathComponent("child-survived-after-cancel.txt")
+        let command = "(sleep 0.8; touch '\(marker.path)') & wait"
+        let task = Task {
+            try await ProcessRunner.shared.run(
+                command: command,
+                workingDirectory: tempDir.path,
+                timeout: 5
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
     func testTimeoutTerminatesChildProcesses() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-process-tests-\(UUID().uuidString)", isDirectory: true)

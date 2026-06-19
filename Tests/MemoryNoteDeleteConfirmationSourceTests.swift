@@ -24,6 +24,10 @@ final class MemoryNoteDeleteConfirmationSourceTests: XCTestCase {
             "The confirmation should include the note summary and delete that exact staged note."
         )
         XCTAssertTrue(
+            source.contains("memory.deleteMemoryNote(id: pendingDeleteMemoryNote.id)"),
+            "Deleting a staged memory note should use its unique id so duplicate summaries do not remove multiple notes."
+        )
+        XCTAssertTrue(
             source.contains("这个操作无法撤销"),
             "The confirmation should explicitly warn that deletion is irreversible."
         )

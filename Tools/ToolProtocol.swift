@@ -57,6 +57,10 @@ enum ConfirmationResult {
 
 typealias ConfirmationCallback = (_ title: String, _ message: String, _ allowsTrustForSession: Bool) async -> ConfirmationResult
 
+enum ToolExecutionContext {
+    @TaskLocal static var currentToolCall: ToolCall?
+}
+
 // MARK: - Command Risk Level
 
 enum CommandRiskLevel {

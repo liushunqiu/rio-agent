@@ -184,6 +184,7 @@ struct CodeBlockView: View {
     let language: String
     let code: String
     @State private var isCopied = false
+    @State private var copyResetID: UUID?
     @State private var isHovered = false
     @State private var isExpanded = false
 
@@ -276,12 +277,16 @@ struct CodeBlockView: View {
     private func copyCode() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(code, forType: .string)
+        let resetID = UUID()
+        copyResetID = resetID
         withAnimation(.easeInOut(duration: 0.15)) {
             isCopied = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            guard copyResetID == resetID else { return }
             withAnimation(.easeInOut(duration: 0.15)) {
                 isCopied = false
+                copyResetID = nil
             }
         }
     }

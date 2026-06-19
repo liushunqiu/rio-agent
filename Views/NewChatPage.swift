@@ -148,8 +148,8 @@ struct NewChatPage: View {
                 selectedFiles: composer.selectedFiles,
                 workingDirectory: workingDirectory.wrappedValue,
                 horizontalPadding: 14,
-                isRemovable: pendingUserDecision == nil,
-                removalDisabledReason: "请先完成当前确认，再调整文件上下文"
+                isRemovable: canEditContext,
+                removalDisabledReason: fileContextLockHelpText
             ) { filePath in
                 composer.removeFileReference(filePath)
                 inputText = composer.text
@@ -205,8 +205,8 @@ struct NewChatPage: View {
             HStack(alignment: .center, spacing: 10) {
                 FolderSelector(
                     workingDirectory: workingDirectory,
-                    isLocked: pendingUserDecision != nil,
-                    lockHelpText: "请先完成当前确认，再调整工作目录"
+                    isLocked: !canEditContext,
+                    lockHelpText: workingDirectoryLockHelpText
                 )
 
                 Button(action: {
@@ -229,8 +229,8 @@ struct NewChatPage: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(workingDirectory.wrappedValue == nil || pendingUserDecision != nil)
-                .opacity(workingDirectory.wrappedValue == nil || pendingUserDecision != nil ? 0.52 : 1)
+                .disabled(workingDirectory.wrappedValue == nil || !canEditContext)
+                .opacity(workingDirectory.wrappedValue == nil || !canEditContext ? 0.52 : 1)
                 .help(filePickerHelpText)
 
                 if !composer.selectedFiles.isEmpty {
@@ -301,6 +301,11 @@ struct NewChatPage: View {
             workingDirectory: workingDirectory.wrappedValue
         ) {
             inputText = composer.text
+        }
+        .onChange(of: canEditContext) { _, canEditContext in
+            if !canEditContext {
+                composer.isShowingFilePicker = false
+            }
         }
     }
 
@@ -410,6 +415,27 @@ struct NewChatPage: View {
                     RoundedRectangle(cornerRadius: Theme.radiusMD)
                         .stroke(Theme.statusWarning.opacity(0.18), lineWidth: 1)
                 )
+            } else if !canAcceptInput {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.statusInfo)
+                        .padding(.top, 1)
+
+                    Text("当前任务正在执行。可以先整理下一步草稿，完成或停止后再发送。")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.bgGlass.opacity(0.55))
+                .cornerRadius(Theme.radiusMD)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                        .stroke(Theme.statusInfo.opacity(0.16), lineWidth: 1)
+                )
             } else if shouldShowQuickPromptGrid {
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 160), spacing: 10, alignment: .top)],
@@ -472,7 +498,7 @@ struct NewChatPage: View {
                 inputText = newValue
                 composer.updateTextFromUserInput(
                     newValue,
-                    canOpenFilePicker: workingDirectory.wrappedValue != nil && pendingUserDecision == nil
+                    canOpenFilePicker: workingDirectory.wrappedValue != nil && canEditContext
                 )
             }
         )
@@ -481,6 +507,9 @@ struct NewChatPage: View {
     private var headerTitle: String {
         if pendingUserDecision != nil {
             return "等待你的确认"
+        }
+        if !canAcceptInput {
+            return "正在处理"
         }
         return "开始任务"
     }
@@ -495,28 +524,41 @@ struct NewChatPage: View {
             }
         }
         if let path = workingDirectory.wrappedValue {
+            if !canAcceptInput {
+                return "\(URL(fileURLWithPath: path).lastPathComponent) 正在执行当前任务"
+            }
             return "围绕 \(URL(fileURLWithPath: path).lastPathComponent) 直接开始"
+        }
+        if !canAcceptInput {
+            return "当前任务运行中，完成后可继续输入"
         }
         return "直接写下要做的事"
     }
 
     private var sendButtonTitle: String {
-        pendingUserDecision != nil ? "提交回复" : "开始"
+        if pendingUserDecision != nil { return "提交回复" }
+        if !canAcceptInput { return "处理中" }
+        return "开始"
     }
 
     private var canSend: Bool {
         composer.canSend && canAcceptInput
     }
 
+    private var canEditContext: Bool {
+        canAcceptInput && pendingUserDecision == nil
+    }
+
     private var shouldShowCompactStartSummary: Bool {
-        pendingUserDecision == nil
+        canAcceptInput
+            && pendingUserDecision == nil
             && workingDirectory.wrappedValue == nil
             && composer.selectedFiles.isEmpty
             && trimmedComposerText.isEmpty
     }
 
     private var shouldShowQuickPromptGrid: Bool {
-        pendingUserDecision == nil && trimmedComposerText.isEmpty
+        canAcceptInput && pendingUserDecision == nil && trimmedComposerText.isEmpty
     }
 
     private var shouldShowWorkspaceSummary: Bool {
@@ -543,6 +585,7 @@ struct NewChatPage: View {
 
     private var sendHint: String? {
         guard pendingUserDecision == nil else { return nil }
+        if !canAcceptInput { return "当前任务处理中" }
         return canSend ? "Cmd+Return 发送" : "先写清楚任务"
     }
 
@@ -551,6 +594,9 @@ struct NewChatPage: View {
         if pendingUserDecision != nil {
             return hasInput ? "已填写回复" : "等待确认回复"
         }
+        if !canAcceptInput {
+            return hasInput ? "已暂存草稿" : "任务处理中"
+        }
         return hasInput ? "已写入需求" : "等待任务"
     }
 
@@ -558,15 +604,22 @@ struct NewChatPage: View {
         if pendingUserDecision != nil {
             return Theme.statusWarning
         }
+        if !canAcceptInput {
+            return Theme.statusInfo
+        }
         return canSend ? Theme.statusSuccess : Theme.textTertiary
     }
 
     private var quickPromptSectionTitle: String {
-        pendingUserDecision != nil ? "当前说明" : "任务模板"
+        if pendingUserDecision != nil { return "当前说明" }
+        if !canAcceptInput { return "当前状态" }
+        return "任务模板"
     }
 
     private var quickPromptSectionTone: Color {
-        pendingUserDecision != nil ? Theme.statusWarning : Theme.accentPrimary
+        if pendingUserDecision != nil { return Theme.statusWarning }
+        if !canAcceptInput { return Theme.statusInfo }
+        return Theme.accentPrimary
     }
 
     private var selectedFileSummaryHelp: String {
@@ -576,8 +629,9 @@ struct NewChatPage: View {
     }
 
     private var fileContextNotice: String? {
-        guard workingDirectory.wrappedValue == nil else { return nil }
         guard composer.text.hasSuffix("@") else { return nil }
+        guard canEditContext else { return fileContextLockHelpText }
+        guard workingDirectory.wrappedValue == nil else { return nil }
         return "可以先写任务；需要添加文件上下文时，再选择工作目录。"
     }
 
@@ -593,6 +647,9 @@ struct NewChatPage: View {
 
     private var inputPlaceholder: String {
         guard let pendingUserDecision else {
+            if !canAcceptInput {
+                return "当前任务执行中，完成或停止后可继续输入"
+            }
             return "把目标、限制和预期结果写清楚"
         }
 
@@ -608,17 +665,40 @@ struct NewChatPage: View {
         guard pendingUserDecision == nil else {
             return "提交回复或新任务 (Cmd+Return)"
         }
+        if !canAcceptInput {
+            return "当前任务执行中，完成或停止后可继续发送"
+        }
         return "发送 (Cmd+Return)"
     }
 
     private var filePickerHelpText: String {
-        if pendingUserDecision != nil {
-            return "请先完成当前确认，再调整文件上下文"
+        if !canEditContext {
+            return fileContextLockHelpText
         }
         if workingDirectory.wrappedValue == nil {
             return "可以先写任务；需要添加文件上下文时，再选择工作目录"
         }
         return "添加文件上下文"
+    }
+
+    private var fileContextLockHelpText: String {
+        if pendingUserDecision != nil {
+            return "请先完成当前确认，再调整文件上下文"
+        }
+        if !canAcceptInput {
+            return "当前任务正在执行，完成或停止后再调整文件上下文"
+        }
+        return "当前状态下无法调整文件上下文"
+    }
+
+    private var workingDirectoryLockHelpText: String {
+        if pendingUserDecision != nil {
+            return "请先完成当前确认，再调整工作目录"
+        }
+        if !canAcceptInput {
+            return "当前任务正在执行，完成或停止后再调整工作目录"
+        }
+        return "当前状态下无法调整工作目录"
     }
 
     private var trimmedComposerText: String {
@@ -812,9 +892,10 @@ struct FilePickerView: View {
     @State private var loadingFailed = false
     @State private var searchText = ""
     @State private var selectedFileIndex: Int? = nil
+    @State private var activeLoadRequestID: UUID?
     @Environment(\.dismiss) private var dismiss
     
-    private let recentFilesKey = "recent_files_picker"
+    private let legacyRecentFilesKey = "recent_files_picker"
     private let maxRecentFiles = 5
     private let maxFilesToLoad = 2_000
     private let excludedDirectoryNames: Set<String> = [
@@ -924,7 +1005,7 @@ struct FilePickerView: View {
                     Divider()
                 }
 
-                if searchText.isEmpty && !recentFiles.isEmpty {
+                if !isSearching && !recentFiles.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack {
                             Image(systemName: "clock")
@@ -1004,6 +1085,9 @@ struct FilePickerView: View {
         .onAppear {
             loadFiles()
         }
+        .onChange(of: workingDirectory) { _, _ in
+            loadFiles()
+        }
         .onKeyPress(.upArrow) {
             guard !filteredFiles.isEmpty else { return .ignored }
             let newIndex = max(0, (selectedFileIndex ?? 0) - 1)
@@ -1028,12 +1112,30 @@ struct FilePickerView: View {
     }
     
     private var recentFiles: [String] {
-        let saved = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
+        let saved = storedRecentFiles
         // 只显示属于当前工作目录且确实存在的文件
         return saved.filter { path in
             PathSecurity.isWithinDirectory(path, workingDirectory: workingDirectory)
                 && FileManager.default.fileExists(atPath: path)
         }
+    }
+
+    private var recentFilesKey: String {
+        guard let workingDirectory, !workingDirectory.isEmpty else {
+            return legacyRecentFilesKey
+        }
+
+        let workspaceKey = Data(PathSecurity.normalizedPath(workingDirectory).utf8)
+            .base64EncodedString()
+        return "\(legacyRecentFilesKey).\(workspaceKey)"
+    }
+
+    private var storedRecentFiles: [String] {
+        let scopedFiles = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
+        guard scopedFiles.isEmpty, recentFilesKey != legacyRecentFilesKey else {
+            return scopedFiles
+        }
+        return UserDefaults.standard.stringArray(forKey: legacyRecentFilesKey) ?? []
     }
 
     private var hasWorkingDirectory: Bool {
@@ -1047,15 +1149,15 @@ struct FilePickerView: View {
     private var emptyStateTitle: String {
         if workingDirectory == nil { return "还没有工作目录" }
         if loadingFailed { return "暂时无法读取文件" }
-        if didHitFileLimit && !searchText.isEmpty { return "未匹配到已加载文件" }
-        return searchText.isEmpty ? "未找到代码文件" : "未匹配到文件"
+        if didHitFileLimit && isSearching { return "未匹配到已加载文件" }
+        return isSearching ? "未匹配到文件" : "未找到代码文件"
     }
 
     private var emptyStateSubtitle: String? {
         if workingDirectory == nil { return "可以先写任务；需要文件上下文时再选择目录" }
         if loadingFailed { return "检查工作目录权限或路径是否仍然可用，然后重新打开这里" }
-        if didHitFileLimit && !searchText.isEmpty { return "当前只搜索已加载的前 \(maxFilesToLoad) 个文件；如果没找到，请缩小工作目录或直接输入 @file: 绝对路径" }
-        if !searchText.isEmpty { return "尝试不同的关键词或检查拼写" }
+        if didHitFileLimit && isSearching { return "当前只搜索已加载的前 \(maxFilesToLoad) 个文件；如果没找到，请缩小工作目录或直接输入 @file: 绝对路径" }
+        if isSearching { return "尝试不同的关键词或检查拼写" }
         return nil
     }
 
@@ -1076,6 +1178,14 @@ struct FilePickerView: View {
         }
         return "需要文件上下文时，再选择工作目录"
     }
+
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSearching: Bool {
+        !trimmedSearchText.isEmpty
+    }
     
     private func recordRecentFile(_ path: String) {
         var saved = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
@@ -1088,9 +1198,8 @@ struct FilePickerView: View {
     }
     
     private var filteredFiles: [String] {
-        guard !searchText.isEmpty else { return files }
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return files }
+        guard isSearching else { return files }
+        let query = trimmedSearchText.lowercased()
 
         return files
             .compactMap { filePath -> (path: String, rank: Int, relativePath: String)? in
@@ -1121,6 +1230,14 @@ struct FilePickerView: View {
     }
     
     private func loadFiles() {
+        let requestID = UUID()
+        activeLoadRequestID = requestID
+        selectedFileIndex = nil
+        files = []
+        didHitFileLimit = false
+        loadingFailed = false
+        isLoading = true
+
         guard let workingDirectory = workingDirectory else {
             isLoading = false
             return
@@ -1141,6 +1258,7 @@ struct FilePickerView: View {
                 }
             ) else {
                 DispatchQueue.main.async {
+                    guard activeLoadRequestID == requestID, self.workingDirectory == workingDirectory else { return }
                     loadingFailed = true
                     isLoading = false
                 }
@@ -1174,6 +1292,7 @@ struct FilePickerView: View {
             }
             
             DispatchQueue.main.async {
+                guard activeLoadRequestID == requestID, self.workingDirectory == workingDirectory else { return }
                 files = filePaths.sorted {
                     PathSecurity.relativePath($0, from: workingDirectory)
                         .localizedStandardCompare(PathSecurity.relativePath($1, from: workingDirectory)) == .orderedAscending

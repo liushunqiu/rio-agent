@@ -69,4 +69,20 @@ final class ConversationPersistenceSourceTests: XCTestCase {
             "Clearing the active conversation should also clear the engine working directory."
         )
     }
+
+    func testSelectingConversationLoadsResolvedCurrentSnapshot() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+
+        XCTAssertTrue(
+            contentSource.contains("conversationManager.selectConversation(conversation)\n                    let selectedConversation = conversationManager.currentConversation ?? conversation\n                    agentEngine.loadConversation(selectedConversation)"),
+            "Conversation switches should load the manager-resolved snapshot so stale sidebar values do not overwrite newer messages, drafts, workspace, or pending decisions."
+        )
+        XCTAssertFalse(
+            contentSource.contains("conversationManager.selectConversation(conversation)\n                    agentEngine.loadConversation(conversation)"),
+            "ContentView should not bypass ConversationManager's stored snapshot when selecting a conversation."
+        )
+    }
 }

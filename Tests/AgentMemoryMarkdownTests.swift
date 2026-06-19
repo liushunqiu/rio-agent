@@ -55,6 +55,37 @@ final class AgentMemoryMarkdownTests: XCTestCase {
         XCTAssertEqual(memory.persistedNotes, notes)
     }
 
+    func testDeleteMemoryNoteByIDRemovesOnlyOneDuplicateSummary() throws {
+        let memory = AgentMemory()
+
+        memory.clearAllMemory()
+        let content = """
+        # Agent Memory
+
+        只记录经过验证的正确做法、用户纠错和重要原因。不要记录代码库里已经存在的内容，不要记录纯会话噪音。
+
+        ## Note
+        【摘要】重复经验
+        - 第一条
+
+        ## Note
+        【摘要】重复经验
+        - 第二条
+        """
+        try content.write(toFile: memory.memoryMarkdownPath(), atomically: true, encoding: .utf8)
+        memory.refreshPersistedNotes()
+
+        let duplicateNotes = memory.persistedNotes.filter { $0.summary == "【摘要】重复经验" }
+        XCTAssertEqual(duplicateNotes.count, 2)
+        XCTAssertEqual(Set(duplicateNotes.map(\.id)).count, 2)
+
+        memory.deleteMemoryNote(id: duplicateNotes[0].id)
+
+        let remainingDuplicates = memory.persistedNotes.filter { $0.summary == "【摘要】重复经验" }
+        XCTAssertEqual(remainingDuplicates.count, 1)
+        XCTAssertNotEqual(remainingDuplicates.first?.id, duplicateNotes[0].id)
+    }
+
     func testClearMemoryMarkdownRemovesPersistedNotes() {
         let memory = AgentMemory()
 

@@ -1,6 +1,26 @@
 import XCTest
 
 final class EnhancedChatRuntimeSourceTests: XCTestCase {
+    func testChatAutoScrollRespectsManualFollowToggle() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/EnhancedMessageBubble.swift"))
+
+        XCTAssertTrue(
+            source.contains("Self.distanceFromBottom(\n                        contentBottom: contentBottom,\n                        viewportHeight: visibleViewportHeight\n                    )"),
+            "The chat view should measure distance from bottom as content bottom minus viewport height so scrolling up is detected."
+        )
+        XCTAssertTrue(
+            source.contains("if newCount > oldCount && autoScrollEnabled"),
+            "New messages should respect the user's auto-follow toggle instead of forcing scroll during processing."
+        )
+        XCTAssertFalse(
+            source.contains("autoScrollEnabled || isProcessing"),
+            "Processing state should not override a manual pause of auto-follow."
+        )
+    }
+
     func testMainTranscriptSurfacesRuntimeGuidanceBeforeDetailedPlan() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -18,6 +38,11 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("singleAgentVerification: singleAgentVerification"),
             "The transcript runtime card should receive single-agent verification state so verification gaps stay visible in the main reading flow."
+        )
+        XCTAssertTrue(
+            source.contains("if let agentName = message.source?.agentName?.trimmingCharacters(in: .whitespacesAndNewlines)")
+                && !source.contains("message.source!"),
+            "Message source titles should trim optional agent names without force-unwrapping source metadata."
         )
         XCTAssertTrue(
             source.contains("let pendingUserDecision: AgentEngine.PendingUserDecision?"),

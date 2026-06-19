@@ -117,6 +117,66 @@ final class MultiAgentSettingsSourceTests: XCTestCase {
         )
     }
 
+    func testMultiAgentHeaderReflectsSelectedTaskSplitStrategy() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/MultiAgentSettingsView.swift"))
+
+        XCTAssertTrue(
+            source.contains("value: taskStrategyMetricValue"),
+            "The Multi-Agent settings header should derive its mode value from the selected task split strategy."
+        )
+        XCTAssertTrue(
+            source.contains("detail: taskStrategyMetricDetail"),
+            "The Multi-Agent settings header should explain the real task split behavior instead of using static copy."
+        )
+        XCTAssertTrue(
+            source.contains("tone: taskStrategyMetricTone"),
+            "Manual-confirmation mode should be visually distinct from automatic mode in the header."
+        )
+        XCTAssertTrue(
+            source.contains("case .manual:\n            return \"复杂任务拆分前先暂停，等待你确认执行模式\""),
+            "Manual mode should tell the user that execution will pause for confirmation."
+        )
+        XCTAssertFalse(
+            source.contains("value: \"自动流水线\""),
+            "The header should not always claim automatic mode after the user selects manual confirmation."
+        )
+    }
+
+    func testPipelineSummaryReflectsRouterAndCriticSwitches() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/MultiAgentSettingsView.swift"))
+
+        XCTAssertTrue(
+            source.contains("Text(pipelineSummaryText)"),
+            "The pipeline summary should be derived from the current Router and Critic switch state."
+        )
+        XCTAssertTrue(
+            source.contains("private var pipelineSummaryText: String"),
+            "Multi-Agent settings should centralize the dynamic pipeline summary text."
+        )
+        XCTAssertTrue(
+            source.contains("switch (routerEnabled, enableCritic)"),
+            "Pipeline summary copy should follow both Router and Critic settings."
+        )
+        XCTAssertTrue(
+            source.contains("Router 前置路由当前关闭"),
+            "The summary should explicitly call out when Router is disabled."
+        )
+        XCTAssertTrue(
+            source.contains("Critic 审查当前关闭"),
+            "The summary should explicitly call out when Critic is disabled."
+        )
+        XCTAssertFalse(
+            source.contains("四层流水线始终启用"),
+            "The settings UI should not claim every pipeline layer is always enabled when Router and Critic can be switched off."
+        )
+    }
+
     func testQwenRouterSettingsExposeReadinessProblemsBeforeRuntime() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -73,6 +73,38 @@ final class SettingsConfigPickerSourceTests: XCTestCase {
         )
     }
 
+    func testProviderSummaryPrefersReadyConfigSets() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/SettingsView.swift"))
+
+        XCTAssertTrue(
+            source.contains("let readySets = sets.filter(\\.isConfigured)"),
+            "Provider health summaries should derive from ready config sets before falling back to raw provider matches."
+        )
+        XCTAssertTrue(
+            source.contains("providerSummaryConfigSet(for: .claude, readySets: readySets, allSets: sets)"),
+            "Claude provider summary should prefer a configured Claude set when multiple Claude configs exist."
+        )
+        XCTAssertTrue(
+            source.contains("providerSummaryConfigSet(for: .openAI, readySets: readySets, allSets: sets)"),
+            "OpenAI provider summary should prefer a configured OpenAI set when multiple OpenAI configs exist."
+        )
+        XCTAssertTrue(
+            source.contains("providerSummaryConfigSet(for: .openAICompatible, readySets: readySets, allSets: sets)"),
+            "OpenAI-compatible provider summary should prefer a configured compatible set when multiple compatible configs exist."
+        )
+        XCTAssertTrue(
+            source.contains("readySets.first { $0.provider == provider }\n            ?? allSets.first { $0.provider == provider }"),
+            "Provider summary fallback should only use raw configs after no ready config exists for that provider."
+        )
+        XCTAssertFalse(
+            source.contains("let claudeSet = sets.first { $0.provider == .claude }"),
+            "Provider summary should not be poisoned by the first raw config when a later config for the same provider is ready."
+        )
+    }
+
     func testSettingsViewSupportsExplicitInitialTab() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

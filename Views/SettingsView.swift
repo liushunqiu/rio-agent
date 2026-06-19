@@ -253,7 +253,7 @@ struct SettingsView: View {
             }
             Button("删除", role: .destructive) {
                 if let pendingDeleteMemoryNote {
-                    memory.deleteMemoryNote(summary: pendingDeleteMemoryNote.summary)
+                    memory.deleteMemoryNote(id: pendingDeleteMemoryNote.id)
                 }
                 pendingDeleteMemoryNote = nil
             }
@@ -317,10 +317,10 @@ struct SettingsView: View {
     private var currentAIConfigInfo: AIConfigInfo {
         let sets = configSetManager.configSets
         
-        // Find first configured model for each provider type
-        let claudeSet = sets.first { $0.provider == .claude }
-        let openAISet = sets.first { $0.provider == .openAI }
-        let customSet = sets.first { $0.provider == .openAICompatible }
+        let readySets = sets.filter(\.isConfigured)
+        let claudeSet = providerSummaryConfigSet(for: .claude, readySets: readySets, allSets: sets)
+        let openAISet = providerSummaryConfigSet(for: .openAI, readySets: readySets, allSets: sets)
+        let customSet = providerSummaryConfigSet(for: .openAICompatible, readySets: readySets, allSets: sets)
         let claudeApiKey = claudeSet?.loadAPIKey() ?? ""
         let openAIApiKey = openAISet?.loadAPIKey() ?? ""
         let compatibleApiKey = customSet?.loadAPIKey() ?? ""
@@ -338,6 +338,15 @@ struct SettingsView: View {
             allConfigSets: sets,  // 传递所有配置集
             configSetRevision: configSetManager.revision
         )
+    }
+
+    private func providerSummaryConfigSet(
+        for provider: AIProvider,
+        readySets: [ConfigSet],
+        allSets: [ConfigSet]
+    ) -> ConfigSet? {
+        readySets.first { $0.provider == provider }
+            ?? allSets.first { $0.provider == provider }
     }
 
     private var settingsSidebar: some View {
@@ -1428,11 +1437,9 @@ struct AIConfigInfo {
     let configSetRevision: Int
 
     var availableProviders: [AIProvider] {
-        var providers: [AIProvider] = []
-        if hasClaudeKey { providers.append(.claude) }
-        if hasOpenAIKey { providers.append(.openAI) }
-        if hasCompatibleEndpoint { providers.append(.openAICompatible) }
-        return providers
+        AIProvider.allCases.filter { provider in
+            allConfigSets.contains { $0.provider == provider && $0.isConfigured }
+        }
     }
 
     var hasAnyProvider: Bool {

@@ -141,6 +141,30 @@ final class AgentEngineRegressionTests: XCTestCase {
         )
     }
 
+    func testToolConfirmationPublishesConfirmingStateInSource() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/AgentEngine.swift"))
+
+        XCTAssertTrue(
+            source.contains("showToolExecutionConfirmation("),
+            "Tool confirmations should go through a wrapper that can update runtime state before showing the modal."
+        )
+        XCTAssertTrue(
+            source.contains("ToolExecutionContext.currentToolCall"),
+            "The confirmation wrapper should identify the active tool call instead of treating every confirmation as global UI state."
+        )
+        XCTAssertTrue(
+            source.contains("ToolExecutionState.confirming(toolCall: toolCall)"),
+            "Tool confirmations should publish the confirming state so the transcript and pipeline show that execution is paused for user input."
+        )
+        XCTAssertTrue(
+            source.contains("if result != .denied, currentToolExecution?.id == toolCall.id"),
+            "Approved confirmations should restore the same tool to executing state without reviving stale or cancelled tool executions."
+        )
+    }
+
     func testProcessingWithoutPendingDecisionRejectsNewUserInput() {
         let engine = AgentEngine()
         var didComplete = false
@@ -223,6 +247,24 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(engine.errorRecoveryContext, .executionModel)
     }
 
+    func testMissingRouterConfigPointsToMultiAgentRouterSettings() async {
+        let engine = AgentEngine()
+        var config = engine.multiAgentConfig
+        config.router.enabled = true
+        config.router.enableQwenRouter = false
+        config.router.configSetId = nil
+        config.taskSplitStrategy = .manual
+        engine.updateMultiAgentConfig(config)
+
+        await engine.processUserInput("请分析这个项目并修改多个文件后再测试")
+
+        XCTAssertEqual(
+            engine.error,
+            "Router未选择模型配置。请前往 设置 → Multi-Agent → 路由配置，选择一个可用模型配置。"
+        )
+        XCTAssertEqual(engine.errorRecoveryContext, .routerModel)
+    }
+
     func testStopProcessingClearsRecoveryContext() {
         let engine = AgentEngine()
         engine.isProcessing = true
@@ -276,8 +318,9 @@ final class AgentEngineRegressionTests: XCTestCase {
             "Router runtime fallback messaging should be centralized so degraded-flow copy stays consistent."
         )
         XCTAssertTrue(
-            source.contains("let reasonDetail = cleanedReason?.isEmpty == false ? \"原因：\\(cleanedReason!)。\" : \"\""),
-            "Router fallback banners should surface the concrete router failure reason when one is available."
+            source.contains("if let cleanedReason, !cleanedReason.isEmpty")
+                && source.contains("reasonDetail = \"原因：\\(cleanedReason)。\""),
+            "Router fallback banners should surface the concrete router failure reason without force-unwrapping optional text."
         )
         XCTAssertTrue(
             source.contains("private func applyRouterDecision(input: String, decision: RoutingDecision)"),
@@ -567,6 +610,62 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(compressed?.source, source)
         XCTAssertEqual(compressed?.timestamp, timestamp)
         XCTAssertTrue(compressed?.toolResults?.first?.output.contains("[... truncated") == true)
+    }
+
+    func testContextTokenEstimateIncludesToolErrorsAndCancellationReasons() {
+        let builder = ContextBuilder(
+            tokenTracker: TokenTracker(),
+            model: "gpt-4o",
+            systemPrompt: "system"
+        )
+        let baseline = builder.estimateMessageTokens(Message(
+            role: .system,
+            content: "",
+            toolResults: [.success(toolCallId: "empty", output: "")]
+        ))
+        let longError = String(repeating: "permission denied ", count: 80)
+        let longCancellation = String(repeating: "用户停止任务，后续工具未执行。", count: 80)
+
+        let errorTokens = builder.estimateMessageTokens(Message(
+            role: .system,
+            content: "",
+            toolResults: [.error(toolCallId: "failed", error: longError)]
+        ))
+        let cancelledTokens = builder.estimateMessageTokens(Message(
+            role: .system,
+            content: "",
+            toolResults: [.cancelled(toolCallId: "cancelled", reason: longCancellation)]
+        ))
+
+        XCTAssertGreaterThan(errorTokens, baseline + 100)
+        XCTAssertGreaterThan(cancelledTokens, baseline + 100)
+    }
+
+    func testOlderLargeToolErrorsAreCompressedForContext() {
+        let engine = AgentEngine()
+        let largeError = String(repeating: "Permission denied while reading protected file. ", count: 80)
+        var config = engine.configuration
+        config.maxContextMessages = 999
+        engine.updateConfiguration(config)
+
+        engine.appendMessage(Message(
+            role: .system,
+            content: "old tool failure",
+            toolResults: [.error(toolCallId: "older-error", error: largeError)],
+            presentation: .internalOnly
+        ))
+        engine.appendMessage(.assistant("filler-1"))
+        engine.appendMessage(.user("filler-2"))
+        engine.appendMessage(.assistant("filler-3"))
+        engine.appendMessage(.user("filler-4"))
+
+        let compressed = engine.buildContextMessages().first {
+            $0.toolResults?.first?.toolCallId == "older-error"
+        }
+
+        XCTAssertEqual(compressed?.toolResults?.first?.status, .error)
+        XCTAssertTrue(compressed?.toolResults?.first?.error?.contains("[... truncated") == true)
+        XCTAssertTrue(compressed?.toolResults?.first?.modelContent.contains("[... truncated") == true)
     }
 
     func testHandleFinalContentSkipsVerificationWhenNoToolEvidenceExists() async {

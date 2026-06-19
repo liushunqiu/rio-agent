@@ -132,10 +132,12 @@ class ToolExecutor {
     /// 执行单个工具调用
     private func executeSingleTool(_ toolCall: ToolCall) async -> ToolResult {
         do {
-            let raw = try await toolRegistry.executeTool(
-                name: toolCall.name,
-                arguments: toolCall.arguments.mapValues { $0.value }
-            )
+            let raw = try await ToolExecutionContext.$currentToolCall.withValue(toolCall) {
+                try await toolRegistry.executeTool(
+                    name: toolCall.name,
+                    arguments: toolCall.arguments.mapValues { $0.value }
+                )
+            }
             return ToolResult(
                 toolCallId: toolCall.id,
                 status: raw.status,

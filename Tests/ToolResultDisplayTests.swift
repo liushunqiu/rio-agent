@@ -2,6 +2,17 @@ import XCTest
 @testable import RioAgent
 
 final class ToolResultDisplayTests: XCTestCase {
+    func testModelContentUsesErrorAndCancellationReason() {
+        XCTAssertEqual(
+            ToolResult.error(toolCallId: "call-1", error: "Permission denied").modelContent,
+            "Permission denied"
+        )
+        XCTAssertEqual(
+            ToolResult.cancelled(toolCallId: "call-2", reason: "用户停止任务").modelContent,
+            "用户停止任务"
+        )
+    }
+
     func testErrorResultDisplaysErrorMessageInsteadOfEmptyOutput() {
         let result = ToolResult.error(toolCallId: "call-1", error: "Permission denied")
 

@@ -55,6 +55,19 @@ final class ExecutionPipelineViewSourceTests: XCTestCase {
             source.contains("isCollapsed = false"),
             "Failed or cancelled stages with diagnostics should reveal the timeline automatically instead of hiding the useful detail behind another click."
         )
+        let currentStageExpansion = try XCTUnwrap(source.range(of: "currentStage.hasExpandableContent"))
+        let exceptionalStageExpansion = try XCTUnwrap(source.range(of: "latestExceptionalStage"))
+        XCTAssertNotNil(
+            source.range(of: "isCollapsed = false", range: currentStageExpansion.lowerBound..<exceptionalStageExpansion.lowerBound),
+            "Running stages with expandable diagnostics should also reveal the timeline; otherwise the expanded row state is hidden by the collapsed container."
+        )
+        XCTAssertTrue(
+            source.contains(".onChange(of: expansionSignal)")
+                && source.contains("private var expansionSignal: [String]")
+                && source.contains("\\(stage.hasExpandableContent)")
+                && source.contains("\\(stage.substeps.count)"),
+            "Pipeline auto-expansion should react when running stages gain diagnostics without changing status."
+        )
         XCTAssertTrue(
             source.contains("title: \"进行中\""),
             "When there is no exception, the pipeline should still expose the active stage with a quieter workbench label."
@@ -62,6 +75,11 @@ final class ExecutionPipelineViewSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains(".help(detail)"),
             "The pipeline insight banner should preserve the full diagnostic guidance on hover."
+        )
+        XCTAssertTrue(
+            source.contains("if let summary, !summary.isEmpty")
+                && !source.contains("summary!"),
+            "Verification-stage summaries should append optional text without force-unwrapping it."
         )
         XCTAssertTrue(
             source.contains("CompactStatusPill(status: pipeline.overallStatus)"),

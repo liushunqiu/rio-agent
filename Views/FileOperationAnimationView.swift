@@ -168,19 +168,18 @@ struct FileDiffAnimationView: View {
             let oldLine = i < oldLines.count ? oldLines[i] : nil
             let newLine = i < newLines.count ? newLines[i] : nil
 
-            if oldLine == newLine {
-                if let line = newLine {
-                    result.append(DiffLine(text: line, type: .unchanged))
-                }
-            } else if oldLine == nil {
-                if let line = newLine {
-                    result.append(DiffLine(text: "+ \(line)", type: .added))
-                }
-            } else if newLine == nil {
-                result.append(DiffLine(text: "- \(oldLine!)", type: .removed))
-            } else {
-                result.append(DiffLine(text: "- \(oldLine!)", type: .removed))
-                result.append(DiffLine(text: "+ \(newLine!)", type: .added))
+            switch (oldLine, newLine) {
+            case let (old?, new?) where old == new:
+                result.append(DiffLine(text: new, type: .unchanged))
+            case let (nil, new?):
+                result.append(DiffLine(text: "+ \(new)", type: .added))
+            case let (old?, nil):
+                result.append(DiffLine(text: "- \(old)", type: .removed))
+            case let (old?, new?):
+                result.append(DiffLine(text: "- \(old)", type: .removed))
+                result.append(DiffLine(text: "+ \(new)", type: .added))
+            case (nil, nil):
+                break
             }
         }
 
