@@ -516,6 +516,112 @@ final class MultiAgentRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testApplyExecutionResultSynchronizesVerificationStateImmediately() {
+        let subTaskId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        var plan = TaskPlan(
+            originalTask: "run worker",
+            subTasks: [
+                SubTask(id: subTaskId, description: "call worker", status: .running)
+            ],
+            status: .executing
+        )
+        let result = ExecutionResult(
+            subTaskId: subTaskId,
+            output: "",
+            errors: ["代码 Agent 未选择可用模型配置。"],
+            retryCount: 0,
+            verificationStatus: .needsRetry,
+            verificationSummary: "当前子任务无法验证。",
+            recoveryContext: .multiAgentWorkerModel
+        )
+
+        engine.applyExecutionResult(result, to: &plan, status: .failed)
+
+        XCTAssertEqual(plan.subTasks[0].status, .failed)
+        XCTAssertEqual(plan.subTasks[0].verificationStatus, .needsRetry)
+        XCTAssertEqual(plan.subTasks[0].verificationSummary, "当前子任务无法验证。")
+        XCTAssertEqual(plan.subTasks[0].recoveryContext, .multiAgentWorkerModel)
+        XCTAssertEqual(plan.subTasks[0].failureSource, .execution)
+        XCTAssertEqual(engine.currentPlan?.subTasks[0].verificationStatus, .needsRetry)
+        XCTAssertEqual(engine.currentPlan?.subTasks[0].recoveryContext, .multiAgentWorkerModel)
+    }
+
+    @MainActor
+    func testApplyExecutionResultMarksVerifierFailureSource() {
+        let subTaskId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        var plan = TaskPlan(
+            originalTask: "verify worker",
+            subTasks: [
+                SubTask(id: subTaskId, description: "produce answer", status: .running)
+            ],
+            status: .executing
+        )
+        let result = ExecutionResult(
+            subTaskId: subTaskId,
+            output: "answer without enough evidence",
+            errors: ["缺少可验证证据。"],
+            retryCount: 0,
+            verificationStatus: .needsRetry,
+            verificationSummary: "缺少可验证证据。",
+            recoveryContext: nil
+        )
+
+        engine.applyExecutionResult(result, to: &plan, status: .failed)
+
+        XCTAssertEqual(plan.subTasks[0].failureSource, .verification)
+    }
+
+    @MainActor
+    func testTerminalPlanStatusFailsWhenAnySubTaskNeedsRetry() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let subTasks = [
+            SubTask(description: "verified work", status: .completed, verificationStatus: .verified),
+            SubTask(description: "blocked work", status: .failed, verificationStatus: .needsRetry)
+        ]
+
+        XCTAssertEqual(engine.terminalPlanStatus(for: subTasks), .failed)
+    }
+
+    @MainActor
+    func testSynthesisResultsTextFollowsPlanOrder() throws {
+        let firstId = UUID()
+        let secondId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let subTasks = [
+            SubTask(id: firstId, description: "first planned step"),
+            SubTask(id: secondId, description: "second planned step")
+        ]
+        let results: [UUID: ExecutionResult] = [
+            secondId: ExecutionResult(
+                subTaskId: secondId,
+                output: "second output",
+                errors: [],
+                retryCount: 0,
+                verificationStatus: .verified,
+                verificationSummary: nil,
+                recoveryContext: nil
+            ),
+            firstId: ExecutionResult(
+                subTaskId: firstId,
+                output: "first output",
+                errors: [],
+                retryCount: 0,
+                verificationStatus: .verified,
+                verificationSummary: nil,
+                recoveryContext: nil
+            )
+        ]
+
+        let text = engine.synthesisResultsText(results: results, subTasks: subTasks)
+
+        let firstRange = try XCTUnwrap(text.range(of: "子任务 1：first planned step"))
+        let secondRange = try XCTUnwrap(text.range(of: "子任务 2：second planned step"))
+        XCTAssertLessThan(firstRange.lowerBound, secondRange.lowerBound)
+    }
+
+    @MainActor
     func testDependencyContextCarriesFailureReasonWhenOutputIsEmpty() {
         let engine = MultiAgentEngine(config: MultiAgentConfig())
         let dependency = ExecutionResult(
@@ -563,6 +669,72 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertTrue(result.errors.first?.contains("前置依赖未成功完成") == true)
         XCTAssertTrue(display?.contains("prepare data") == true)
         XCTAssertTrue(display?.contains("不能视为完成") == true)
+    }
+
+    @MainActor
+    func testUnverifiedDependencyDoesNotCountAsSuccessfulDependency() {
+        let dependencyId = UUID()
+        let blockedId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let dependencyResult = ExecutionResult(
+            subTaskId: dependencyId,
+            output: "finished without tool evidence",
+            errors: [],
+            retryCount: 0,
+            verificationStatus: .unverified,
+            verificationSummary: "缺少可验证证据。",
+            recoveryContext: nil
+        )
+        let plan = TaskPlan(
+            originalTask: "run dependent tasks",
+            subTasks: [
+                SubTask(id: dependencyId, description: "inspect repository", status: .completed, verificationStatus: .unverified),
+                SubTask(id: blockedId, description: "modify dependent code", dependencies: [dependencyId])
+            ],
+            status: .executing
+        )
+
+        let successfulIds: Set<UUID> = engine.isSuccessfulDependencyResult(dependencyResult) ? [dependencyId] : []
+        let result = engine.dependencyBlockedResult(
+            for: plan.subTasks[1],
+            plan: plan,
+            finishedIds: [dependencyId],
+            successfulIds: successfulIds
+        )
+
+        XCTAssertFalse(engine.isSuccessfulDependencyResult(dependencyResult))
+        XCTAssertEqual(result.verificationStatus, .needsRetry)
+        XCTAssertTrue(result.errors.first?.contains("失败或未验证的前置任务：inspect repository") == true)
+    }
+
+    @MainActor
+    func testBlockedDependencyResultInheritsUpstreamRecoveryContext() {
+        let failedId = UUID()
+        let blockedId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let plan = TaskPlan(
+            originalTask: "run dependent tasks",
+            subTasks: [
+                SubTask(
+                    id: failedId,
+                    description: "configure worker",
+                    status: .failed,
+                    verificationStatus: .needsRetry,
+                    recoveryContext: .multiAgentWorkerModel
+                ),
+                SubTask(id: blockedId, description: "use configured worker", dependencies: [failedId])
+            ],
+            status: .executing
+        )
+
+        let result = engine.dependencyBlockedResult(
+            for: plan.subTasks[1],
+            plan: plan,
+            finishedIds: [failedId],
+            successfulIds: []
+        )
+
+        XCTAssertEqual(result.recoveryContext, .multiAgentWorkerModel)
     }
 
     @MainActor

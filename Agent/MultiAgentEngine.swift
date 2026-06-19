@@ -199,7 +199,7 @@ class MultiAgentEngine: ObservableObject {
 
             if subTasks.isEmpty {
                 try Task.checkCancellation()
-                let finalResult = try await synthesizeResults(originalTask: task, results: [:])
+                let finalResult = try await synthesizeResults(originalTask: task, results: [:], subTasks: [])
                 plan.status = .completed
                 currentPlan = plan
                 isProcessing = false
@@ -234,9 +234,13 @@ class MultiAgentEngine: ObservableObject {
             plan.status = .synthesizing
             currentPlan = plan
 
-            let finalResult = try await synthesizeResults(originalTask: task, results: results)
+            let finalResult = try await synthesizeResults(
+                originalTask: task,
+                results: results,
+                subTasks: plan.subTasks
+            )
 
-            plan.status = .completed
+            plan.status = terminalPlanStatus(for: plan.subTasks)
             currentPlan = plan
             isProcessing = false
             routerPreferredCapability = nil
@@ -468,13 +472,7 @@ class MultiAgentEngine: ObservableObject {
                         finishedIds: finishedIds,
                         successfulIds: successfulIds
                     )
-                    updateSubTask(
-                        subTask.id,
-                        in: &plan,
-                        status: .failed,
-                        result: subTaskDisplayResult(for: result, status: .failed),
-                        recoveryContext: result.recoveryContext
-                    )
+                    applyExecutionResult(result, to: &plan, status: .failed)
                     finishedIds.insert(subTask.id)
                     allResults[subTask.id] = result
                 }
@@ -490,13 +488,7 @@ class MultiAgentEngine: ObservableObject {
                         guard let worker = subTask.assignedWorker,
                               let service = services[worker.id] else {
                             let result = serviceUnavailableResult(for: subTask)
-                            updateSubTask(
-                                subTask.id,
-                                in: &plan,
-                                status: .failed,
-                                result: subTaskDisplayResult(for: result, status: .failed),
-                                recoveryContext: result.recoveryContext
-                            )
+                            applyExecutionResult(result, to: &plan, status: .failed)
                             finishedIds.insert(subTask.id)
                             allResults[subTask.id] = result
                             continue
@@ -523,24 +515,11 @@ class MultiAgentEngine: ObservableObject {
                         allResults[taskId] = result
                         finishedIds.insert(taskId)
 
-                        let status: SubTaskStatus = (result.hasErrors || result.verificationStatus == .needsRetry) ? .failed : .completed
-                        if status == .completed {
+                        let status = subTaskStatus(for: result)
+                        if isSuccessfulDependencyResult(result) {
                             successfulIds.insert(taskId)
                         }
-                        updateSubTask(
-                            taskId,
-                            in: &plan,
-                            status: status,
-                            result: subTaskDisplayResult(for: result, status: status),
-                            recoveryContext: result.recoveryContext
-                        )
-
-                        if let idx = plan.subTasks.firstIndex(where: { $0.id == taskId }) {
-                            plan.subTasks[idx].retryCount = result.retryCount
-                            plan.subTasks[idx].verificationStatus = result.verificationStatus
-                            plan.subTasks[idx].verificationSummary = result.verificationSummary
-                        }
-                        currentPlan = plan
+                        applyExecutionResult(result, to: &plan, status: status)
                     }
                 }
             }
@@ -557,6 +536,34 @@ class MultiAgentEngine: ObservableObject {
         }
     }
 
+    func isSuccessfulDependencyResult(_ result: ExecutionResult) -> Bool {
+        !result.hasErrors && result.verificationStatus == .verified
+    }
+
+    func subTaskStatus(for result: ExecutionResult) -> SubTaskStatus {
+        (result.hasErrors || result.verificationStatus == .needsRetry) ? .failed : .completed
+    }
+
+    func failureSource(for result: ExecutionResult, status: SubTaskStatus) -> SubTaskFailureSource? {
+        guard status == .failed else { return nil }
+
+        if result.errors.contains(where: { $0.contains("前置依赖未成功完成") }) ||
+            result.verificationSummary?.contains("依赖失败") == true {
+            return .dependency
+        }
+
+        if result.recoveryContext != nil {
+            return .execution
+        }
+
+        if result.verificationStatus == .needsRetry,
+           result.verificationSummary?.contains("执行失败") != true {
+            return .verification
+        }
+
+        return .execution
+    }
+
     func dependencyBlockedResult(
         for subTask: SubTask,
         plan: TaskPlan,
@@ -567,19 +574,20 @@ class MultiAgentEngine: ObservableObject {
             finishedIds.contains(dependencyId) && !successfulIds.contains(dependencyId)
         }
         let pendingDependencies = subTask.dependencies.filter { !finishedIds.contains($0) }
-        let nameById = Dictionary(uniqueKeysWithValues: plan.subTasks.map { ($0.id, $0.description) })
+        let dependencyById = Dictionary(uniqueKeysWithValues: plan.subTasks.map { ($0.id, $0) })
 
         var details: [String] = []
         if !failedDependencies.isEmpty {
-            let descriptions = failedDependencies.map { nameById[$0] ?? $0.uuidString }.joined(separator: "；")
+            let descriptions = failedDependencies.map { dependencyById[$0]?.description ?? $0.uuidString }.joined(separator: "；")
             details.append("失败或未验证的前置任务：\(descriptions)")
         }
         if !pendingDependencies.isEmpty {
-            let descriptions = pendingDependencies.map { nameById[$0] ?? $0.uuidString }.joined(separator: "；")
+            let descriptions = pendingDependencies.map { dependencyById[$0]?.description ?? $0.uuidString }.joined(separator: "；")
             details.append("未完成的前置任务：\(descriptions)")
         }
 
         let reason = details.isEmpty ? "依赖无法满足" : details.joined(separator: "\n")
+        let recoveryContext = failedDependencies.compactMap { dependencyById[$0]?.recoveryContext }.first
         return ExecutionResult(
             subTaskId: subTask.id,
             output: "",
@@ -587,7 +595,7 @@ class MultiAgentEngine: ObservableObject {
             retryCount: 0,
             verificationStatus: .needsRetry,
             verificationSummary: "当前子任务依赖失败或未完成的前置任务，因此未执行，不能视为完成。",
-            recoveryContext: nil
+            recoveryContext: recoveryContext
         )
     }
 
@@ -633,7 +641,7 @@ class MultiAgentEngine: ObservableObject {
     }
 
     private func truncatedDependencySummary(for result: ExecutionResult) -> String {
-        let status: SubTaskStatus = (result.hasErrors || result.verificationStatus == .needsRetry) ? .failed : .completed
+        let status = subTaskStatus(for: result)
         let summary = subTaskDisplayResult(for: result, status: status) ?? "（无可用输出）"
 
         let maxLength = 5000
@@ -899,7 +907,11 @@ class MultiAgentEngine: ObservableObject {
 
     // MARK: - Result Synthesis (enhanced with execution metadata)
 
-    private func synthesizeResults(originalTask: String, results: [UUID: ExecutionResult]) async throws -> String {
+    private func synthesizeResults(
+        originalTask: String,
+        results: [UUID: ExecutionResult],
+        subTasks: [SubTask]
+    ) async throws -> String {
         try Task.checkCancellation()
 
         guard let orchestratorService = services[config.orchestrator.id] else {
@@ -925,27 +937,16 @@ class MultiAgentEngine: ObservableObject {
             return response.content ?? "无法生成最终结果"
         }
 
-        // Build rich results text including errors and retry info
-        let resultsText = results.values.enumerated().map { index, result in
-            var text = "=== 子任务 \(index + 1) ===\n"
-            if result.retryCount > 0 {
-                text += "（经过 \(result.retryCount) 次重试）\n"
-            }
-            text += "验证状态: \(result.verificationStatus.displayText)\n"
-            if let summary = result.verificationSummary, !summary.isEmpty {
-                text += "验证摘要: \(summary)\n"
-            }
-            text += result.output
-            if result.hasErrors {
-                text += "\n\n⚠️ 残留错误:\n" + result.errors.joined(separator: "\n")
-            }
-            return text
-        }.joined(separator: "\n\n")
+        let statusSummary = synthesisStatusSummary(results: results, subTasks: subTasks)
+        let resultsText = synthesisResultsText(results: results, subTasks: subTasks)
 
         let synthesizePrompt = """
         你是一个任务协调者。请根据以下信息，给出最终的完整回答。
 
         原始用户任务: \(originalTask)
+
+        整体执行状态:
+        \(statusSummary)
 
         已验证长期记忆:
         \(memoryContext)
@@ -970,6 +971,92 @@ class MultiAgentEngine: ObservableObject {
     }
 
     // MARK: - Plan Update Helpers
+
+    func terminalPlanStatus(for subTasks: [SubTask]) -> TaskPlanStatus {
+        if subTasks.contains(where: { $0.status == .cancelled }) {
+            return .cancelled
+        }
+
+        if subTasks.contains(where: { $0.status == .failed || $0.verificationStatus == .needsRetry }) {
+            return .failed
+        }
+
+        return .completed
+    }
+
+    func synthesisStatusSummary(results: [UUID: ExecutionResult], subTasks: [SubTask]) -> String {
+        let failedCount = subTasks.filter { $0.status == .failed || $0.verificationStatus == .needsRetry }.count
+        let unverifiedCount = subTasks.filter { $0.verificationStatus == .unverified }.count
+        let verifiedCount = subTasks.filter { $0.verificationStatus == .verified }.count
+        let missingResultCount = subTasks.filter { results[$0.id] == nil }.count
+
+        var parts: [String] = []
+        if failedCount > 0 {
+            parts.append("有 \(failedCount) 个子任务失败或需要重试，最终回答必须明确未完成范围和原因。")
+        }
+        if unverifiedCount > 0 {
+            parts.append("有 \(unverifiedCount) 个子任务缺少验证证据，最终回答必须标出未验证范围。")
+        }
+        if missingResultCount > 0 {
+            parts.append("有 \(missingResultCount) 个子任务没有执行结果，不能视为完成。")
+        }
+        if parts.isEmpty {
+            parts.append("已验证子任务 \(verifiedCount)/\(subTasks.count)，可以按已完成结果汇总。")
+        }
+
+        return parts.joined(separator: "\n")
+    }
+
+    func synthesisResultsText(results: [UUID: ExecutionResult], subTasks: [SubTask]) -> String {
+        let orderedEntries = subTasks.compactMap { subTask -> (SubTask?, ExecutionResult)? in
+            guard let result = results[subTask.id] else { return nil }
+            return (subTask, result)
+        }
+        let orderedIds = Set(orderedEntries.map { $0.1.subTaskId })
+        let extraEntries = results.values
+            .filter { !orderedIds.contains($0.subTaskId) }
+            .sorted { $0.subTaskId.uuidString < $1.subTaskId.uuidString }
+            .map { (nil as SubTask?, $0) }
+
+        return (orderedEntries + extraEntries).enumerated().map { index, entry in
+            let (subTask, result) = entry
+            var text = "=== 子任务 \(index + 1)"
+            if let description = subTask?.description.trimmingCharacters(in: .whitespacesAndNewlines),
+               !description.isEmpty {
+                text += "：\(description)"
+            }
+            text += " ===\n"
+            if result.retryCount > 0 {
+                text += "（经过 \(result.retryCount) 次重试）\n"
+            }
+            text += "验证状态: \(result.verificationStatus.displayText)\n"
+            if let summary = result.verificationSummary, !summary.isEmpty {
+                text += "验证摘要: \(summary)\n"
+            }
+            text += result.output
+            if result.hasErrors {
+                text += "\n\n⚠️ 残留错误:\n" + result.errors.joined(separator: "\n")
+            }
+            return text
+        }.joined(separator: "\n\n")
+    }
+
+    func applyExecutionResult(
+        _ result: ExecutionResult,
+        to plan: inout TaskPlan,
+        status: SubTaskStatus
+    ) {
+        guard let index = plan.subTasks.firstIndex(where: { $0.id == result.subTaskId }) else { return }
+
+        plan.subTasks[index].status = status
+        plan.subTasks[index].result = subTaskDisplayResult(for: result, status: status)
+        plan.subTasks[index].recoveryContext = result.recoveryContext
+        plan.subTasks[index].retryCount = result.retryCount
+        plan.subTasks[index].verificationStatus = result.verificationStatus
+        plan.subTasks[index].verificationSummary = result.verificationSummary
+        plan.subTasks[index].failureSource = failureSource(for: result, status: status)
+        currentPlan = plan
+    }
 
     private func updateSubTask(
         _ id: UUID,

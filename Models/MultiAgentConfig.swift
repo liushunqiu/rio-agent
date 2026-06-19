@@ -712,6 +712,7 @@ struct SubTask: Identifiable {
     var verificationStatus: VerificationStatus
     var verificationSummary: String?
     var recoveryContext: ErrorRecoveryContext?
+    var failureSource: SubTaskFailureSource?
 
     init(
         id: UUID = UUID(),
@@ -726,7 +727,8 @@ struct SubTask: Identifiable {
         retryCount: Int = 0,
         verificationStatus: VerificationStatus = .unverified,
         verificationSummary: String? = nil,
-        recoveryContext: ErrorRecoveryContext? = nil
+        recoveryContext: ErrorRecoveryContext? = nil,
+        failureSource: SubTaskFailureSource? = nil
     ) {
         self.id = id
         self.description = description
@@ -741,6 +743,7 @@ struct SubTask: Identifiable {
         self.verificationStatus = verificationStatus
         self.verificationSummary = verificationSummary
         self.recoveryContext = recoveryContext
+        self.failureSource = failureSource
     }
 
     var needsAttention: Bool {
@@ -765,6 +768,12 @@ enum SubTaskStatus: String {
     case completed
     case cancelled
     case failed
+}
+
+enum SubTaskFailureSource: String {
+    case execution
+    case verification
+    case dependency
 }
 
 // MARK: - Verification Status

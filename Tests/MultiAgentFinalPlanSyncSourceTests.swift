@@ -50,4 +50,58 @@ final class MultiAgentFinalPlanSyncSourceTests: XCTestCase {
         XCTAssertLessThan(currentPlanRange.lowerBound, syncRange.lowerBound)
         XCTAssertLessThan(cancelRange.lowerBound, resultRange.lowerBound)
     }
+
+    func testFailedMultiAgentPlanKeepsPipelineFailureOnSourceStage() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/AgentEngine.swift"))
+        let syncRange = try XCTUnwrap(
+            source.range(of: "private func syncPipeline(with plan: TaskPlan)"),
+            "Pipeline synchronization should stay centralized."
+        )
+        let syncBodyRange = syncRange.lowerBound..<source.endIndex
+        let failedCaseRange = try XCTUnwrap(
+            source.range(of: "case .failed:\n            failPipeline(for: plan, builder: builder)", range: syncBodyRange),
+            "Failed Multi-Agent plans should use plan-aware failure routing instead of failing the active stage."
+        )
+        let helperRange = try XCTUnwrap(
+            source.range(of: "private func failPipeline(for plan: TaskPlan, builder: PipelineBuilder)"),
+            "Pipeline failure routing should inspect the final task plan."
+        )
+        let completeSynthesisRange = try XCTUnwrap(
+            source.range(of: "completeRunningSynthesisStageIfNeeded(builder: builder)", range: helperRange.lowerBound..<source.endIndex),
+            "If synthesis produced the final answer, the running synthesis stage should not be mislabeled as failed."
+        )
+        let executionSourceRange = try XCTUnwrap(
+            source.range(of: "subTask.failureSource == .execution", range: helperRange.lowerBound..<source.endIndex),
+            "Pipeline failure routing should use the preserved sub-task failure source for execution failures."
+        )
+        let dependencySourceRange = try XCTUnwrap(
+            source.range(of: "subTask.failureSource == .dependency", range: helperRange.lowerBound..<source.endIndex),
+            "Dependency-blocked tasks should also keep the pipeline focused on execution."
+        )
+        let verificationSourceRange = try XCTUnwrap(
+            source.range(of: "subTask.failureSource == .verification", range: helperRange.lowerBound..<source.endIndex),
+            "Pure verification failures should land on the verification stage instead of the execution stage."
+        )
+        let executionFailureRange = try XCTUnwrap(
+            source.range(of: "failPipelineStage(currentExecutionStageId, builder: builder, error: \"子任务执行失败\")", range: helperRange.lowerBound..<source.endIndex),
+            "Sub-task execution failures should land on the execution stage."
+        )
+        let verificationFailureRange = try XCTUnwrap(
+            source.range(of: "failPipelineStage(currentVerificationStageId, builder: builder, error: \"子任务验证未通过\")", range: helperRange.lowerBound..<source.endIndex),
+            "Verification failures should land on the verification stage."
+        )
+
+        XCTAssertLessThan(failedCaseRange.lowerBound, helperRange.lowerBound)
+        XCTAssertLessThan(helperRange.lowerBound, executionSourceRange.lowerBound)
+        XCTAssertLessThan(executionSourceRange.lowerBound, dependencySourceRange.lowerBound)
+        XCTAssertLessThan(dependencySourceRange.lowerBound, verificationSourceRange.lowerBound)
+        XCTAssertLessThan(helperRange.lowerBound, completeSynthesisRange.lowerBound)
+        XCTAssertLessThan(completeSynthesisRange.lowerBound, executionFailureRange.lowerBound)
+        XCTAssertLessThan(executionSourceRange.lowerBound, executionFailureRange.lowerBound)
+        XCTAssertLessThan(executionFailureRange.lowerBound, verificationFailureRange.lowerBound)
+        XCTAssertLessThan(verificationSourceRange.lowerBound, verificationFailureRange.lowerBound)
+    }
 }

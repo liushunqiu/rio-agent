@@ -2067,7 +2067,7 @@ class AgentEngine: ObservableObject {
         case .cancelled:
             cancelActivePipelineStage(builder: builder)
         case .failed:
-            failActivePipelineStage(builder: builder)
+            failPipeline(for: plan, builder: builder)
         }
     }
 
@@ -2188,6 +2188,52 @@ class AgentEngine: ObservableObject {
         }
 
         updatePipelineUI()
+    }
+
+    private func failPipeline(for plan: TaskPlan, builder: PipelineBuilder) {
+        let hasExecutionFailure = plan.subTasks.contains { subTask in
+            subTask.failureSource == .execution ||
+                subTask.failureSource == .dependency ||
+                (subTask.status == .failed && subTask.failureSource == nil)
+        }
+        let hasVerificationFailure = plan.subTasks.contains { subTask in
+            subTask.failureSource == .verification
+        }
+
+        if hasExecutionFailure {
+            completeRunningSynthesisStageIfNeeded(builder: builder)
+            if failPipelineStage(currentExecutionStageId, builder: builder, error: "子任务执行失败") {
+                updatePipelineUI()
+                return
+            }
+        }
+
+        if hasVerificationFailure {
+            completeRunningSynthesisStageIfNeeded(builder: builder)
+            if failPipelineStage(currentVerificationStageId, builder: builder, error: "子任务验证未通过") {
+                updatePipelineUI()
+                return
+            }
+        }
+
+        failActivePipelineStage(builder: builder)
+    }
+
+    private func completeRunningSynthesisStageIfNeeded(builder: PipelineBuilder) {
+        guard let stageId = currentSynthesisStageId,
+              builder.stageStatus(stageId) == .running else { return }
+        builder.completeStage(stageId)
+    }
+
+    @discardableResult
+    private func failPipelineStage(
+        _ stageId: UUID?,
+        builder: PipelineBuilder,
+        error: String
+    ) -> Bool {
+        guard let stageId else { return false }
+        builder.failStage(stageId, error: error)
+        return true
     }
 
     private func failActivePipelineStage() {
