@@ -298,7 +298,8 @@ struct NewChatPage: View {
         .padding(.horizontal, 24)
         .filePickerSheet(
             composer: composer,
-            workingDirectory: workingDirectory.wrappedValue
+            workingDirectory: workingDirectory.wrappedValue,
+            isEnabled: canEditContext
         ) {
             inputText = composer.text
         }
@@ -866,11 +867,12 @@ extension View {
     func filePickerSheet(
         composer: ComposerInputState,
         workingDirectory: String?,
+        isEnabled: Bool = true,
         onSelectionApplied: @escaping () -> Void
     ) -> some View {
         sheet(isPresented: Binding(
-            get: { composer.isShowingFilePicker },
-            set: { composer.isShowingFilePicker = $0 }
+            get: { composer.isShowingFilePicker && isEnabled && workingDirectory != nil },
+            set: { composer.isShowingFilePicker = $0 && isEnabled && workingDirectory != nil }
         )) {
             FilePickerView(workingDirectory: workingDirectory) { filePath in
                 composer.addFileReference(filePath)

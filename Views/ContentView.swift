@@ -1838,7 +1838,8 @@ struct InputArea: View {
         )
         .filePickerSheet(
             composer: composer,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            isEnabled: canEditContext
         ) {
             text = composer.text
         }

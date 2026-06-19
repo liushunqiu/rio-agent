@@ -88,4 +88,30 @@ final class InputAreaFileContextNoticeSourceTests: XCTestCase {
             "The main composer file count badge should sit back visually instead of reading like a primary action."
         )
     }
+
+    func testFilePickerSheetCannotOpenWhenContextEditingBecomesLocked() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let newChatSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/NewChatPage.swift"))
+
+        XCTAssertTrue(
+            contentSource.contains("workingDirectory: workingDirectory,\n            isEnabled: canEditContext"),
+            "The main composer should pass its context-edit lock into the shared file picker sheet."
+        )
+        XCTAssertTrue(
+            newChatSource.contains("workingDirectory: workingDirectory.wrappedValue,\n            isEnabled: canEditContext"),
+            "The landing composer should pass its context-edit lock into the shared file picker sheet."
+        )
+        XCTAssertTrue(
+            newChatSource.contains("isEnabled: Bool = true"),
+            "The shared file picker sheet helper should keep a default for simple call sites."
+        )
+        XCTAssertTrue(
+            newChatSource.contains("get: { composer.isShowingFilePicker && isEnabled && workingDirectory != nil }")
+                && newChatSource.contains("set: { composer.isShowingFilePicker = $0 && isEnabled && workingDirectory != nil }"),
+            "The sheet binding itself should reject stale picker presentation when the workspace disappears or context editing locks."
+        )
+    }
 }

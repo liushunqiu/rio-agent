@@ -67,6 +67,37 @@ final class ToolResultOutputBlockSourceTests: XCTestCase {
         )
     }
 
+    func testLongDiagnosticsCollapseWithoutHidingCopyOrExpandControls() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/EnhancedToolCallCard.swift"))
+
+        XCTAssertTrue(
+            source.contains("private static let successCollapsedLineLimit = 8")
+                && source.contains("private static let diagnosticCollapsedLineLimit = 12"),
+            "Tool results should give diagnostics more room than successful output before collapsing."
+        )
+        XCTAssertTrue(
+            source.contains("static func collapsedLineLimit(for result: ToolResult) -> Int")
+                && source.contains("case .error, .cancelled:\n            return diagnosticCollapsedLineLimit"),
+            "Error and cancellation diagnostics should use the diagnostic preview limit."
+        )
+        XCTAssertTrue(
+            source.contains("return ToolResultDisplay.collapsedLineLimit(for: result)"),
+            "The rendered output block should use the shared status-aware line limit."
+        )
+        XCTAssertFalse(
+            source.contains("if result.status == .error || isOutputExpanded"),
+            "Long error output should not bypass folding and overwhelm the transcript."
+        )
+        XCTAssertTrue(
+            source.contains(".help(isOutputExpanded ? \"收起长输出\" : \"展开完整输出\")")
+                && source.contains(".help(\"复制完整\\(ToolResultDisplay.label(for: result))\")"),
+            "Collapsed diagnostics should still be expandable and copyable."
+        )
+    }
+
     func testToolArgumentsUseSharedExpandableCopyableRows() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

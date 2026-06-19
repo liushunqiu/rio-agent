@@ -3,7 +3,8 @@ import AppKit
 
 enum ToolResultDisplay {
     static let emptyOutputPlaceholder = "工具执行完成，但没有返回输出。"
-    private static let collapsedOutputLineLimit = 8
+    private static let successCollapsedLineLimit = 8
+    private static let diagnosticCollapsedLineLimit = 12
 
     static func label(for result: ToolResult) -> String {
         switch result.status {
@@ -30,8 +31,17 @@ enum ToolResultDisplay {
 
     static func shouldCollapse(_ result: ToolResult) -> Bool {
         let displayText = text(for: result)
-        return displayText.components(separatedBy: .newlines).count > collapsedOutputLineLimit
+        return displayText.components(separatedBy: .newlines).count > collapsedLineLimit(for: result)
             || displayText.count > 1000
+    }
+
+    static func collapsedLineLimit(for result: ToolResult) -> Int {
+        switch result.status {
+        case .success:
+            return successCollapsedLineLimit
+        case .error, .cancelled:
+            return diagnosticCollapsedLineLimit
+        }
     }
 }
 
@@ -44,7 +54,6 @@ struct ToolResultOutputBlock: View {
     @State private var didCopy = false
     @State private var copyResetID: UUID?
 
-    private let collapsedOutputLineLimit = 8
     private var displayText: String { ToolResultDisplay.text(for: result) }
     private var shouldCollapse: Bool { ToolResultDisplay.shouldCollapse(result) }
 
@@ -102,10 +111,10 @@ struct ToolResultOutputBlock: View {
     }
 
     private var lineLimit: Int? {
-        if result.status == .error || isOutputExpanded {
+        if isOutputExpanded {
             return nil
         }
-        return collapsedOutputLineLimit
+        return ToolResultDisplay.collapsedLineLimit(for: result)
     }
 
     private var labelColor: Color {

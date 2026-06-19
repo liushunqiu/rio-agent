@@ -42,4 +42,19 @@ final class ToolResultDisplayTests: XCTestCase {
 
         XCTAssertTrue(ToolResultDisplay.shouldCollapse(result))
     }
+
+    func testLongDiagnosticResultShouldCollapseWithLargerPreview() {
+        let shortError = ToolResult.error(
+            toolCallId: "call-1",
+            error: (0..<10).map { "stack line \($0)" }.joined(separator: "\n")
+        )
+        let longError = ToolResult.error(
+            toolCallId: "call-2",
+            error: (0..<14).map { "stack line \($0)" }.joined(separator: "\n")
+        )
+
+        XCTAssertEqual(ToolResultDisplay.collapsedLineLimit(for: shortError), 12)
+        XCTAssertFalse(ToolResultDisplay.shouldCollapse(shortError))
+        XCTAssertTrue(ToolResultDisplay.shouldCollapse(longError))
+    }
 }
