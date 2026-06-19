@@ -686,6 +686,11 @@ struct RuntimeFocusCard: View {
         taskPlan?.subTasks.first(where: { $0.recoveryContext != nil && $0.needsAttention })
     }
 
+    private var prioritizedFailedSubTask: SubTask? {
+        taskPlan?.subTasks.first(where: { $0.status == .failed }) ??
+            taskPlan?.subTasks.first(where: { $0.verificationStatus == .needsRetry })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -724,9 +729,9 @@ struct RuntimeFocusCard: View {
             } else if let exceptionalStage {
                 RuntimeFocusRow(
                     icon: exceptionalStage.status == .failed ? "exclamationmark.triangle.fill" : "slash.circle.fill",
-                    title: exceptionalStage.status == .failed ? "异常阶段" : "已停止阶段",
-                    value: exceptionalStage.type.title,
-                    detail: stageSummary(for: exceptionalStage),
+                    title: exceptionalStage.status == .failed ? "失败来源" : "已停止阶段",
+                    value: exceptionalStage.status == .failed ? failureSourceLabel : exceptionalStage.type.title,
+                    detail: exceptionalStage.status == .failed ? failedStageDetail(for: exceptionalStage) : stageSummary(for: exceptionalStage),
                     tone: stageTone(for: exceptionalStage.status)
                 )
             } else if let singleAgentVerification {
@@ -892,7 +897,7 @@ struct RuntimeFocusCard: View {
         if let exceptionalStage {
             switch exceptionalStage.status {
             case .failed:
-                return "先修复失败阶段"
+                return failedStageNextActionTitle
             case .cancelled:
                 return "确认是否重新启动"
             default:
@@ -928,7 +933,7 @@ struct RuntimeFocusCard: View {
                 if let recoveryContext = prioritizedBlockedSubTask?.recoveryContext {
                     return recoveryContext.recoveryActionDetail
                 }
-                return "先阅读该阶段错误，再根据右下角错误横幅或设置入口修复模型、路由或 Worker 配置。"
+                return failedStageNextActionDetail
             case .cancelled:
                 return "如果停止是预期行为，可直接提交新任务；如果不是，恢复上一个任务文本后重新执行。"
             default:
@@ -958,6 +963,66 @@ struct RuntimeFocusCard: View {
             return Theme.statusSuccess
         }
         return Theme.statusInfo
+    }
+
+    private var failureSourceLabel: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "阶段失败"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "依赖阻塞"
+        case .verification?:
+            return "验证未通过"
+        case .execution?, .none:
+            return "执行失败"
+        }
+    }
+
+    private var failedStageNextActionTitle: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "查看失败阶段"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "处理依赖阻塞"
+        case .verification?:
+            return "修复验证未通过"
+        case .execution?, .none:
+            return "修复执行失败"
+        }
+    }
+
+    private func failedStageDetail(for stage: PipelineStage) -> String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return stageSummary(for: stage)
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "子任务“\(subTask.description)”受前置依赖阻塞，先处理上游失败或补足验证证据。"
+        case .verification?:
+            return "子任务“\(subTask.description)”验证未通过，先根据验证摘要补证或修订结果。"
+        case .execution?, .none:
+            return "子任务“\(subTask.description)”执行失败，优先查看失败原因和恢复提示。"
+        }
+    }
+
+    private var failedStageNextActionDetail: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "先展开失败阶段并阅读错误摘要；若提示指向模型、路由或 Worker 配置，再进入对应设置修复。"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "先处理上游失败或补足验证证据，再重新执行受阻子任务。"
+        case .verification?:
+            return "先根据验证摘要补证或修订结果，避免把未通过的子任务继续汇总。"
+        case .execution?, .none:
+            return "先阅读失败原因和验证摘要；如果有恢复提示，优先按提示修复模型、路由或 Worker 配置。"
+        }
     }
 
     private func pendingDecisionTitle(for decision: AgentEngine.PendingUserDecision) -> String {

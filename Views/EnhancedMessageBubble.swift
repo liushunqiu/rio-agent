@@ -436,6 +436,11 @@ private struct TranscriptRuntimeCard: View {
         taskPlan?.subTasks.first(where: { $0.recoveryContext != nil && $0.needsAttention })
     }
 
+    private var prioritizedFailedSubTask: SubTask? {
+        taskPlan?.subTasks.first(where: { $0.status == .failed }) ??
+            taskPlan?.subTasks.first(where: { $0.verificationStatus == .needsRetry })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -529,7 +534,7 @@ private struct TranscriptRuntimeCard: View {
             }
         }
         if let exceptionalStage {
-            return exceptionalStage.status == .failed ? "流程需要处理" : "流程已停止"
+            return exceptionalStage.status == .failed ? failureHeadline : "流程已停止"
         }
         if let currentStage {
             return currentStage.type.title
@@ -617,7 +622,7 @@ private struct TranscriptRuntimeCard: View {
             return "交付摘要"
         }
         if let exceptionalStage {
-            return exceptionalStage.status == .failed ? "异常焦点" : "停止原因"
+            return exceptionalStage.status == .failed ? failureSourceLabel : "停止原因"
         }
         return "当前焦点"
     }
@@ -637,7 +642,7 @@ private struct TranscriptRuntimeCard: View {
             }
         }
         if let exceptionalStage {
-            return exceptionalStage.status == .failed ? "bolt.horizontal.circle.fill" : "pause.circle.fill"
+            return exceptionalStage.status == .failed ? failureSourceIcon : "pause.circle.fill"
         }
         return currentStage?.type.icon ?? "point.3.connected.trianglepath.dotted"
     }
@@ -675,7 +680,7 @@ private struct TranscriptRuntimeCard: View {
             return singleAgentVerification.summary
         }
         if let exceptionalStage {
-            return stageSummary(for: exceptionalStage)
+            return exceptionalStage.status == .failed ? failedStageFocusText(for: exceptionalStage) : stageSummary(for: exceptionalStage)
         }
         if let currentStage {
             return stageSummary(for: currentStage)
@@ -711,7 +716,7 @@ private struct TranscriptRuntimeCard: View {
                 if let recoveryContext = prioritizedBlockedSubTask?.recoveryContext {
                     return recoveryContext.recoveryActionDetail
                 }
-                return "先阅读异常焦点和错误横幅，再修复对应的模型、路由或 Worker 配置。"
+                return failedStageNextActionText
             case .cancelled:
                 return "如果停止不是预期行为，恢复上一条任务后重新执行；否则直接开始新任务。"
             default:
@@ -728,6 +733,81 @@ private struct TranscriptRuntimeCard: View {
         }
 
         return "当前没有活动流程，提交新任务即可开始。"
+    }
+
+    private var failureSourceLabel: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "阶段失败"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "依赖阻塞"
+        case .verification?:
+            return "验证未通过"
+        case .execution?, .none:
+            return "执行失败"
+        }
+    }
+
+    private var failureHeadline: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "失败阶段待查看"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "依赖阻塞待处理"
+        case .verification?:
+            return "验证未通过待修订"
+        case .execution?, .none:
+            return "执行失败待修复"
+        }
+    }
+
+    private var failureSourceIcon: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "bolt.horizontal.circle.fill"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "link.badge.plus"
+        case .verification?:
+            return "checkmark.shield.fill"
+        case .execution?, .none:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func failedStageFocusText(for stage: PipelineStage) -> String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return stageSummary(for: stage)
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "子任务“\(subTask.description)”受前置依赖阻塞，先处理上游失败或补足验证证据。"
+        case .verification?:
+            return "子任务“\(subTask.description)”验证未通过，先根据验证摘要补证或修订结果。"
+        case .execution?, .none:
+            return "子任务“\(subTask.description)”执行失败，优先查看失败原因和恢复提示。"
+        }
+    }
+
+    private var failedStageNextActionText: String {
+        guard let subTask = prioritizedFailedSubTask else {
+            return "先查看失败阶段和错误摘要；若提示指向模型、路由或 Worker 配置，再进入对应设置修复。"
+        }
+
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "先处理上游失败或补足验证证据，再重新执行受阻子任务。"
+        case .verification?:
+            return "先根据验证摘要补证或修订结果，避免把未通过的子任务继续汇总。"
+        case .execution?, .none:
+            return "先阅读失败原因和验证摘要；如果有恢复提示，优先按提示修复模型、路由或 Worker 配置。"
+        }
     }
 
     private var nextActionTone: Color {

@@ -49,7 +49,7 @@ struct ExecutionPipelineView: View {
             if let exceptionalStage {
                 PipelineInsightBanner(
                     icon: exceptionalStage.status == .failed ? "exclamationmark.triangle.fill" : "slash.circle.fill",
-                    title: exceptionalStage.status == .failed ? "异常焦点" : "停止焦点",
+                    title: exceptionalStage.status == .failed ? "失败阶段" : "已停止阶段",
                     detail: exceptionalStageSummary,
                     tone: exceptionalStage.status == .failed ? Theme.statusError : Theme.textTertiary
                 )
@@ -114,6 +114,7 @@ struct ExecutionPipelineView: View {
         if let latestExceptionalStage = pipeline.stages.last(where: {
             ($0.status == .failed || $0.status == .cancelled) && $0.hasExpandableContent
         }) {
+            isCollapsed = false
             expandedStages.insert(latestExceptionalStage.id)
         }
     }
@@ -178,8 +179,8 @@ struct ExecutionPipelineView: View {
     private var exceptionalStageSummary: String {
         guard let exceptionalStage else { return "" }
         let action = exceptionalStage.status == .failed
-            ? "建议先修复该阶段，再继续当前流程。"
-            : "如需继续，恢复任务文本后重新发起执行。"
+            ? "先查看该阶段详情并修复后，再继续当前流程。"
+            : "确认任务仍需继续后，再从原任务恢复执行。"
         return "\(exceptionalStage.type.title) · \(currentStageSummary(for: exceptionalStage)) \(action)"
     }
 

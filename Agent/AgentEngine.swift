@@ -1068,8 +1068,8 @@ class AgentEngine: ObservableObject {
             currentTaskPlan = finalPlan
             syncPipeline(with: finalPlan)
             if finalPlan.status == .failed {
-                let failedSubTasks = finalPlan.subTasks.filter { $0.status == .failed }
-                errorRecoveryContext = engine.errorRecoveryContext ?? failedSubTasks
+                let attentionSubTasks = finalPlan.subTasks.filter(\.needsAttention)
+                errorRecoveryContext = engine.errorRecoveryContext ?? attentionSubTasks
                     .compactMap(\.recoveryContext)
                     .first
             }

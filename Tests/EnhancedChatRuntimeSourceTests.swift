@@ -100,6 +100,62 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
             "Transcript recovery guidance should prioritize blocked subtasks that already expose structured recovery context."
         )
         XCTAssertTrue(
+            source.contains("private var prioritizedFailedSubTask: SubTask?"),
+            "Transcript failure guidance should identify the concrete failed subtask before choosing focus copy."
+        )
+        XCTAssertTrue(
+            source.contains("subTask.resolvedFailureSource"),
+            "Transcript failure guidance should use the model-level resolved source so retry-required verification gaps are not mislabeled."
+        )
+        XCTAssertTrue(
+            source.contains("return \"依赖阻塞待处理\""),
+            "Dependency-blocked transcript headlines should describe the actual blocker instead of a generic failure."
+        )
+        XCTAssertTrue(
+            source.contains("return \"验证未通过待修订\""),
+            "Verification-failed transcript headlines should point users toward revision."
+        )
+        XCTAssertTrue(
+            source.contains("return \"执行失败待修复\""),
+            "Execution-failed transcript headlines should stay distinct from dependency and verification failures."
+        )
+        XCTAssertTrue(
+            source.contains("return \"失败阶段待查看\""),
+            "When the transcript only knows a pipeline stage failed, it should ask the user to inspect that stage instead of showing a vague process-level warning."
+        )
+        XCTAssertTrue(
+            source.contains("先查看失败阶段和错误摘要"),
+            "Generic failed-stage transcript guidance should point to the visible diagnostics before suggesting configuration changes."
+        )
+        XCTAssertTrue(
+            source.contains("return exceptionalStage.status == .failed ? failureSourceLabel : \"停止原因\""),
+            "The transcript focus title should use dependency, verification, or execution source labels for failed runs."
+        )
+        XCTAssertTrue(
+            source.contains("return exceptionalStage.status == .failed ? failureSourceIcon : \"pause.circle.fill\""),
+            "The transcript focus icon should also reflect the failure source."
+        )
+        XCTAssertTrue(
+            source.contains("return exceptionalStage.status == .failed ? failedStageFocusText(for: exceptionalStage) : stageSummary(for: exceptionalStage)"),
+            "Failed transcript focus text should explain the source-specific blocked subtask instead of echoing only stage counters."
+        )
+        XCTAssertTrue(
+            source.contains("return failedStageNextActionText"),
+            "Failed transcript next actions should use source-specific recovery guidance."
+        )
+        XCTAssertTrue(
+            source.contains("return \"先处理上游失败或补足验证证据，再重新执行受阻子任务。\""),
+            "Dependency-blocked transcript guidance should route users to upstream repair before retrying."
+        )
+        XCTAssertTrue(
+            source.contains("return \"先根据验证摘要补证或修订结果，避免把未通过的子任务继续汇总。\""),
+            "Verification-failed transcript guidance should keep unverified work out of synthesis."
+        )
+        XCTAssertTrue(
+            source.contains("return \"先阅读失败原因和验证摘要；如果有恢复提示，优先按提示修复模型、路由或 Worker 配置。\""),
+            "Execution-failed transcript guidance should preserve concrete recovery routing."
+        )
+        XCTAssertTrue(
             source.contains("return recoveryContext.recoveryActionDetail"),
             "Transcript recovery guidance should route users to a concrete settings destination instead of generic repair advice."
         )
@@ -112,8 +168,8 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
             "The transcript runtime card should still surface the generic current-focus label while the pipeline is running."
         )
         XCTAssertTrue(
-            source.contains("return exceptionalStage.status == .failed ? \"异常焦点\" : \"停止原因\""),
-            "The transcript runtime card should distinguish between failures and cancelled flow."
+            source.contains("return exceptionalStage.status == .failed ? failureSourceLabel : \"停止原因\""),
+            "The transcript runtime card should distinguish between source-labeled failures and cancelled flow."
         )
         XCTAssertLessThan(
             try XCTUnwrap(source.range(of: "TranscriptRuntimeCard(")?.lowerBound),

@@ -292,8 +292,12 @@ final class AgentEngineRegressionTests: XCTestCase {
             "Execution model failures should publish an execution-model recovery context."
         )
         XCTAssertTrue(
-            source.contains("errorRecoveryContext = engine.errorRecoveryContext ?? failedSubTasks"),
-            "AgentEngine should prefer the Multi-Agent engine's structured failure context before falling back to sub-task recovery state."
+            source.contains("let attentionSubTasks = finalPlan.subTasks.filter(\\.needsAttention)"),
+            "AgentEngine should include retry-required sub-tasks when deriving fallback recovery state for a failed Multi-Agent plan."
+        )
+        XCTAssertTrue(
+            source.contains("errorRecoveryContext = engine.errorRecoveryContext ?? attentionSubTasks"),
+            "AgentEngine should prefer the Multi-Agent engine's structured failure context before falling back to attention-worthy sub-task recovery state."
         )
         XCTAssertTrue(
             taskModelSource.contains("let recoveryContext: ErrorRecoveryContext?"),

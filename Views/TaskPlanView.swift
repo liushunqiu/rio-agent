@@ -47,13 +47,13 @@ struct TaskPlanView: View {
     }
 
     private var nextAttentionSummary: String? {
-        if let failedSubTask = plan.subTasks.first(where: { $0.status == .failed }) {
-            return "先处理失败子任务“\(failedSubTask.description)”，优先查看失败原因和恢复提示。"
-        }
-
         if let blockedSubTask = prioritizedBlockedSubTask,
            let recoveryContext = blockedSubTask.recoveryContext {
             return "子任务“\(blockedSubTask.description)”当前受阻，先\(recoveryContext.recoveryActionDetail)"
+        }
+
+        if let failedSubTask = plan.subTasks.first(where: { $0.status == .failed }) {
+            return failureActionSummary(for: failedSubTask)
         }
 
         if let retrySubTask = plan.subTasks.first(where: { $0.verificationStatus == .needsRetry }) {
@@ -69,6 +69,17 @@ struct TaskPlanView: View {
         }
 
         return nil
+    }
+
+    private func failureActionSummary(for subTask: SubTask) -> String {
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "子任务“\(subTask.description)”受前置依赖阻塞，先处理上游失败或补足验证证据。"
+        case .verification?:
+            return "子任务“\(subTask.description)”验证未通过，先根据验证摘要补证或修订结果。"
+        case .execution?, .none:
+            return "先处理执行失败子任务“\(subTask.description)”，优先查看失败原因和恢复提示。"
+        }
     }
 
     private var nextAttentionTone: Color {
@@ -722,7 +733,12 @@ struct DarkSubTaskRow: View {
 
     private var resultLabel: String {
         switch subTask.status {
-        case .failed: return "失败原因"
+        case .failed:
+            switch subTask.resolvedFailureSource {
+            case .dependency?: return "阻塞原因"
+            case .verification?: return "验证问题"
+            case .execution?, .none: return "失败原因"
+            }
         case .cancelled: return "停止原因"
         case .completed: return "结果摘要"
         case .running: return "执行输出"
@@ -732,7 +748,12 @@ struct DarkSubTaskRow: View {
 
     private var resultIcon: String {
         switch subTask.status {
-        case .failed: return "exclamationmark.triangle.fill"
+        case .failed:
+            switch subTask.resolvedFailureSource {
+            case .dependency?: return "link.badge.plus"
+            case .verification?: return "checkmark.shield.fill"
+            case .execution?, .none: return "exclamationmark.triangle.fill"
+            }
         case .cancelled: return "slash.circle.fill"
         case .completed: return "doc.text.fill"
         case .running: return "arrow.triangle.2.circlepath"
@@ -769,8 +790,18 @@ struct DarkSubTaskRow: View {
         case .multiAgentWorkerModel?:
             return ErrorRecoveryContext.multiAgentWorkerModel.recoveryActionDetail
         case .none:
-            if subTask.status == .failed || subTask.verificationStatus == .needsRetry {
-                return "该子任务需要人工关注，建议先查看失败原因和验证摘要。"
+            if subTask.status == .failed {
+                switch subTask.resolvedFailureSource {
+                case .dependency?:
+                    return "该子任务被前置任务阻塞，建议先处理依赖失败或补足上游验证证据。"
+                case .verification?:
+                    return "该子任务输出未通过验证，建议先按验证摘要补证或修订结果。"
+                case .execution?, .none:
+                    return "该子任务执行失败，建议先查看失败原因和验证摘要。"
+                }
+            }
+            if subTask.verificationStatus == .needsRetry {
+                return "该子任务需要重新验证，建议先查看验证摘要并补充证据。"
             }
             if subTask.verificationStatus == .unverified {
                 return "该子任务还缺少足够的完成证据，建议补充读回、测试或命令验证。"

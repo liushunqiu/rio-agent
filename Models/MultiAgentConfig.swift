@@ -760,6 +760,19 @@ struct SubTask: Identifiable {
 
         return recoveryContext != nil
     }
+
+    var resolvedFailureSource: SubTaskFailureSource? {
+        if let failureSource {
+            return failureSource
+        }
+        if verificationStatus == .needsRetry {
+            return .verification
+        }
+        if status == .failed {
+            return .execution
+        }
+        return nil
+    }
 }
 
 enum SubTaskStatus: String {

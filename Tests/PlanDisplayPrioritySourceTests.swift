@@ -37,16 +37,20 @@ final class PlanDisplayPrioritySourceTests: XCTestCase {
             "Top-bar chrome should use an explicit Multi-Agent summary helper instead of showing only completed count."
         )
         XCTAssertTrue(
-            contentView.contains("let failed = plan.subTasks.filter { $0.status == .failed }.count"),
-            "Multi-Agent summary should count failed subtasks."
+            contentView.contains("let failed = plan.subTasks.filter { $0.resolvedFailureSource != nil }.count"),
+            "Multi-Agent summary should count failed or retry-required subtasks through the resolved failure source."
         )
         XCTAssertTrue(
             contentView.contains("let cancelled = plan.subTasks.filter { $0.status == .cancelled }.count"),
             "Multi-Agent summary should count cancelled subtasks."
         )
         XCTAssertTrue(
-            contentView.contains("parts.append(\"失败 \\(failed)\")"),
-            "Failed subtasks should be visible in the compact summary."
+            contentView.contains("let label = failureSourceLabel(for: failedSubTask)"),
+            "Failed subtasks should be summarized by source instead of collapsing every failure into generic copy."
+        )
+        XCTAssertTrue(
+            contentView.contains("parts.append(\"\\(label) \\(failed)\")"),
+            "Failed subtask counts should remain visible in the compact source-aware summary."
         )
         XCTAssertTrue(
             contentView.contains("parts.append(\"停止 \\(cancelled)\")"),

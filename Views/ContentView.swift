@@ -1223,11 +1223,12 @@ struct TopBar: View {
 
     private func multiAgentSummary(for plan: TaskPlan) -> String {
         let completed = plan.subTasks.filter { $0.status == .completed }.count
-        let failed = plan.subTasks.filter { $0.status == .failed }.count
+        let failed = plan.subTasks.filter { $0.resolvedFailureSource != nil }.count
         let cancelled = plan.subTasks.filter { $0.status == .cancelled }.count
         var parts = ["\(completed)/\(plan.subTasks.count) 子任务"]
-        if failed > 0 {
-            parts.append("失败 \(failed)")
+        if let failedSubTask = prioritizedFailureSubTask(in: plan) {
+            let label = failureSourceLabel(for: failedSubTask)
+            parts.append("\(label) \(failed)")
         }
         if cancelled > 0 {
             parts.append("停止 \(cancelled)")
@@ -1254,6 +1255,14 @@ struct TopBar: View {
         }
         if let singleAgentVerification {
             return verificationTone(for: singleAgentVerification.status)
+        }
+        if let currentTaskPlan {
+            if prioritizedFailureSubTask(in: currentTaskPlan) != nil {
+                return Theme.statusError
+            }
+            if currentTaskPlan.subTasks.contains(where: { $0.status == .cancelled }) {
+                return Theme.textTertiary
+            }
         }
 
         switch pipeline?.overallStatus {
@@ -1291,6 +1300,9 @@ struct TopBar: View {
         }
 
         if let currentTaskPlan {
+            if let failedSubTask = prioritizedFailureSubTask(in: currentTaskPlan) {
+                return failureSourceLabel(for: failedSubTask)
+            }
             let actionable = currentTaskPlan.subTasks.filter(\.needsAttention).count
             if actionable > 0 {
                 return "待处理 \(actionable) 项"
@@ -1337,6 +1349,13 @@ struct TopBar: View {
         if let singleAgentVerification {
             return verificationFocusIcon(for: singleAgentVerification.status)
         }
+        if pendingUserDecision != nil {
+            return "questionmark.circle"
+        }
+        if let currentTaskPlan,
+           let failedSubTask = prioritizedFailureSubTask(in: currentTaskPlan) {
+            return failureSourceIcon(for: failedSubTask)
+        }
 
         if let pipeline {
             if pipeline.stages.contains(where: { $0.status == .failed }) {
@@ -1346,15 +1365,19 @@ struct TopBar: View {
                 return "slash.circle"
             }
         }
-        if pendingUserDecision != nil {
-            return "questionmark.circle"
-        }
         return "scope"
     }
 
     private var focusColor: Color {
         if let singleAgentVerification {
             return verificationTone(for: singleAgentVerification.status)
+        }
+        if pendingUserDecision != nil {
+            return Theme.statusWarning
+        }
+        if let currentTaskPlan,
+           prioritizedFailureSubTask(in: currentTaskPlan) != nil {
+            return Theme.statusError
         }
 
         if let pipeline {
@@ -1365,10 +1388,34 @@ struct TopBar: View {
                 return Theme.textTertiary
             }
         }
-        if pendingUserDecision != nil {
-            return Theme.statusWarning
-        }
         return Theme.accentSecondary
+    }
+
+    private func prioritizedFailureSubTask(in plan: TaskPlan) -> SubTask? {
+        plan.subTasks.first(where: { $0.status == .failed }) ??
+            plan.subTasks.first(where: { $0.verificationStatus == .needsRetry })
+    }
+
+    private func failureSourceLabel(for subTask: SubTask) -> String {
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "依赖阻塞"
+        case .verification?:
+            return "验证未通过"
+        case .execution?, .none:
+            return "执行失败"
+        }
+    }
+
+    private func failureSourceIcon(for subTask: SubTask) -> String {
+        switch subTask.resolvedFailureSource {
+        case .dependency?:
+            return "link.badge.plus"
+        case .verification?:
+            return "checkmark.shield.fill"
+        case .execution?, .none:
+            return "exclamationmark.triangle"
+        }
     }
 
     private func verificationTone(for status: VerificationStatus) -> Color {

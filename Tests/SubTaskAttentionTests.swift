@@ -31,4 +31,38 @@ final class SubTaskAttentionTests: XCTestCase {
             ).needsAttention
         )
     }
+
+    func testResolvedFailureSourceFallsBackFromVerificationState() {
+        XCTAssertEqual(
+            SubTask(
+                description: "retry",
+                status: .completed,
+                verificationStatus: .needsRetry
+            ).resolvedFailureSource,
+            .verification
+        )
+        XCTAssertEqual(
+            SubTask(
+                description: "failed",
+                status: .failed
+            ).resolvedFailureSource,
+            .execution
+        )
+        XCTAssertEqual(
+            SubTask(
+                description: "dependency",
+                status: .failed,
+                verificationStatus: .needsRetry,
+                failureSource: .dependency
+            ).resolvedFailureSource,
+            .dependency
+        )
+        XCTAssertNil(
+            SubTask(
+                description: "ok",
+                status: .completed,
+                verificationStatus: .verified
+            ).resolvedFailureSource
+        )
+    }
 }

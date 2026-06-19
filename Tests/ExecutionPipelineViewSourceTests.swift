@@ -48,8 +48,12 @@ final class ExecutionPipelineViewSourceTests: XCTestCase {
             "The pipeline view should render a compact top-level insight banner for the current or exceptional stage."
         )
         XCTAssertTrue(
-            source.contains("title: exceptionalStage.status == .failed ? \"异常焦点\" : \"停止焦点\""),
-            "The pipeline banner should distinguish between failures and user-driven cancellation without sounding like a debug console."
+            source.contains("title: exceptionalStage.status == .failed ? \"失败阶段\" : \"已停止阶段\""),
+            "The pipeline banner should distinguish between failures and user-driven cancellation with action-oriented labels."
+        )
+        XCTAssertTrue(
+            source.contains("isCollapsed = false"),
+            "Failed or cancelled stages with diagnostics should reveal the timeline automatically instead of hiding the useful detail behind another click."
         )
         XCTAssertTrue(
             source.contains("title: \"进行中\""),

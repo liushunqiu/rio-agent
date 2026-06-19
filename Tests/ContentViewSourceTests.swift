@@ -138,6 +138,47 @@ final class ContentViewSourceTests: XCTestCase {
             "Top-bar focus summary should use the shared SubTask attention state so blocked and cancelled subtasks are counted consistently."
         )
         XCTAssertTrue(
+            source.contains("private func prioritizedFailureSubTask(in plan: TaskPlan) -> SubTask?"),
+            "Top-bar Multi-Agent summaries should identify the concrete failed or retry-required subtask before choosing focus copy."
+        )
+        XCTAssertTrue(
+            source.contains("return failureSourceLabel(for: failedSubTask)"),
+            "Top-bar focus summaries should show dependency, verification, or execution source labels before falling back to a generic attention count."
+        )
+        XCTAssertTrue(
+            source.contains("subTask.resolvedFailureSource"),
+            "Top-bar failure labels and icons should use the model-level resolved source so retry-required verification gaps are not mislabeled."
+        )
+        XCTAssertTrue(
+            source.contains("let failed = plan.subTasks.filter { $0.resolvedFailureSource != nil }.count"),
+            "Top-bar source-aware failure counts should include retry-required verification failures even when legacy sub-task status is still completed."
+        )
+        XCTAssertTrue(
+            source.contains("parts.append(\"\\(label) \\(failed)\")"),
+            "Top-bar execution summaries should keep failure counts while replacing generic failure copy with source-aware labels."
+        )
+        XCTAssertTrue(
+            source.contains("return \"依赖阻塞\""),
+            "Dependency-blocked Multi-Agent failures should be visible in the top bar."
+        )
+        XCTAssertTrue(
+            source.contains("return \"验证未通过\""),
+            "Verification failures should be visible in the top bar."
+        )
+        XCTAssertTrue(
+            source.contains("return \"执行失败\""),
+            "Execution failures should remain distinct from dependency and verification failures in the top bar."
+        )
+        XCTAssertTrue(
+            source.contains("return failureSourceIcon(for: failedSubTask)"),
+            "Top-bar focus icons should follow the concrete Multi-Agent failure source instead of always showing a generic warning."
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: ".background(focusColor.opacity(0.08))").count - 1,
+            1,
+            "The focus badge should apply its background once; duplicate modifiers make the top bar visually heavier without adding information."
+        )
+        XCTAssertTrue(
             source.contains("if currentTaskPlan.status == .completed {\n                return nil\n            }"),
             "Completed healthy Multi-Agent runs should drop the extra top-bar summary instead of continuing to look busy after delivery."
         )

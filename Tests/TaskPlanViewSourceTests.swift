@@ -8,8 +8,10 @@ final class TaskPlanViewSourceTests: XCTestCase {
         let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/TaskPlanView.swift"))
 
         XCTAssertTrue(
-            source.contains("case .failed: return \"失败原因\""),
-            "Failed Multi-Agent sub-tasks should show their result as a visible failure reason, not only as hover text."
+            source.contains("case .dependency?: return \"阻塞原因\"")
+                && source.contains("case .verification?: return \"验证问题\"")
+                && source.contains("case .execution?, .none: return \"失败原因\""),
+            "Failed Multi-Agent sub-tasks should label dependency, verification, and execution failures by their real source."
         )
         XCTAssertTrue(
             source.contains("case .cancelled: return \"停止原因\""),
@@ -52,8 +54,16 @@ final class TaskPlanViewSourceTests: XCTestCase {
             "The task plan should surface an action-first summary banner that can adapt to failures, blocked work, and verification follow-ups."
         )
         XCTAssertTrue(
-            source.contains("return \"先处理失败子任务"),
-            "Failed sub-tasks should become the first recommended recovery action."
+            source.contains("return \"先处理执行失败子任务"),
+            "Execution-failed sub-tasks should become a clear recovery action."
+        )
+        XCTAssertTrue(
+            source.contains("受前置依赖阻塞，先处理上游失败或补足验证证据"),
+            "Dependency-blocked sub-tasks should explain the upstream recovery path instead of reading like a generic failure."
+        )
+        XCTAssertTrue(
+            source.contains("验证未通过，先根据验证摘要补证或修订结果"),
+            "Verifier failures should point users toward evidence or revision work."
         )
         XCTAssertTrue(
             source.contains("还缺少完成证据，建议优先补充读回、测试或命令验证"),
@@ -70,6 +80,10 @@ final class TaskPlanViewSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("recoveryActionDetail"),
             "Structured recovery context should point to a concrete settings destination instead of only describing the failure abstractly."
+        )
+        XCTAssertTrue(
+            source.contains("subTask.resolvedFailureSource"),
+            "Task-plan row copy should use the resolved sub-task failure source so retry-required verification gaps are not mislabeled as execution failures."
         )
         XCTAssertTrue(
             source.contains("case .unverified: return Theme.statusWarning"),

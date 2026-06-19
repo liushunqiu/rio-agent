@@ -104,16 +104,80 @@ final class ContextPanelSourceTests: XCTestCase {
             "The runtime summary should surface a concrete next action for the user."
         )
         XCTAssertTrue(
-            source.contains("title: exceptionalStage.status == .failed ? \"异常阶段\" : \"已停止阶段\""),
-            "The runtime summary should call out the most recent exceptional stage explicitly."
+            source.contains("title: exceptionalStage.status == .failed ? \"失败来源\" : \"已停止阶段\""),
+            "The runtime summary should call out the failure source instead of hiding every failure behind a generic exceptional-stage label."
         )
         XCTAssertTrue(
             source.contains("taskPlan?.subTasks.first(where: { $0.recoveryContext != nil && $0.needsAttention })"),
             "Runtime recovery guidance should prioritize structured blocked subtasks when choosing the next action."
         )
         XCTAssertTrue(
+            source.contains("private var prioritizedFailedSubTask: SubTask?"),
+            "Runtime failure guidance should pick a concrete failed subtask before deciding what action to recommend."
+        )
+        XCTAssertTrue(
+            source.contains("return \"查看失败阶段\""),
+            "When no concrete failed subtask is available, the runtime panel should ask the user to inspect the failed stage instead of pretending it knows the exact fix."
+        )
+        XCTAssertTrue(
+            source.contains("先展开失败阶段并阅读错误摘要"),
+            "Generic failed-stage recovery guidance should route the user to the visible stage diagnostics first."
+        )
+        XCTAssertTrue(
+            source.contains("subTask.resolvedFailureSource"),
+            "Runtime failure guidance should use the model-level resolved source so retry-required verification gaps are not mislabeled."
+        )
+        XCTAssertTrue(
+            source.contains("return \"依赖阻塞\""),
+            "Dependency-blocked failures should be visible as dependency issues in the runtime focus row."
+        )
+        XCTAssertTrue(
+            source.contains("return \"验证未通过\""),
+            "Verification failures should be visible as verification issues in the runtime focus row."
+        )
+        XCTAssertTrue(
+            source.contains("return \"执行失败\""),
+            "Execution failures should remain distinct from dependency and verification failures in runtime guidance."
+        )
+        XCTAssertTrue(
+            source.contains("return \"处理依赖阻塞\""),
+            "Dependency-blocked failures should recommend clearing upstream dependency state first."
+        )
+        XCTAssertTrue(
+            source.contains("return \"修复验证未通过\""),
+            "Verification failures should recommend fixing verification evidence instead of generic model repair."
+        )
+        XCTAssertTrue(
+            source.contains("return \"修复执行失败\""),
+            "Execution failures should recommend fixing the failed execution path."
+        )
+        XCTAssertTrue(
+            source.contains("受前置依赖阻塞，先处理上游失败或补足验证证据"),
+            "The runtime failure detail should explain how dependency failures unblock downstream work."
+        )
+        XCTAssertTrue(
+            source.contains("验证未通过，先根据验证摘要补证或修订结果"),
+            "The runtime failure detail should explain how to recover from verification failures."
+        )
+        XCTAssertTrue(
+            source.contains("执行失败，优先查看失败原因和恢复提示"),
+            "The runtime failure detail should keep execution recovery focused on the failed subtask."
+        )
+        XCTAssertTrue(
             source.contains("return recoveryContext.recoveryActionDetail"),
             "Context-panel recovery guidance should route users to a concrete settings destination for blocked subtasks."
+        )
+        XCTAssertTrue(
+            source.contains("return \"先处理上游失败或补足验证证据，再重新执行受阻子任务。\""),
+            "Dependency-blocked next actions should point users at upstream recovery before retrying the blocked subtask."
+        )
+        XCTAssertTrue(
+            source.contains("return \"先根据验证摘要补证或修订结果，避免把未通过的子任务继续汇总。\""),
+            "Verification next actions should prevent unverified work from flowing into synthesis."
+        )
+        XCTAssertTrue(
+            source.contains("return \"先阅读失败原因和验证摘要；如果有恢复提示，优先按提示修复模型、路由或 Worker 配置。\""),
+            "Execution next actions should preserve concrete recovery-context routing while remaining useful without it."
         )
         XCTAssertTrue(
             source.contains("if pendingUserDecision != nil {\n            return \"等待确认\""),
