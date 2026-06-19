@@ -160,6 +160,9 @@ struct MessageSourceHeader: View {
         if message.role == .user {
             return "用户"
         }
+        if message.isFinalAnswer {
+            return "最终答复"
+        }
         return message.source?.agentName?.isEmpty == false ? message.source!.agentName! : fallbackTitle
     }
 
@@ -174,6 +177,9 @@ struct MessageSourceHeader: View {
     }
 
     private var fallbackTitle: String {
+        if message.isFinalAnswer {
+            return "最终答复"
+        }
         switch message.role {
         case .user: return "用户"
         case .assistant: return "助手"
@@ -182,6 +188,9 @@ struct MessageSourceHeader: View {
     }
 
     private var icon: String {
+        if message.isFinalAnswer {
+            return "checkmark.seal.fill"
+        }
         switch message.role {
         case .user: return "person.fill"
         case .assistant: return "sparkles"
@@ -190,6 +199,9 @@ struct MessageSourceHeader: View {
     }
 
     private var color: Color {
+        if message.isFinalAnswer {
+            return Theme.statusSuccess
+        }
         switch message.role {
         case .user: return Theme.accentPrimary
         case .assistant: return Theme.statusInfo
@@ -238,6 +250,10 @@ struct EnhancedChatView: View {
         (visibleMessages.last?.content.count ?? 0) + (visibleMessages.last?.thinkingContent?.count ?? 0)
     }
 
+    private var hasVisibleFinalAnswer: Bool {
+        visibleMessages.contains(where: \.isFinalAnswer)
+    }
+
     /// 是否接近底部（距离底部 < 120pt 视为接近）
     private var isNearBottom: Bool {
         bottomOffset < 120
@@ -248,7 +264,7 @@ struct EnhancedChatView: View {
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(spacing: 6, pinnedViews: []) {
-                        if let currentPipeline {
+                        if currentPipeline != nil || pendingUserDecision != nil || singleAgentVerification != nil {
                             TranscriptRuntimeCard(
                                 pipeline: currentPipeline,
                                 singleAgentVerification: singleAgentVerification,
@@ -270,12 +286,13 @@ struct EnhancedChatView: View {
                                 )
                                 .id(message.id)
 
-                            case .activity(let messages):
+                            case .activity(let messages, let isSupportingDetail):
                                 AgentActivityGroupView(
                                     messages: messages,
                                     isProcessing: isProcessing,
                                     currentToolCallId: currentToolCallId,
-                                    toolResultsById: toolResultsById
+                                    toolResultsById: toolResultsById,
+                                    isSupportingDetail: isSupportingDetail
                                 )
                                 .id(messages.first?.id)
                             }
@@ -283,7 +300,10 @@ struct EnhancedChatView: View {
 
                         // TaskPlan 面板（Multi-Agent 模式）
                         if let taskPlan = currentTaskPlan {
-                            TaskPlanView(plan: taskPlan)
+                            TaskPlanView(
+                                plan: taskPlan,
+                                prefersCondensedCompletedState: hasVisibleFinalAnswer
+                            )
                                 .padding(.horizontal, 28)
                                 .padding(.vertical, 8)
                         }
@@ -391,21 +411,21 @@ struct EnhancedChatView: View {
 }
 
 private struct TranscriptRuntimeCard: View {
-    let pipeline: ExecutionPipeline
+    let pipeline: ExecutionPipeline?
     let singleAgentVerification: VerifierService.VerificationOutcome?
     let taskPlan: TaskPlan?
     let pendingUserDecision: AgentEngine.PendingUserDecision?
 
     private var exceptionalStage: PipelineStage? {
-        pipeline.stages.last(where: { $0.status == .failed || $0.status == .cancelled })
+        pipeline?.stages.last(where: { $0.status == .failed || $0.status == .cancelled })
     }
 
     private var currentStage: PipelineStage? {
-        pipeline.currentStage
+        pipeline?.currentStage
     }
 
     private var completedStageCount: Int {
-        pipeline.stages.filter { $0.status == .completed || $0.status == .skipped }.count
+        pipeline?.stages.filter { $0.status == .completed || $0.status == .skipped }.count ?? 0
     }
 
     private var actionableSubTaskCount: Int {
@@ -439,11 +459,13 @@ private struct TranscriptRuntimeCard: View {
             }
 
             HStack(spacing: 8) {
-                TranscriptMetaBadge(
-                    icon: "list.number",
-                    label: "阶段",
-                    value: "\(completedStageCount)/\(pipeline.stages.count)"
-                )
+                if let pipeline {
+                    TranscriptMetaBadge(
+                        icon: "list.number",
+                        label: "阶段",
+                        value: "\(completedStageCount)/\(pipeline.stages.count)"
+                    )
+                }
                 if let taskPlan {
                     TranscriptMetaBadge(
                         icon: "square.stack.3d.up",
@@ -503,7 +525,7 @@ private struct TranscriptRuntimeCard: View {
             case .unverified:
                 return "结果尚未验证"
             case .verified:
-                break
+                return "进入结果复核"
             }
         }
         if let exceptionalStage {
@@ -512,8 +534,8 @@ private struct TranscriptRuntimeCard: View {
         if let currentStage {
             return currentStage.type.title
         }
-        if pipeline.overallStatus == .completed {
-            return "流程已完成"
+        if pipeline?.overallStatus == .completed {
+            return "进入交付复核"
         }
         return "等待开始"
     }
@@ -529,13 +551,14 @@ private struct TranscriptRuntimeCard: View {
             case .verified: return "已验证"
             }
         }
-        switch pipeline.overallStatus {
+        switch pipeline?.overallStatus {
         case .pending: return "待开始"
         case .running: return "执行中"
         case .completed: return "已完成"
         case .cancelled: return "已停止"
         case .failed: return "需处理"
         case .skipped: return "已跳过"
+        case .none: return "流程"
         }
     }
 
@@ -550,13 +573,14 @@ private struct TranscriptRuntimeCard: View {
             case .verified: return "checkmark.shield.fill"
             }
         }
-        switch pipeline.overallStatus {
+        switch pipeline?.overallStatus {
         case .pending: return "clock"
         case .running: return "arrow.triangle.2.circlepath"
         case .completed: return "checkmark.circle.fill"
         case .cancelled: return "slash.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .skipped: return "minus.circle.fill"
+        case .none: return "point.3.connected.trianglepath.dotted"
         }
     }
 
@@ -571,13 +595,14 @@ private struct TranscriptRuntimeCard: View {
             case .needsRetry: return Theme.statusError
             }
         }
-        switch pipeline.overallStatus {
+        switch pipeline?.overallStatus {
         case .pending: return Theme.textTertiary
         case .running: return Theme.statusInfo
         case .completed: return Theme.statusSuccess
         case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
         case .skipped: return Theme.textTertiary
+        case .none: return Theme.accentPrimary
         }
     }
 
@@ -586,7 +611,10 @@ private struct TranscriptRuntimeCard: View {
             return "等待输入"
         }
         if singleAgentVerification != nil {
-            return "验证状态"
+            return "验证摘要"
+        }
+        if pipeline?.overallStatus == .completed {
+            return "交付摘要"
         }
         if let exceptionalStage {
             return exceptionalStage.status == .failed ? "异常焦点" : "停止原因"
@@ -652,8 +680,8 @@ private struct TranscriptRuntimeCard: View {
         if let currentStage {
             return stageSummary(for: currentStage)
         }
-        if pipeline.overallStatus == .completed {
-            return "执行已经结束，建议开始核对结果、文件改动和验证状态。"
+        if pipeline?.overallStatus == .completed {
+            return "执行已经结束，先核对结果、文件改动和验证状态。"
         }
         return nil
     }
@@ -664,7 +692,7 @@ private struct TranscriptRuntimeCard: View {
             case .overwriteAgentFile:
                 return "先确认是否覆盖 AGENT.md。回复“是”继续覆盖，回复其他内容取消覆盖，也可以直接输入新任务。"
             case .chooseExecutionModeForTask:
-                return "先确认执行模式。回复“是”继续多 Agent；回复其他内容改走单 Agent，避免继续空等。"
+                return "先确认执行模式。回复“是”继续多 Agent；回复其他内容改走单 Agent，也可以直接输入新任务，避免继续空等。"
             }
         }
         if let singleAgentVerification {
@@ -674,7 +702,7 @@ private struct TranscriptRuntimeCard: View {
             case .unverified:
                 return "当前缺少足够的完成证据，优先补充读回、测试或命令验证。"
             case .verified:
-                return "结果已经通过验证，下一步优先复核关键结论、工具输出和文件变更。"
+                return "先复核关键结论、工具输出和文件变更；确认无误后，直接开始下一项任务。"
             }
         }
         if let exceptionalStage {
@@ -695,8 +723,8 @@ private struct TranscriptRuntimeCard: View {
             return "当前正在进行 \(currentStage.type.title)。如果长时间无进展，优先检查该阶段的执行输出与模型配置。"
         }
 
-        if pipeline.overallStatus == .completed {
-            return "结果已生成，建议优先复核关键结论、工具输出和文件变更。"
+        if pipeline?.overallStatus == .completed {
+            return "确认本次结果无误后，直接开始下一项任务。"
         }
 
         return "当前没有活动流程，提交新任务即可开始。"
@@ -712,7 +740,7 @@ private struct TranscriptRuntimeCard: View {
         if exceptionalStage != nil {
             return statusTone
         }
-        if pipeline.overallStatus == .completed {
+        if pipeline?.overallStatus == .completed {
             return Theme.statusSuccess
         }
         return Theme.accentPrimary
@@ -847,13 +875,13 @@ private struct TranscriptInsightRow: View {
 
 private enum TranscriptEntry: Identifiable {
     case message(Message)
-    case activity([Message])
+    case activity(messages: [Message], isSupportingDetail: Bool)
 
     var id: UUID {
         switch self {
         case .message(let message):
             return message.id
-        case .activity(let messages):
+        case .activity(let messages, _):
             return messages.first?.id ?? UUID()
         }
     }
@@ -862,9 +890,9 @@ private enum TranscriptEntry: Identifiable {
         var entries: [TranscriptEntry] = []
         var activityBuffer: [Message] = []
 
-        func flushActivity() {
+        func flushActivity(isSupportingDetail: Bool = false) {
             guard !activityBuffer.isEmpty else { return }
-            entries.append(.activity(activityBuffer))
+            entries.append(.activity(messages: activityBuffer, isSupportingDetail: isSupportingDetail))
             activityBuffer.removeAll()
         }
 
@@ -872,6 +900,11 @@ private enum TranscriptEntry: Identifiable {
             if message.isAgentActivity {
                 activityBuffer.append(message)
             } else {
+                if message.isFinalAnswer && !activityBuffer.isEmpty {
+                    entries.append(.message(message))
+                    flushActivity(isSupportingDetail: true)
+                    continue
+                }
                 flushActivity()
                 entries.append(.message(message))
             }
@@ -895,8 +928,10 @@ private struct AgentActivityGroupView: View {
     let isProcessing: Bool
     let currentToolCallId: String?
     let toolResultsById: [String: ToolResult]
+    let isSupportingDetail: Bool
 
     @State private var isExpanded = false
+    @State private var hasManualExpansionOverride = false
 
     private var toolCalls: [ToolCall] {
         messages.flatMap { $0.toolCalls ?? [] }
@@ -924,6 +959,22 @@ private struct AgentActivityGroupView: View {
         toolCalls.filter { toolResultsById[$0.id]?.status == .cancelled }.count
     }
 
+    private var hasCancellation: Bool {
+        cancelledCount > 0
+    }
+
+    private var isCompletedCleanly: Bool {
+        !hasFailure && !hasCancellation && !isRunning && completedCount > 0
+    }
+
+    private var isSupportingRecord: Bool {
+        isSupportingDetail && isCompletedCleanly
+    }
+
+    private var isCompactSupportingRecord: Bool {
+        isSupportingRecord && !isExpanded
+    }
+
     private var latestFailedToolCall: ToolCall? {
         toolCalls.last(where: { toolResultsById[$0.id]?.status == .error })
     }
@@ -938,11 +989,21 @@ private struct AgentActivityGroupView: View {
     }
 
     private var summaryText: String {
+        if isSupportingRecord {
+            var parts = ["\(toolCalls.count) 次工具调用", "\(completedCount) 个完成"]
+            if totalThinkingDuration > 0 {
+                parts.append(formatDuration(totalThinkingDuration))
+            }
+            return parts.joined(separator: " · ")
+        }
+
         var parts: [String] = []
         if hasFailure {
             parts.append("有失败项")
         } else if isRunning {
             parts.append("持续执行中")
+        } else if hasCancellation {
+            parts.append("已停止")
         }
         if !toolCalls.isEmpty {
             parts.append("\(toolCalls.count) 次工具调用")
@@ -952,6 +1013,11 @@ private struct AgentActivityGroupView: View {
         }
         if failedCount > 0 {
             parts.append("\(failedCount) 个失败")
+        } else if cancelledCount > 0 {
+            parts.append("\(cancelledCount) 个已取消")
+            if completedCount > 0 {
+                parts.append("\(completedCount) 个完成")
+            }
         } else if completedCount > 0 {
             parts.append("\(completedCount) 个完成")
         }
@@ -961,26 +1027,40 @@ private struct AgentActivityGroupView: View {
     private var titleText: String {
         if hasFailure { return "执行异常" }
         if isRunning { return "正在执行" }
-        if completedCount > 0 { return "执行记录" }
+        if hasCancellation { return "执行已停止" }
+        if isSupportingDetail && isCompletedCleanly { return "执行记录" }
+        if isCompletedCleanly { return "执行完成" }
         return "内部处理"
     }
 
     private var statusColor: Color {
         if hasFailure { return Theme.statusError }
         if isRunning { return Theme.statusInfo }
-        if completedCount > 0 { return Theme.statusSuccess }
+        if hasCancellation { return Theme.textTertiary }
+        if isSupportingDetail && isCompletedCleanly { return Theme.textTertiary }
+        if isCompletedCleanly { return Theme.textSecondary }
         return Theme.textTertiary
+    }
+
+    private var statusIcon: String {
+        if hasFailure { return "exclamationmark.triangle.fill" }
+        if isRunning { return "arrow.triangle.2.circlepath" }
+        if hasCancellation { return "slash.circle" }
+        if isSupportingDetail && completedCount > 0 { return "list.bullet.rectangle.portrait" }
+        if completedCount > 0 { return "checkmark.circle" }
+        return "ellipsis.circle"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(action: {
+                hasManualExpansionOverride = true
                 withAnimation(.easeInOut(duration: 0.18)) {
                     isExpanded.toggle()
                 }
             }) {
                 HStack(spacing: 10) {
-                    Image(systemName: isRunning ? "arrow.triangle.2.circlepath" : "checkmark.circle")
+                    Image(systemName: statusIcon)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(statusColor)
 
@@ -996,6 +1076,12 @@ private struct AgentActivityGroupView: View {
                         .help(summaryText)
 
                     Spacer()
+
+                    if isCompactSupportingRecord {
+                        Text("按需展开")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.textTertiary)
+                    }
 
                     if isRunning {
                         ProgressView()
@@ -1014,7 +1100,13 @@ private struct AgentActivityGroupView: View {
             .buttonStyle(.plain)
             .background(
                 RoundedRectangle(cornerRadius: Theme.radiusMD)
-                    .fill(isRunning ? Theme.statusInfo.opacity(0.06) : Color.clear)
+                    .fill(
+                        isCompactSupportingRecord
+                            ? Theme.bgGlass.opacity(0.14)
+                            : (isRunning
+                            ? Theme.statusInfo.opacity(0.06)
+                            : (isCompletedCleanly && !isExpanded ? Theme.bgGlass.opacity(0.26) : Color.clear))
+                    )
             )
 
             if isExpanded || hasFailure || isRunning {
@@ -1053,20 +1145,38 @@ private struct AgentActivityGroupView: View {
         .frame(maxWidth: 820, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .fill(Theme.bgSecondary.opacity(0.62))
+                .fill(isCompactSupportingRecord ? Theme.bgSecondary.opacity(0.34) : Theme.bgSecondary.opacity(0.62))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .stroke(hasFailure ? Theme.statusError.opacity(0.28) : Theme.borderSubtle, lineWidth: 1)
+                .stroke(
+                    hasFailure ? Theme.statusError.opacity(0.28) : (isCompactSupportingRecord ? Theme.borderSubtle.opacity(0.7) : (isCompletedCleanly ? Theme.borderDefault : Theme.borderSubtle)),
+                    lineWidth: 1
+                )
         )
         .padding(.horizontal, 28)
         .padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
-            isExpanded = hasFailure || isRunning
+            isExpanded = hasFailure || hasCancellation || isRunning
         }
         .onChange(of: isRunning) { _, running in
             if running {
+                hasManualExpansionOverride = false
+                isExpanded = true
+            } else if isCompletedCleanly && !hasManualExpansionOverride {
+                isExpanded = false
+            }
+        }
+        .onChange(of: hasFailure) { _, failed in
+            if failed {
+                hasManualExpansionOverride = false
+                isExpanded = true
+            }
+        }
+        .onChange(of: hasCancellation) { _, cancelled in
+            if cancelled {
+                hasManualExpansionOverride = false
                 isExpanded = true
             }
         }

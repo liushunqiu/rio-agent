@@ -1,10 +1,54 @@
 import Foundation
 
+enum ConversationPendingDecision: Codable, Hashable {
+    case overwriteAgentFile(directory: String)
+    case chooseExecutionModeForTask(String)
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case directory
+        case task
+    }
+
+    private enum Kind: String, Codable {
+        case overwriteAgentFile
+        case chooseExecutionModeForTask
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(Kind.self, forKey: .kind)
+
+        switch kind {
+        case .overwriteAgentFile:
+            let directory = try container.decode(String.self, forKey: .directory)
+            self = .overwriteAgentFile(directory: directory)
+        case .chooseExecutionModeForTask:
+            let task = try container.decode(String.self, forKey: .task)
+            self = .chooseExecutionModeForTask(task)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case let .overwriteAgentFile(directory):
+            try container.encode(Kind.overwriteAgentFile, forKey: .kind)
+            try container.encode(directory, forKey: .directory)
+        case let .chooseExecutionModeForTask(task):
+            try container.encode(Kind.chooseExecutionModeForTask, forKey: .kind)
+            try container.encode(task, forKey: .task)
+        }
+    }
+}
+
 struct Conversation: Identifiable, Codable, Hashable {
     let id: UUID
     var title: String
     var messages: [Message]
     var workingDirectory: String?
+    var pendingDecision: ConversationPendingDecision?
     var draftInput: String
     let createdAt: Date
     var updatedAt: Date
@@ -14,6 +58,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         case title
         case messages
         case workingDirectory
+        case pendingDecision
         case draftInput
         case createdAt
         case updatedAt
@@ -24,6 +69,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         title: String = "新对话",
         messages: [Message] = [],
         workingDirectory: String? = nil,
+        pendingDecision: ConversationPendingDecision? = nil,
         draftInput: String = "",
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -32,6 +78,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         self.title = title
         self.messages = messages
         self.workingDirectory = workingDirectory
+        self.pendingDecision = pendingDecision
         self.draftInput = draftInput
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -43,6 +90,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? "新对话"
         messages = try container.decodeIfPresent([Message].self, forKey: .messages) ?? []
         workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        pendingDecision = try container.decodeIfPresent(ConversationPendingDecision.self, forKey: .pendingDecision)
         draftInput = try container.decodeIfPresent(String.self, forKey: .draftInput) ?? ""
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
@@ -53,6 +101,7 @@ struct Conversation: Identifiable, Codable, Hashable {
         lhs.title == rhs.title &&
         lhs.messages == rhs.messages &&
         lhs.workingDirectory == rhs.workingDirectory &&
+        lhs.pendingDecision == rhs.pendingDecision &&
         lhs.draftInput == rhs.draftInput &&
         lhs.createdAt == rhs.createdAt &&
         lhs.updatedAt == rhs.updatedAt
@@ -82,7 +131,11 @@ struct Conversation: Identifiable, Codable, Hashable {
     var latestPreviewContent: String? {
         let draft = draftInput.trimmingCharacters(in: .whitespacesAndNewlines)
         if !draft.isEmpty {
-            return "草稿：\(draft.replacingOccurrences(of: "\n", with: " "))"
+            return draft.replacingOccurrences(of: "\n", with: " ")
+        }
+
+        if let pendingDecisionPreview {
+            return pendingDecisionPreview
         }
 
         let conversationalMessage = messages.reversed().first { message in
@@ -106,6 +159,21 @@ struct Conversation: Identifiable, Codable, Hashable {
         }
 
         return nil
+    }
+
+    var pendingDecisionPreview: String? {
+        guard let pendingDecision else { return nil }
+
+        switch pendingDecision {
+        case .overwriteAgentFile:
+            return "是否覆盖现有 AGENT.md"
+        case let .chooseExecutionModeForTask(task):
+            let normalizedTask = task
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " ")
+            let previewTask = normalizedTask.isEmpty ? "当前任务" : normalizedTask
+            return previewTask
+        }
     }
 
     var firstEligibleTaskInput: String? {

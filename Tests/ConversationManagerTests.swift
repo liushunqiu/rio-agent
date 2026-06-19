@@ -61,6 +61,37 @@ final class ConversationManagerTests: XCTestCase {
         XCTAssertEqual(manager.conversations.first?.workingDirectory, "/tmp/project")
     }
 
+    func testSelectConversationUsesStoredConversationSnapshot() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let id = UUID()
+        let stale = Conversation(
+            id: id,
+            title: "Current",
+            messages: [.user("old message")],
+            pendingDecision: .chooseExecutionModeForTask("旧任务"),
+            draftInput: "old draft",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let stored = Conversation(
+            id: id,
+            title: "Current",
+            messages: [.user("new message")],
+            pendingDecision: .chooseExecutionModeForTask("新任务"),
+            draftInput: "new draft",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+
+        manager.conversations = [stored]
+
+        manager.selectConversation(stale)
+
+        XCTAssertEqual(manager.currentConversation?.messages.last?.content, "new message")
+        XCTAssertEqual(manager.currentConversation?.draftInput, "new draft")
+        XCTAssertEqual(manager.currentConversation?.pendingDecision, .chooseExecutionModeForTask("新任务"))
+    }
+
     func testUpdateCurrentConversationSkipsRedundantUpdates() {
         let manager = ConversationManager()
         manager.conversations = []
@@ -132,6 +163,28 @@ final class ConversationManagerTests: XCTestCase {
 
         XCTAssertNil(manager.currentConversation?.workingDirectory)
         XCTAssertNil(manager.conversations.first?.workingDirectory)
+    }
+
+    func testUpdateCurrentConversationPersistsPendingDecision() {
+        let manager = ConversationManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "Current",
+            messages: [.user("before")],
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [current]
+        manager.currentConversation = current
+
+        manager.updateCurrentConversation(
+            messages: [.user("after")],
+            pendingDecision: .set(.chooseExecutionModeForTask("请继续扫描仓库"))
+        )
+
+        XCTAssertEqual(manager.currentConversation?.pendingDecision, .chooseExecutionModeForTask("请继续扫描仓库"))
+        XCTAssertEqual(manager.conversations.first?.pendingDecision, .chooseExecutionModeForTask("请继续扫描仓库"))
     }
 
     func testUpdateCurrentConversationGeneratesTitleWithoutSecondMutation() throws {
@@ -295,8 +348,23 @@ final class ConversationManagerTests: XCTestCase {
             draftInput: "继续优化侧栏\n草稿体验"
         )
 
-        XCTAssertEqual(conversation.latestPreviewContent, "草稿：继续优化侧栏 草稿体验")
+        XCTAssertEqual(conversation.latestPreviewContent, "继续优化侧栏 草稿体验")
         XCTAssertEqual(conversation.visibleMessageCount, 2)
+    }
+
+    func testConversationPreviewUsesPendingDecisionWhenNoDraftExists() {
+        let conversation = Conversation(
+            title: "Pending Preview",
+            messages: [
+                .user("请分析这个项目并修改多个文件后再测试")
+            ],
+            pendingDecision: .chooseExecutionModeForTask("请分析这个项目并修改多个文件后再测试")
+        )
+
+        XCTAssertEqual(
+            conversation.latestPreviewContent,
+            "请分析这个项目并修改多个文件后再测试"
+        )
     }
 
     func testInternalOnlyMessagesDoNotCreateVisibleTranscript() {
@@ -363,6 +431,7 @@ final class ConversationManagerTests: XCTestCase {
         let conversation = try JSONDecoder().decode(Conversation.self, from: json)
 
         XCTAssertEqual(conversation.draftInput, "")
+        XCTAssertNil(conversation.pendingDecision)
     }
 
     func testConversationEqualityDetectsMessageContentChanges() {

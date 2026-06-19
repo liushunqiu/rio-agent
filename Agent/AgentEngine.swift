@@ -90,6 +90,16 @@ class AgentEngine: ObservableObject {
         return nil
     }
 
+    var persistedPendingDecision: ConversationPendingDecision? {
+        if let pendingInitConfirmation {
+            return .overwriteAgentFile(directory: pendingInitConfirmation.directory)
+        }
+        if let pendingExecutionStrategyConfirmation {
+            return .chooseExecutionModeForTask(pendingExecutionStrategyConfirmation.input)
+        }
+        return nil
+    }
+
     var canAcceptUserInput: Bool {
         !isProcessing || pendingUserDecision != nil
     }
@@ -162,6 +172,8 @@ class AgentEngine: ObservableObject {
 
     /// The currently running processing task, used for cancellation
     private var currentProcessingTask: Task<Void, Never>?
+    /// Distinguishes active runs so cancelled or replaced tasks cannot write stale terminal state back into a newer conversation.
+    private var processingRunID = UUID()
     /// Flag to signal cancellation to the processing loop
     private var isCancelled = false
     private var recentSingleAgentEvidence: [String] = []
@@ -460,11 +472,6 @@ class AgentEngine: ObservableObject {
                 messages.append(cancelMessage)
                 isProcessing = false
             } else {
-                let resumeMessage = Message.system(
-                    "已取消重新生成 AGENT.md，并继续处理你的新请求。",
-                    source: executionMessageSource
-                )
-                messages.append(resumeMessage)
                 isProcessing = false
                 await processUserInput(input)
             }
@@ -502,11 +509,6 @@ class AgentEngine: ObservableObject {
                     appendUserMessage: false
                 )
             } else {
-                let resumeMessage = Message.system(
-                    "已取消本次执行模式确认，并继续处理你的新请求。",
-                    source: planningMessageSource
-                )
-                messages.append(resumeMessage)
                 isProcessing = false
                 await processUserInput(input)
             }
@@ -538,6 +540,7 @@ class AgentEngine: ObservableObject {
         currentPipeline = nil
         pipelineBuilder = PipelineBuilder(mode: .singleAgent)
         currentPipeline = pipelineBuilder?.build()
+        let runID = processingRunID
 
         if multiAgentConfig.router.enabled {
             RioLogger.service.info("🔀 Router 已启用，开始路由分析...")
@@ -557,6 +560,7 @@ class AgentEngine: ObservableObject {
                         model: routerConfig.qwenModel,
                         config: routerConfig
                     )
+                    guard processingRunID == runID else { return }
                     if let decision = routeResult.decision {
                         applyRouterDecision(input: trimmedInput, decision: decision)
                     } else {
@@ -581,6 +585,7 @@ class AgentEngine: ObservableObject {
                     model: model,
                     config: routerConfig
                 )
+                guard processingRunID == runID else { return }
                 if let decision = routeResult.decision {
                     applyRouterDecision(input: trimmedInput, decision: decision)
                 } else {
@@ -605,6 +610,7 @@ class AgentEngine: ObservableObject {
         // Analyze task complexity and generate plan if needed
         RioLogger.agent.info("📊 开始分析任务复杂度...")
         let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: planningService, model: configuration.planningModel)
+        guard processingRunID == runID else { return }
         RioLogger.agent.info("📊 任务复杂度: \(taskAnalysis.complexity, privacy: .public), 预计步骤: \(taskAnalysis.estimatedSteps, privacy: .public)")
 
         // 追踪任务分析阶段
@@ -682,6 +688,7 @@ class AgentEngine: ObservableObject {
         useDAG: Bool,
         appendUserMessage: Bool
     ) async {
+        let runID = processingRunID
         isProcessing = true
         isCancelled = false
         error = nil
@@ -715,7 +722,7 @@ class AgentEngine: ObservableObject {
                 RioLogger.agent.info("🚀 任务复杂度达到 \(taskAnalysis.complexity, privacy: .public)，启用 Multi-Agent 模式")
                 if let multiAgentEngine = multiAgentEngine {
                     RioLogger.agent.info("🚀 Multi-Agent 引擎已就绪，开始并行执行")
-                    try await processWithMultiAgent(input: input, engine: multiAgentEngine)
+                    try await processWithMultiAgent(input: input, engine: multiAgentEngine, runID: runID)
                 } else {
                     RioLogger.agent.warning("⚠️ Multi-Agent 引擎未初始化，回退到单 Agent 模式")
                     guard let executionService else {
@@ -755,11 +762,14 @@ class AgentEngine: ObservableObject {
         } catch is CancellationError {
             RioLogger.agent.info("⏹️ 用户取消了当前任务")
         } catch {
+            guard processingRunID == runID else { return }
             presentError(error.localizedDescription)
             if !useDAG {
                 currentSingleAgentPlan?.status = .failed
             }
         }
+
+        guard processingRunID == runID else { return }
 
         finalizePreparedTaskExecution(useDAG: useDAG)
 
@@ -819,6 +829,7 @@ class AgentEngine: ObservableObject {
     /// Stop the current processing (cancel ongoing API calls and tool executions)
     func stopProcessing() {
         guard isProcessing else { return }
+        processingRunID = UUID()
         isCancelled = true
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
@@ -899,6 +910,7 @@ class AgentEngine: ObservableObject {
 
     /// 用户确认后的实际初始化逻辑
     private func performInit(directory: String) async {
+        let runID = processingRunID
         let agentMDPath = "\(directory)/AGENT.md"
 
         let initPrompt = """
@@ -962,6 +974,7 @@ class AgentEngine: ObservableObject {
         error = nil
 
         guard let executionService else {
+            guard processingRunID == runID else { return }
             error = missingServiceMessage(role: "执行模型", configSetId: configuration.executionConfigSetId)
             isProcessing = false
             return
@@ -974,9 +987,11 @@ class AgentEngine: ObservableObject {
                 try await processConversationLoop(aiService: executionService)
             }
         } catch {
+            guard processingRunID == runID else { return }
             self.error = error.localizedDescription
         }
 
+        guard processingRunID == runID else { return }
         isProcessing = false
     }
 
@@ -1028,7 +1043,7 @@ class AgentEngine: ObservableObject {
 
     // MARK: - Multi-Agent Processing
 
-    private func processWithMultiAgent(input: String, engine: MultiAgentEngine) async throws {
+    private func processWithMultiAgent(input: String, engine: MultiAgentEngine, runID: UUID) async throws {
         let systemMessage = Message.system(
             "Multi-Agent 模式已启动，正在分析和拆分任务...",
             source: multiAgentMessageSource
@@ -1038,13 +1053,16 @@ class AgentEngine: ObservableObject {
         let cancellable = engine.$currentPlan
             .receive(on: DispatchQueue.main)
             .sink { [weak self] plan in
-                self?.currentTaskPlan = plan
+                guard let self, self.processingRunID == runID else { return }
+                self.currentTaskPlan = plan
                 if let plan {
-                    self?.syncPipeline(with: plan)
+                    self.syncPipeline(with: plan)
                 }
             }
+        defer { cancellable.cancel() }
 
         let result = await engine.processTask(input)
+        guard processingRunID == runID else { return }
 
         if let finalPlan = engine.currentPlan {
             currentTaskPlan = finalPlan
@@ -1057,9 +1075,11 @@ class AgentEngine: ObservableObject {
             }
         }
 
-        cancellable.cancel()
-
-        let assistantMessage = Message.assistant(result, source: multiAgentMessageSource)
+        let assistantMessage = Message.assistant(
+            result,
+            source: multiAgentMessageSource,
+            presentation: .finalAnswer
+        )
         messages.append(assistantMessage)
     }
 
@@ -1509,6 +1529,12 @@ class AgentEngine: ObservableObject {
     }
 
     private func finalizeAssistantMessage(_ content: String) {
+        if let priorFinalAnswerIndex = messages.indices.reversed().first(where: { index in
+            messages[index].isFinalAnswer
+        }) {
+            messages[priorFinalAnswerIndex].presentation = .normal
+        }
+
         if let lastIndex = messages.indices.reversed().first(where: { index in
             let message = messages[index]
             return message.role == .assistant
@@ -1517,11 +1543,16 @@ class AgentEngine: ObservableObject {
         }) {
             messages[lastIndex].content = content
             messages[lastIndex].isStreaming = false
+            messages[lastIndex].presentation = .finalAnswer
             if messages[lastIndex].source == nil {
                 messages[lastIndex].source = executionMessageSource
             }
         } else {
-            messages.append(Message.assistant(content, source: executionMessageSource))
+            messages.append(Message.assistant(
+                content,
+                source: executionMessageSource,
+                presentation: .finalAnswer
+            ))
         }
     }
 
@@ -1622,6 +1653,7 @@ class AgentEngine: ObservableObject {
     func clearConversation() {
         cancelActiveProcessingForContextReset()
         messages.removeAll()
+        workingDirectory = nil
         error = nil
         currentToolExecution = nil
         currentTaskPlan = nil
@@ -1678,9 +1710,11 @@ class AgentEngine: ObservableObject {
         resetSingleAgentVerificationState()
         clearActivePlan()
         memory.clearSession()
+        restorePendingDecision(from: conversation.pendingDecision)
     }
 
     private func cancelActiveProcessingForContextReset() {
+        processingRunID = UUID()
         currentProcessingTask?.cancel()
         currentProcessingTask = nil
         multiAgentEngine?.cancelProcessing()
@@ -1691,11 +1725,28 @@ class AgentEngine: ObservableObject {
     }
 
     func exportConversation() -> Conversation {
-        var conversation = Conversation(workingDirectory: workingDirectory)
+        var conversation = Conversation(
+            workingDirectory: workingDirectory,
+            pendingDecision: persistedPendingDecision
+        )
         for message in messages {
             conversation.addMessage(message)
         }
         return conversation
+    }
+
+    private func restorePendingDecision(from pendingDecision: ConversationPendingDecision?) {
+        guard let pendingDecision else { return }
+
+        switch pendingDecision {
+        case let .overwriteAgentFile(directory):
+            pendingInitConfirmation = PendingInitConfirmation(directory: directory)
+        case let .chooseExecutionModeForTask(task):
+            pendingExecutionStrategyConfirmation = PendingExecutionStrategyConfirmation(
+                input: task,
+                analysis: TaskPlanner.analyzeTask(task, memory: memory)
+            )
+        }
     }
 
     /// Export conversation as Markdown text

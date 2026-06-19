@@ -52,4 +52,21 @@ final class FilePickerSearchSourceTests: XCTestCase {
             "Long file paths should preserve both leading and trailing context in narrow rows."
         )
     }
+
+    func testFilePickerReturnKeyDefaultsToFirstVisibleResult() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Views/NewChatPage.swift")
+        let source = try String(contentsOf: sourceURL)
+
+        XCTAssertTrue(
+            source.contains("guard !filteredFiles.isEmpty else { return .ignored }"),
+            "Return should stay inert only when the filtered list is genuinely empty."
+        )
+        XCTAssertTrue(
+            source.contains("let idx = min(selectedFileIndex ?? 0, filteredFiles.count - 1)"),
+            "When nothing is explicitly highlighted, return should select the first visible result instead of forcing an extra arrow-key step."
+        )
+    }
 }

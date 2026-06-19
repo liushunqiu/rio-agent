@@ -80,10 +80,16 @@ enum FileSystemToolSupport {
             return [root]
         }
 
+        var enumerationFailure: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
-            options: [.skipsPackageDescendants]
+            options: [.skipsPackageDescendants],
+            errorHandler: { url, error in
+                enumerationFailure = error
+                RioLogger.tool.warning("⚠️ 文件枚举失败: \(url.path, privacy: .public) - \(error.localizedDescription, privacy: .public)")
+                return false
+            }
         ) else {
             throw ToolError.executionFailed("Unable to enumerate path: \(rootPath)")
         }
@@ -108,6 +114,10 @@ enum FileSystemToolSupport {
             if let limit, files.count >= limit {
                 break
             }
+        }
+
+        if let enumerationFailure {
+            throw ToolError.executionFailed("Unable to fully enumerate path: \(rootPath). \(enumerationFailure.localizedDescription)")
         }
 
         return files.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }

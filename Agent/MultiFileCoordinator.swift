@@ -2,6 +2,19 @@ import Foundation
 
 /// 多文件协调系统 - 理解文件关系，协调多文件修改
 class MultiFileCoordinator {
+    private let skippedDirectoryNames: Set<String> = [
+        ".build",
+        ".git",
+        ".next",
+        ".nuxt",
+        ".swiftpm",
+        ".venv",
+        "__pycache__",
+        "DerivedData",
+        "dist",
+        "node_modules",
+        "venv"
+    ]
     
     // MARK: - 文件关系类型
     
@@ -63,11 +76,21 @@ class MultiFileCoordinator {
     /// 分析文件关系
     func analyzeFileRelations(in projectPath: String) {
         let fileManager = FileManager.default
+        relationGraph.removeAll(keepingCapacity: true)
+        fileCache.removeAll(keepingCapacity: true)
         guard let enumerator = fileManager.enumerator(atPath: projectPath) else { return }
         
         // 收集所有代码文件
         var codeFiles: [String] = []
         while let file = enumerator.nextObject() as? String {
+            let pathComponents = file.split(separator: "/")
+            if let directoryName = pathComponents.last, skippedDirectoryNames.contains(String(directoryName)) {
+                enumerator.skipDescendants()
+                continue
+            }
+            if pathComponents.contains(where: { skippedDirectoryNames.contains(String($0)) }) {
+                continue
+            }
             let ext = (file as NSString).pathExtension.lowercased()
             let codeExtensions = ["swift", "js", "ts", "jsx", "tsx", "py", "rs", "go", "java", "kt"]
             if codeExtensions.contains(ext) {

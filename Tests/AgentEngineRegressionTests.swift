@@ -35,6 +35,27 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertNil(engine.currentToolExecution)
     }
 
+    func testClearConversationClearsWorkingDirectoryAndPendingDecision() async {
+        let engine = AgentEngine()
+        engine.workingDirectory = "/tmp/rio-agent-project"
+
+        var config = engine.multiAgentConfig
+        config.taskSplitStrategy = .manual
+        engine.updateMultiAgentConfig(config)
+        await engine.processUserInput("请分析这个项目并修改多个文件后再测试")
+
+        XCTAssertEqual(
+            engine.pendingUserDecision,
+            .chooseExecutionModeForTask("请分析这个项目并修改多个文件后再测试")
+        )
+
+        engine.clearConversation()
+
+        XCTAssertNil(engine.workingDirectory)
+        XCTAssertNil(engine.pendingUserDecision)
+        XCTAssertTrue(engine.messages.isEmpty)
+    }
+
     func testLoadConversationResetsUsageTracking() {
         let engine = AgentEngine()
 
@@ -54,6 +75,70 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertEqual(engine.workingDirectory, "/tmp/restored")
         XCTAssertFalse(engine.isProcessing)
         XCTAssertNil(engine.currentToolExecution)
+    }
+
+    func testLoadConversationClearsVisibleRuntimeState() {
+        let engine = AgentEngine()
+        engine.singleAgentVerificationSummary = .init(status: .unverified, summary: "旧摘要")
+        engine.currentPipeline = ExecutionPipeline(mode: .singleAgent)
+        engine.currentPipeline?.stages = [
+            PipelineStage(type: .execution, details: .execution(toolCalls: ["read_file"], completedCount: 0, totalCount: 1))
+        ]
+        engine.isProcessing = true
+
+        let conversation = Conversation(
+            messages: [.user("restored message")],
+            workingDirectory: "/tmp/restored"
+        )
+        engine.loadConversation(conversation)
+
+        XCTAssertNil(engine.singleAgentVerificationSummary)
+        XCTAssertNil(engine.currentPipeline)
+        XCTAssertFalse(engine.isProcessing)
+    }
+
+    func testClearConversationInvalidatesInFlightProcessingRun() {
+        let engine = AgentEngine()
+        engine.isProcessing = true
+
+        let oldRunID = Mirror(reflecting: engine).children.first { $0.label == "processingRunID" }?.value as? UUID
+        engine.clearConversation()
+        let newRunID = Mirror(reflecting: engine).children.first { $0.label == "processingRunID" }?.value as? UUID
+
+        XCTAssertNotNil(oldRunID)
+        XCTAssertNotNil(newRunID)
+        XCTAssertNotEqual(oldRunID, newRunID)
+    }
+
+    func testClearConversationInvalidatesInFlightErrorWrites() {
+        let engine = AgentEngine()
+
+        let oldRunID = Mirror(reflecting: engine).children.first { $0.label == "processingRunID" }?.value as? UUID
+        engine.clearConversation()
+        let newRunID = Mirror(reflecting: engine).children.first { $0.label == "processingRunID" }?.value as? UUID
+
+        XCTAssertNotEqual(oldRunID, newRunID)
+        XCTAssertNil(engine.error)
+    }
+
+    func testRunInvalidationGuardsRouterAndPlanningWritesInSource() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/AgentEngine.swift"))
+
+        XCTAssertTrue(
+            source.contains("let runID = processingRunID"),
+            "User-input processing should capture a run identifier before router and planning work begins."
+        )
+        XCTAssertTrue(
+            source.contains("guard processingRunID == runID else { return }\n                    if let decision = routeResult.decision"),
+            "Router results should be discarded if the conversation context has already been reset."
+        )
+        XCTAssertTrue(
+            source.contains("let taskAnalysis = await TaskPlanner.analyzeTaskEnhanced(trimmedInput, memory: memory, aiService: planningService, model: configuration.planningModel)\n        guard processingRunID == runID else { return }"),
+            "Task-analysis results should not publish plan or confirmation state after a newer run has taken over."
+        )
     }
 
     func testProcessingWithoutPendingDecisionRejectsNewUserInput() {
@@ -372,8 +457,11 @@ final class AgentEngineRegressionTests: XCTestCase {
 
         XCTAssertNil(engine.pendingUserDecision)
         XCTAssertEqual(engine.memory.session.currentTask, "请顺便检查一下这个项目结构")
+        XCTAssertFalse(engine.messages.contains {
+            $0.role == .system && $0.content.contains("继续处理你的新请求")
+        })
         XCTAssertTrue(engine.messages.contains {
-            $0.role == .system && $0.content.contains("已取消重新生成 AGENT.md，并继续处理你的新请求。")
+            $0.role == .user && $0.content == "请顺便检查一下这个项目结构"
         })
     }
 
@@ -389,8 +477,11 @@ final class AgentEngineRegressionTests: XCTestCase {
 
         XCTAssertEqual(engine.memory.session.currentTask, "改成先只检查路由配置")
         XCTAssertEqual(engine.pendingUserDecision, .chooseExecutionModeForTask("改成先只检查路由配置"))
+        XCTAssertFalse(engine.messages.contains {
+            $0.role == .system && $0.content.contains("继续处理你的新请求")
+        })
         XCTAssertTrue(engine.messages.contains {
-            $0.role == .system && $0.content.contains("已取消本次执行模式确认，并继续处理你的新请求。")
+            $0.role == .user && $0.content == "改成先只检查路由配置"
         })
     }
 
@@ -534,6 +625,42 @@ final class AgentEngineRegressionTests: XCTestCase {
 
         XCTAssertTrue(finalized)
         XCTAssertEqual(engine.singleAgentVerificationSummary?.status, .unverified)
+    }
+
+    func testHandleFinalContentMarksDeliveredAssistantReplyAsFinalAnswer() async {
+        let engine = AgentEngine()
+        engine.memory.setCurrentTask("just chat")
+
+        let finalized = await engine.handleFinalContent("这是最后交付的回答。")
+
+        XCTAssertTrue(finalized)
+        XCTAssertEqual(engine.messages.last?.presentation, .finalAnswer)
+        XCTAssertTrue(engine.messages.last?.isFinalAnswer == true)
+    }
+
+    func testHandleFinalContentDemotesPreviousFinalAnswerWhenNewOneArrives() async {
+        let engine = AgentEngine()
+        engine.memory.setCurrentTask("just chat")
+
+        _ = await engine.handleFinalContent("第一版最终答复。")
+        _ = await engine.handleFinalContent("第二版最终答复。")
+
+        let finalAnswers = engine.messages.filter(\.isFinalAnswer)
+        XCTAssertEqual(finalAnswers.count, 1)
+        XCTAssertEqual(finalAnswers.first?.content, "第二版最终答复。")
+        XCTAssertTrue(engine.messages.contains {
+            $0.content == "第一版最终答复。" && $0.presentation == .normal
+        })
+    }
+
+    func testMultiAgentSynthesisAppendsFinalAnswerPresentation() async {
+        let engine = AgentEngine()
+
+        engine.appendMessage(.assistant("过程消息"))
+        engine.appendMessage(.assistant("多 Agent 汇总结果", source: nil, presentation: .finalAnswer))
+
+        XCTAssertEqual(engine.messages.last?.presentation, .finalAnswer)
+        XCTAssertTrue(engine.messages.last?.isVisibleInTranscript == true)
     }
 
     func testProcessUserInputAppendsUserMessageImmediatelyForNormalTurn() async {
@@ -730,6 +857,41 @@ final class AgentEngineRegressionTests: XCTestCase {
 
         XCTAssertEqual(conversation.workingDirectory, "/tmp/exported-project")
         XCTAssertEqual(conversation.messages.last?.content, "visible user")
+    }
+
+    func testExportConversationPreservesPendingUserDecision() async {
+        let engine = AgentEngine()
+        var config = engine.multiAgentConfig
+        config.taskSplitStrategy = .manual
+        engine.updateMultiAgentConfig(config)
+
+        await engine.processUserInput("请分析这个项目并修改多个文件后再测试")
+
+        let conversation = engine.exportConversation()
+
+        XCTAssertEqual(
+            conversation.pendingDecision,
+            .chooseExecutionModeForTask("请分析这个项目并修改多个文件后再测试")
+        )
+    }
+
+    func testLoadConversationRestoresPendingUserDecision() {
+        let engine = AgentEngine()
+        let conversation = Conversation(
+            messages: [
+                .user("请分析这个项目并修改多个文件后再测试"),
+                .system("检测到该任务适合 Multi-Agent 协作。回复「是」或「yes」继续使用 Multi-Agent；回复其他内容则改用单 Agent。")
+            ],
+            pendingDecision: .chooseExecutionModeForTask("请分析这个项目并修改多个文件后再测试")
+        )
+
+        engine.loadConversation(conversation)
+
+        XCTAssertEqual(
+            engine.pendingUserDecision,
+            .chooseExecutionModeForTask("请分析这个项目并修改多个文件后再测试")
+        )
+        XCTAssertTrue(engine.canAcceptUserInput)
     }
 
     func testTaskResumeSkipsConfirmationReplyMessages() {

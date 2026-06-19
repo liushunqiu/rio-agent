@@ -37,17 +37,7 @@ struct ContextPanel: View {
 
             ScrollView {
                 VStack(spacing: 14) {
-                    if let pendingUserDecision {
-                        PendingDecisionPanel(pendingUserDecision: pendingUserDecision)
-                    } else if let taskPlan {
-                        TaskPlanView(plan: taskPlan)
-                    } else if let singleAgentPlan {
-                        SingleAgentPlanPanel(plan: singleAgentPlan)
-                    } else {
-                        EmptyPlanPanel()
-                    }
-
-                    if let pipeline {
+                    if pipeline != nil || pendingUserDecision != nil || singleAgentVerification != nil {
                         ContextSection(title: "运行态") {
                             RuntimeFocusCard(
                                 pipeline: pipeline,
@@ -63,9 +53,16 @@ struct ContextPanel: View {
                             modelCount: runtimeRoles.count,
                             messageCount: messageCount,
                             recentFileCount: recentFiles.count,
-                            workingDirectory: workingDirectory,
-                            activitySummary: activitySummary
+                            workingDirectory: workingDirectory
                         )
+                    }
+
+                    if let pendingUserDecision {
+                        PendingDecisionPanel(pendingUserDecision: pendingUserDecision)
+                    } else if let taskPlan {
+                        TaskPlanView(plan: taskPlan)
+                    } else if let singleAgentPlan {
+                        SingleAgentPlanPanel(plan: singleAgentPlan)
                     }
 
                     if !runtimeRoles.isEmpty {
@@ -148,41 +145,6 @@ struct ContextPanel: View {
         }
     }
 
-    private var activitySummary: String? {
-        if let pendingUserDecision {
-            switch pendingUserDecision {
-            case .overwriteAgentFile:
-                return "等待确认 · 覆盖 AGENT.md"
-            case .chooseExecutionModeForTask:
-                return "等待确认 · 选择执行模式"
-            }
-        }
-
-        if let taskPlan {
-            return "多 Agent · \(multiAgentSummary(for: taskPlan))"
-        }
-
-        if let singleAgentPlan {
-            let completed = min(singleAgentPlan.currentStep, singleAgentPlan.steps.count)
-            return "单 Agent · \(completed)/\(singleAgentPlan.steps.count) 步"
-        }
-
-        return nil
-    }
-
-    private func multiAgentSummary(for plan: TaskPlan) -> String {
-        let completed = plan.subTasks.filter { $0.status == .completed }.count
-        let failed = plan.subTasks.filter { $0.status == .failed }.count
-        let cancelled = plan.subTasks.filter { $0.status == .cancelled }.count
-        var parts = ["\(completed)/\(plan.subTasks.count) 子任务"]
-        if failed > 0 {
-            parts.append("失败 \(failed)")
-        }
-        if cancelled > 0 {
-            parts.append("停止 \(cancelled)")
-        }
-        return parts.joined(separator: " · ")
-    }
 }
 
 // MARK: - Plan Panels
@@ -377,36 +339,15 @@ struct PlanMetric: View {
     }
 }
 
-struct EmptyPlanPanel: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle")
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.textTertiary)
-                Text("执行计划")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-            }
-
-            Text("当前没有活动计划。复杂任务会在这里展示规划步骤和执行进度。")
-                .font(.system(size: 11))
-                .foregroundColor(Theme.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.bgGlass)
-        .cornerRadius(Theme.radiusMD)
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .stroke(Theme.borderSubtle, lineWidth: 1)
-        )
-    }
-}
-
 struct PendingDecisionPanel: View {
     let pendingUserDecision: AgentEngine.PendingUserDecision
+
+    private var taskPreview: String? {
+        guard case let .chooseExecutionModeForTask(task) = pendingUserDecision else {
+            return nil
+        }
+        return task.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -415,13 +356,13 @@ struct PendingDecisionPanel: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Theme.statusWarning)
 
-                Text("等待确认")
+                Text(decisionTitle)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Theme.textPrimary)
 
                 Spacer()
 
-                Text("待处理")
+                Text("待确认")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(Theme.statusWarning)
                     .padding(.horizontal, 8)
@@ -430,16 +371,31 @@ struct PendingDecisionPanel: View {
                     .cornerRadius(Theme.radiusSM)
             }
 
-            Text(decisionTitle)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(Theme.textPrimary)
-
             Text(decisionDescription)
                 .font(.system(size: 11))
                 .foregroundColor(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 8) {
+            if let taskPreview, !taskPreview.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("待执行任务")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                        .textCase(.uppercase)
+
+                    Text(taskPreview)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textPrimary)
+                        .lineLimit(4)
+                        .help(taskPreview)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.bgInput)
+                        .cornerRadius(Theme.radiusSM)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 DecisionHintChip(icon: "checkmark.circle", text: confirmHint, tone: Theme.statusSuccess)
                 DecisionHintChip(icon: "arrow.triangle.branch", text: redirectHint, tone: Theme.statusInfo)
             }
@@ -457,9 +413,9 @@ struct PendingDecisionPanel: View {
     private var decisionTitle: String {
         switch pendingUserDecision {
         case .overwriteAgentFile:
-            return "准备继续初始化"
+            return "确认是否覆盖 AGENT.md"
         case .chooseExecutionModeForTask:
-            return "准备开始执行"
+            return "确认执行模式"
         }
     }
 
@@ -467,16 +423,16 @@ struct PendingDecisionPanel: View {
         switch pendingUserDecision {
         case let .overwriteAgentFile(directory):
             let name = URL(fileURLWithPath: directory).lastPathComponent
-            return "当前目录 \(name) 已存在 AGENT.md。系统正在等待你确认是否覆盖，或改为处理一条新的任务。"
-        case let .chooseExecutionModeForTask(task):
-            return "当前任务已分析完成，系统正在等待你确认执行模式。\n\(task)"
+            return "目录 \(name) 已存在 AGENT.md。回复“是”继续覆盖；回复其他内容会取消覆盖，也可以直接输入新任务。"
+        case .chooseExecutionModeForTask:
+            return "任务已分析完成。回复“是”继续多 Agent；回复其他内容会改走单 Agent，也可以直接输入新任务。"
         }
     }
 
     private var confirmHint: String {
         switch pendingUserDecision {
         case .overwriteAgentFile:
-            return "回复是进行覆盖"
+            return "回复是继续覆盖"
         case .chooseExecutionModeForTask:
             return "回复是继续多 Agent"
         }
@@ -487,7 +443,7 @@ struct PendingDecisionPanel: View {
         case .overwriteAgentFile:
             return "回复否或直接改任务"
         case .chooseExecutionModeForTask:
-            return "回复否改单 Agent"
+            return "回复否改单 Agent 或直接改任务"
         }
     }
 }
@@ -503,13 +459,16 @@ struct DecisionHintChip: View {
                 .font(.system(size: 10, weight: .semibold))
             Text(text)
                 .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundColor(tone)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(tone.opacity(0.10))
         .cornerRadius(Theme.radiusSM)
+        .help(text)
     }
 }
 
@@ -661,7 +620,6 @@ struct SessionOverviewCard: View {
     let messageCount: Int
     let recentFileCount: Int
     let workingDirectory: String?
-    let activitySummary: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -669,24 +627,6 @@ struct SessionOverviewCard: View {
                 SessionMetric(icon: "cpu", label: "模型", value: "\(modelCount)")
                 SessionMetric(icon: "text.bubble", label: "消息", value: "\(messageCount)")
                 SessionMetric(icon: "doc.text", label: "文件", value: "\(recentFileCount)")
-            }
-
-            if let activitySummary {
-                HStack(spacing: 8) {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.accentPrimary)
-                    Text(activitySummary)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Theme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(activitySummary)
-                    Spacer()
-                }
-                .padding(8)
-                .background(Theme.bgInput)
-                .cornerRadius(Theme.radiusSM)
             }
 
             if let workingDirectory {
@@ -721,21 +661,21 @@ struct SessionOverviewCard: View {
 }
 
 struct RuntimeFocusCard: View {
-    let pipeline: ExecutionPipeline
+    let pipeline: ExecutionPipeline?
     let taskPlan: TaskPlan?
     let singleAgentVerification: VerifierService.VerificationOutcome?
     let pendingUserDecision: AgentEngine.PendingUserDecision?
 
     private var currentStage: PipelineStage? {
-        pipeline.currentStage
+        pipeline?.currentStage
     }
 
     private var exceptionalStage: PipelineStage? {
-        pipeline.stages.last(where: { $0.status == .failed || $0.status == .cancelled })
+        pipeline?.stages.last(where: { $0.status == .failed || $0.status == .cancelled })
     }
 
     private var completedStageCount: Int {
-        pipeline.stages.filter { $0.status == .completed || $0.status == .skipped }.count
+        pipeline?.stages.filter { $0.status == .completed || $0.status == .skipped }.count ?? 0
     }
 
     private var actionableSubTaskCount: Int {
@@ -755,12 +695,14 @@ struct RuntimeFocusCard: View {
                     value: overallStatusText,
                     tone: overallStatusColor
                 )
-                RuntimeMetricPill(
-                    icon: "list.number",
-                    label: "阶段",
-                    value: "\(completedStageCount)/\(pipeline.stages.count)",
-                    tone: Theme.accentPrimary
-                )
+                if let pipeline {
+                    RuntimeMetricPill(
+                        icon: "list.number",
+                        label: "阶段",
+                        value: "\(completedStageCount)/\(pipeline.stages.count)",
+                        tone: Theme.accentPrimary
+                    )
+                }
                 if actionableSubTaskCount > 0 {
                     RuntimeMetricPill(
                         icon: "exclamationmark.bubble",
@@ -775,9 +717,25 @@ struct RuntimeFocusCard: View {
                 RuntimeFocusRow(
                     icon: "questionmark.circle",
                     title: "等待输入",
-                    value: pendingDecisionTitle(for: pendingUserDecision),
-                    detail: pendingDecisionDetail(for: pendingUserDecision),
+                    value: "流程已暂停",
+                    detail: pendingRuntimeDetail(for: pendingUserDecision),
                     tone: Theme.statusWarning
+                )
+            } else if let singleAgentVerification {
+                RuntimeFocusRow(
+                    icon: verificationIcon(for: singleAgentVerification.status),
+                    title: "验证摘要",
+                    value: verificationFocusValue(for: singleAgentVerification.status),
+                    detail: singleAgentVerification.summary,
+                    tone: verificationTone(for: singleAgentVerification.status)
+                )
+            } else if pipeline?.overallStatus == .completed {
+                RuntimeFocusRow(
+                    icon: "checkmark.seal",
+                    title: "交付摘要",
+                    value: "优先复核本次结果",
+                    detail: "执行已经结束，先核对关键文件变更、工具输出和验证状态。",
+                    tone: Theme.statusSuccess
                 )
             } else if let currentStage {
                 RuntimeFocusRow(
@@ -786,14 +744,6 @@ struct RuntimeFocusCard: View {
                     value: currentStage.type.title,
                     detail: stageSummary(for: currentStage),
                     tone: stageTone(for: currentStage.status)
-                )
-            } else if let singleAgentVerification {
-                RuntimeFocusRow(
-                    icon: verificationIcon(for: singleAgentVerification.status),
-                    title: "验证状态",
-                    value: verificationTitle(for: singleAgentVerification.status),
-                    detail: singleAgentVerification.summary,
-                    tone: verificationTone(for: singleAgentVerification.status)
                 )
             }
 
@@ -807,13 +757,15 @@ struct RuntimeFocusCard: View {
                 )
             }
 
-            RuntimeFocusRow(
-                icon: "sparkle.magnifyingglass",
-                title: "下一步建议",
-                value: nextActionTitle,
-                detail: nextActionDetail,
-                tone: nextActionTone
-            )
+            if pendingUserDecision == nil {
+                RuntimeFocusRow(
+                    icon: "sparkle.magnifyingglass",
+                    title: "下一步建议",
+                    value: nextActionTitle,
+                    detail: nextActionDetail,
+                    tone: nextActionTone
+                )
+            }
         }
     }
 
@@ -821,13 +773,17 @@ struct RuntimeFocusCard: View {
         if pendingUserDecision != nil {
             return "等待确认"
         }
-        switch pipeline.overallStatus {
+        if let singleAgentVerification {
+            return verificationTitle(for: singleAgentVerification.status)
+        }
+        switch pipeline?.overallStatus {
         case .pending: return "等待中"
         case .running: return "执行中"
         case .completed: return "已完成"
         case .cancelled: return "已停止"
         case .failed: return "失败"
         case .skipped: return "已跳过"
+        case .none: return "运行态"
         }
     }
 
@@ -835,19 +791,26 @@ struct RuntimeFocusCard: View {
         if pendingUserDecision != nil {
             return "questionmark.circle.fill"
         }
-        switch pipeline.overallStatus {
+        if let singleAgentVerification {
+            return verificationIcon(for: singleAgentVerification.status)
+        }
+        switch pipeline?.overallStatus {
         case .pending: return "clock"
         case .running: return "arrow.clockwise"
         case .completed: return "checkmark.circle.fill"
         case .cancelled: return "slash.circle.fill"
         case .failed: return "xmark.circle.fill"
         case .skipped: return "minus.circle.fill"
+        case .none: return "point.3.connected.trianglepath.dotted"
         }
     }
 
     private var overallStatusColor: Color {
         if pendingUserDecision != nil {
             return Theme.statusWarning
+        }
+        guard let pipeline else {
+            return singleAgentVerification.map { verificationTone(for: $0.status) } ?? Theme.accentPrimary
         }
         return stageTone(for: pipeline.overallStatus)
     }
@@ -925,7 +888,7 @@ struct RuntimeFocusCard: View {
             case .unverified:
                 return "补充验证证据"
             case .verified:
-                break
+                return "开始下一项任务"
             }
         }
         if let exceptionalStage {
@@ -938,8 +901,8 @@ struct RuntimeFocusCard: View {
                 break
             }
         }
-        if pipeline.overallStatus == .completed {
-            return "检查最终结果"
+        if pipeline?.overallStatus == .completed {
+            return "开始下一项任务"
         }
         if let currentStage {
             return "等待 \(currentStage.type.title) 完成"
@@ -958,7 +921,7 @@ struct RuntimeFocusCard: View {
             case .unverified:
                 return "当前没有足够强的完成证据，建议补充读回、测试或命令验证。"
             case .verified:
-                break
+                return "先核对关键文件变更、工具输出和最终结论；确认无误后，直接开始下一项任务。"
             }
         }
         if let exceptionalStage {
@@ -974,8 +937,8 @@ struct RuntimeFocusCard: View {
                 break
             }
         }
-        if pipeline.overallStatus == .completed {
-            return "结果已经生成，建议优先核对关键文件变更、工具输出和验证状态。"
+        if pipeline?.overallStatus == .completed {
+            return "确认本次结果无误后，直接开始下一项任务；如果还要补查，回到关键文件和工具输出继续核对。"
         }
         if let currentStage {
             return "当前系统正在处理 \(currentStage.type.title)。如果长时间无进展，优先检查对应阶段的模型配置与执行输出。"
@@ -993,7 +956,7 @@ struct RuntimeFocusCard: View {
         if let exceptionalStage {
             return stageTone(for: exceptionalStage.status)
         }
-        if pipeline.overallStatus == .completed {
+        if pipeline?.overallStatus == .completed {
             return Theme.statusSuccess
         }
         return Theme.statusInfo
@@ -1013,7 +976,16 @@ struct RuntimeFocusCard: View {
         case .overwriteAgentFile:
             return "回复“是”会覆盖现有 AGENT.md；回复其他内容会取消覆盖，并允许直接切换到新任务。"
         case .chooseExecutionModeForTask:
-            return "回复“是”继续多 Agent；回复其他内容会改走单 Agent，避免无谓等待。"
+            return "回复“是”继续多 Agent；回复其他内容会改走单 Agent，也可以直接输入新任务，避免无谓等待。"
+        }
+    }
+
+    private func pendingRuntimeDetail(for decision: AgentEngine.PendingUserDecision) -> String {
+        switch decision {
+        case .overwriteAgentFile:
+            return "初始化检查已经完成，当前正在等待你确认是否覆盖已有 AGENT.md。具体操作见下方待确认卡。"
+        case .chooseExecutionModeForTask:
+            return "任务分析已经完成，当前正在等待你确认继续多 Agent 还是改走单 Agent。具体操作见下方待确认卡。"
         }
     }
 
@@ -1025,6 +997,17 @@ struct RuntimeFocusCard: View {
             return "未验证"
         case .needsRetry:
             return "需修订"
+        }
+    }
+
+    private func verificationFocusValue(for status: VerificationStatus) -> String {
+        switch status {
+        case .verified:
+            return "优先复核交付结果"
+        case .unverified:
+            return "补足完成证据"
+        case .needsRetry:
+            return "先修订当前答案"
         }
     }
 

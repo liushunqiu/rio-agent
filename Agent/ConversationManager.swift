@@ -8,6 +8,11 @@ class ConversationManager: ObservableObject {
         case set(String?)
     }
 
+    enum PendingDecisionUpdate: Equatable {
+        case preserve
+        case set(ConversationPendingDecision?)
+    }
+
     @Published var conversations: [Conversation] = []
     @Published var currentConversation: Conversation?
 
@@ -29,7 +34,7 @@ class ConversationManager: ObservableObject {
     }
 
     func selectConversation(_ conversation: Conversation) {
-        currentConversation = conversation
+        currentConversation = conversations.first(where: { $0.id == conversation.id }) ?? conversation
     }
 
     func deleteConversation(_ conversation: Conversation) {
@@ -42,13 +47,17 @@ class ConversationManager: ObservableObject {
 
     func updateCurrentConversation(
         messages: [Message],
-        workingDirectory: WorkingDirectoryUpdate = .preserve
+        workingDirectory: WorkingDirectoryUpdate = .preserve,
+        pendingDecision: PendingDecisionUpdate = .preserve
     ) {
         guard var current = currentConversation else { return }
         let previous = current
         current.messages = messages
         if case let .set(workingDirectory) = workingDirectory {
             current.workingDirectory = workingDirectory
+        }
+        if case let .set(pendingDecision) = pendingDecision {
+            current.pendingDecision = pendingDecision
         }
 
         if current.title == "新对话" {
@@ -57,6 +66,7 @@ class ConversationManager: ObservableObject {
 
         guard current.messages != previous.messages
             || current.workingDirectory != previous.workingDirectory
+            || current.pendingDecision != previous.pendingDecision
             || current.title != previous.title else {
             return
         }

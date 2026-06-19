@@ -64,19 +64,23 @@ struct NewChatPage: View {
             VStack(spacing: 0) {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
-                        Spacer().frame(height: max(28, geometry.size.height * 0.12))
+                        Spacer().frame(height: max(20, geometry.size.height * 0.08))
 
                         headerArea
 
-                        Spacer().frame(height: 24)
+                        Spacer().frame(height: 18)
 
                         inputCard
 
-                        Spacer().frame(height: 16)
+                        if shouldShowWorkspaceSummary {
+                            Spacer().frame(height: 16)
 
-                        workspaceSummary
+                            workspaceSummary
 
-                        Spacer().frame(height: 18)
+                            Spacer().frame(height: 18)
+                        } else {
+                            Spacer().frame(height: 10)
+                        }
 
                         quickPromptSection
                     }
@@ -110,29 +114,29 @@ struct NewChatPage: View {
     }
 
     private var headerArea: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             ZStack {
                 Circle()
                     .fill(Theme.bgGlass)
-                    .frame(width: 58, height: 58)
+                    .frame(width: 42, height: 42)
                     .overlay(
                         Circle()
                             .stroke(Theme.borderDefault, lineWidth: 1)
                     )
-                    .shadow(color: Theme.accentPrimary.opacity(0.20), radius: 18, x: 0, y: 8)
+                    .shadow(color: Theme.accentPrimary.opacity(0.10), radius: 8, x: 0, y: 4)
 
                 Image(systemName: "bolt.fill")
-                    .font(.system(size: 24, weight: .bold))
+                    .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(brandGradient)
             }
 
-            VStack(spacing: 6) {
-                Text("开始一个可执行的任务")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+            VStack(spacing: 4) {
+                Text(headerTitle)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(Theme.textPrimary)
 
                 Text(headerSubtitle)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(Theme.textSecondary)
             }
         }
@@ -178,10 +182,27 @@ struct NewChatPage: View {
                 }
             }
 
+            if let fileContextNotice {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.badge.questionmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.statusWarning)
+                    Text(fileContextNotice)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             Divider()
                 .overlay(Theme.borderSubtle)
 
-            HStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 FolderSelector(
                     workingDirectory: workingDirectory,
                     isLocked: pendingUserDecision != nil,
@@ -191,16 +212,16 @@ struct NewChatPage: View {
                 Button(action: {
                     composer.isShowingFilePicker = true
                 }) {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         Image(systemName: "at")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                         Text("添加文件")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 11))
                     }
                     .foregroundColor(Theme.textSecondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(Theme.bgGlass)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.bgGlass.opacity(0.72))
                     .cornerRadius(Theme.radiusSM)
                     .overlay(
                         RoundedRectangle(cornerRadius: Theme.radiusSM)
@@ -216,34 +237,55 @@ struct NewChatPage: View {
                     HStack(spacing: 5) {
                         Image(systemName: "paperclip")
                             .font(.system(size: 10))
-                        Text("\(composer.selectedFiles.count) 个上下文")
-                            .font(.system(size: 11, weight: .medium))
+                        Text("\(composer.selectedFiles.count) 个文件")
+                            .font(.system(size: 10, weight: .medium))
                     }
                     .foregroundColor(Theme.textSecondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(Theme.bgGlass.opacity(0.75))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.bgGlass.opacity(0.58))
                     .cornerRadius(Theme.radiusSM)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusSM)
+                            .stroke(Theme.borderSubtle.opacity(0.8), lineWidth: 1)
+                    )
+                    .lineLimit(1)
                     .help(selectedFileSummaryHelp)
                 }
 
                 Spacer()
 
                 ModelBadge(modelName: modelName, providerName: providerName)
+                    .frame(maxWidth: 180, alignment: .trailing)
+                    .layoutPriority(0)
 
-                if let pendingDecisionHint {
-                    Text(pendingDecisionHint)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Theme.statusWarning)
-                        .lineLimit(1)
+                if let pendingDecisionHint, pendingUserDecision == nil {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.statusWarning)
+                            .padding(.top, 1)
+
+                        Text(pendingDecisionHint)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.statusWarning)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(pendingDecisionHint)
+                    }
+                    .frame(maxWidth: 240, alignment: .leading)
+                    .layoutPriority(2)
                 }
 
-                Text(sendHint)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.textTertiary)
+                if let sendHint {
+                    Text(sendHint)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                        .lineLimit(1)
+                }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.vertical, 9)
         }
         .frame(maxWidth: maxCardWidth)
         .background(Theme.bgInput.opacity(0.92))
@@ -252,7 +294,7 @@ struct NewChatPage: View {
             RoundedRectangle(cornerRadius: Theme.radiusXL)
                 .stroke(isInputFocused ? brandGreen.opacity(0.42) : Theme.borderDefault, lineWidth: 1)
         )
-        .shadow(color: Theme.shadowStrong.opacity(0.7), radius: 28, x: 0, y: 18)
+        .shadow(color: Theme.shadowStrong.opacity(0.52), radius: 20, x: 0, y: 12)
         .padding(.horizontal, 24)
         .filePickerSheet(
             composer: composer,
@@ -267,7 +309,7 @@ struct NewChatPage: View {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .bold))
-                Text("开始")
+                Text(sendButtonTitle)
                     .font(.system(size: 12, weight: .semibold))
             }
             .foregroundColor(canSend ? .white : Theme.textTertiary)
@@ -287,28 +329,54 @@ struct NewChatPage: View {
     }
 
     private var workspaceSummary: some View {
-        HStack(spacing: 10) {
-            SummaryPill(
-                icon: "folder",
-                title: "工作区",
-                value: currentWorkspaceName,
-                tone: workingDirectory.wrappedValue == nil ? Theme.textTertiary : Theme.statusInfo,
-                helpText: workingDirectory.wrappedValue
-            )
+        Group {
+            if shouldShowCompactStartSummary {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textTertiary)
+                        .padding(.top, 1)
 
-            SummaryPill(
-                icon: "paperclip",
-                title: "上下文",
-                value: composer.selectedFiles.isEmpty ? "未附加文件" : "\(composer.selectedFiles.count) 个文件",
-                tone: composer.selectedFiles.isEmpty ? Theme.textTertiary : Theme.accentPrimary
-            )
+                    Text(workspaceHelpText)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-            SummaryPill(
-                icon: "text.bubble",
-                title: "输入",
-                value: composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "等待任务" : "已写入需求",
-                tone: canSend ? Theme.statusSuccess : Theme.textTertiary
-            )
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Theme.bgGlass.opacity(0.48))
+                .cornerRadius(Theme.radiusMD)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                )
+            } else {
+                HStack(spacing: 10) {
+                    SummaryPill(
+                        icon: "folder",
+                        title: "工作区",
+                        value: currentWorkspaceName,
+                        tone: workingDirectory.wrappedValue == nil ? Theme.textTertiary : Theme.statusInfo,
+                        helpText: workspaceHelpText
+                    )
+
+                    SummaryPill(
+                        icon: "paperclip",
+                        title: "上下文",
+                        value: composer.selectedFiles.isEmpty ? "未附加文件" : "\(composer.selectedFiles.count) 个文件",
+                        tone: composer.selectedFiles.isEmpty ? Theme.textTertiary : Theme.accentPrimary
+                    )
+
+                    SummaryPill(
+                        icon: "text.bubble",
+                        title: "输入",
+                        value: inputSummaryValue,
+                        tone: inputSummaryTone
+                    )
+                }
+            }
         }
         .frame(maxWidth: maxCardWidth)
         .padding(.horizontal, 24)
@@ -316,26 +384,68 @@ struct NewChatPage: View {
 
     private var quickPromptSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("直接开始")
+            Text(quickPromptSectionTitle)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(Theme.accentPrimary)
+                .foregroundColor(quickPromptSectionTone)
                 .textCase(.uppercase)
 
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 160), spacing: 10, alignment: .top)],
-                alignment: .leading,
-                spacing: 10
-            ) {
-                ForEach(quickPrompts) { item in
-                    QuickPromptButton(item: item) {
-                        composer.updateText(item.prompt)
-                        inputText = item.prompt
-                        isInputFocused = true
-                    }
-                    .disabled(pendingUserDecision != nil)
-                    .opacity(pendingUserDecision == nil ? 1 : 0.45)
-                    .help(pendingUserDecision == nil ? item.prompt : "请先处理当前确认，或直接在输入框写新任务")
+            if pendingUserDecision != nil {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.statusWarning)
+                        .padding(.top, 1)
+
+                    Text("输入“是”或“否”继续，也可以直接写新任务，系统会自动切换。")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.bgGlass.opacity(0.75))
+                .cornerRadius(Theme.radiusMD)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                        .stroke(Theme.statusWarning.opacity(0.18), lineWidth: 1)
+                )
+            } else if shouldShowQuickPromptGrid {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 160), spacing: 10, alignment: .top)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(quickPrompts) { item in
+                        QuickPromptButton(item: item) {
+                            composer.updateText(item.prompt)
+                            inputText = item.prompt
+                            isInputFocused = true
+                        }
+                        .help(item.prompt)
+                    }
+                }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textTertiary)
+                        .padding(.top, 1)
+
+                    Text("已开始编辑。发送后会直接执行；清空输入可重新选择模板。")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.bgGlass.opacity(0.55))
+                .cornerRadius(Theme.radiusMD)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                )
             }
         }
         .frame(maxWidth: maxCardWidth, alignment: .leading)
@@ -368,15 +478,55 @@ struct NewChatPage: View {
         )
     }
 
+    private var headerTitle: String {
+        if pendingUserDecision != nil {
+            return "等待你的确认"
+        }
+        return "开始任务"
+    }
+
     private var headerSubtitle: String {
+        if let pendingUserDecision {
+            switch pendingUserDecision {
+            case .overwriteAgentFile:
+                return "确认是否覆盖已有 AGENT.md，或直接切换到新任务"
+            case .chooseExecutionModeForTask:
+                return "确认继续多 Agent 还是改为单 Agent，或直接切换到新任务"
+            }
+        }
         if let path = workingDirectory.wrappedValue {
             return "围绕 \(URL(fileURLWithPath: path).lastPathComponent) 直接开始"
         }
-        return "先定任务，再补上下文，然后直接执行"
+        return "直接写下要做的事"
+    }
+
+    private var sendButtonTitle: String {
+        pendingUserDecision != nil ? "提交回复" : "开始"
     }
 
     private var canSend: Bool {
         composer.canSend && canAcceptInput
+    }
+
+    private var shouldShowCompactStartSummary: Bool {
+        pendingUserDecision == nil
+            && workingDirectory.wrappedValue == nil
+            && composer.selectedFiles.isEmpty
+            && trimmedComposerText.isEmpty
+    }
+
+    private var shouldShowQuickPromptGrid: Bool {
+        pendingUserDecision == nil && trimmedComposerText.isEmpty
+    }
+
+    private var shouldShowWorkspaceSummary: Bool {
+        if pendingUserDecision != nil
+            && workingDirectory.wrappedValue == nil
+            && composer.selectedFiles.isEmpty
+            && trimmedComposerText.isEmpty {
+            return false
+        }
+        return true
     }
 
     private var currentWorkspaceName: String {
@@ -384,11 +534,39 @@ struct NewChatPage: View {
         return URL(fileURLWithPath: path).lastPathComponent
     }
 
-    private var sendHint: String {
-        if pendingUserDecision != nil {
-            return canSend ? "Cmd+Return 提交回复" : "等待确认回复"
+    private var workspaceHelpText: String {
+        guard let path = workingDirectory.wrappedValue else {
+            return "可以先直接描述任务；需要引用文件或扫描仓库时，再选择工作目录。"
         }
+        return path
+    }
+
+    private var sendHint: String? {
+        guard pendingUserDecision == nil else { return nil }
         return canSend ? "Cmd+Return 发送" : "先写清楚任务"
+    }
+
+    private var inputSummaryValue: String {
+        let hasInput = !composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if pendingUserDecision != nil {
+            return hasInput ? "已填写回复" : "等待确认回复"
+        }
+        return hasInput ? "已写入需求" : "等待任务"
+    }
+
+    private var inputSummaryTone: Color {
+        if pendingUserDecision != nil {
+            return Theme.statusWarning
+        }
+        return canSend ? Theme.statusSuccess : Theme.textTertiary
+    }
+
+    private var quickPromptSectionTitle: String {
+        pendingUserDecision != nil ? "当前说明" : "任务模板"
+    }
+
+    private var quickPromptSectionTone: Color {
+        pendingUserDecision != nil ? Theme.statusWarning : Theme.accentPrimary
     }
 
     private var selectedFileSummaryHelp: String {
@@ -397,13 +575,19 @@ struct NewChatPage: View {
             .joined(separator: "\n")
     }
 
+    private var fileContextNotice: String? {
+        guard workingDirectory.wrappedValue == nil else { return nil }
+        guard composer.text.hasSuffix("@") else { return nil }
+        return "可以先写任务；需要添加文件上下文时，再选择工作目录。"
+    }
+
     private var pendingDecisionHint: String? {
         guard let pendingUserDecision else { return nil }
         switch pendingUserDecision {
         case .overwriteAgentFile:
-            return "回复是/否，或直接输入新任务"
+            return "输入是/否，或直接写新任务"
         case .chooseExecutionModeForTask:
-            return "回复是继续多 Agent，回复否改为单 Agent"
+            return "输入是继续多 Agent，输入否改单 Agent，或直接写新任务"
         }
     }
 
@@ -432,9 +616,13 @@ struct NewChatPage: View {
             return "请先完成当前确认，再调整文件上下文"
         }
         if workingDirectory.wrappedValue == nil {
-            return "先选择工作目录，再添加文件上下文"
+            return "可以先写任务；需要添加文件上下文时，再选择工作目录"
         }
         return "添加文件上下文"
+    }
+
+    private var trimmedComposerText: String {
+        composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -453,25 +641,25 @@ private struct QuickPromptButton: View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: item.icon)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.accentPrimary)
-                    .frame(width: 18)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                    .frame(width: 16)
 
                 Text(item.title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundColor(Theme.textPrimary)
                     .multilineTextAlignment(.leading)
 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-            .background(Theme.bgGlass.opacity(0.75))
-            .cornerRadius(Theme.radiusMD)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .background(Theme.bgGlass.opacity(0.36))
+            .cornerRadius(Theme.radiusSM)
             .overlay(
-                RoundedRectangle(cornerRadius: Theme.radiusMD)
-                    .stroke(Theme.borderSubtle, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Theme.radiusSM)
+                    .stroke(Theme.borderSubtle.opacity(0.7), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -506,13 +694,13 @@ private struct SummaryPill: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.bgGlass.opacity(0.72))
+        .background(Theme.bgGlass.opacity(0.58))
         .cornerRadius(Theme.radiusMD)
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .stroke(tone.opacity(0.16), lineWidth: 1)
+                .stroke(tone.opacity(0.12), lineWidth: 1)
         )
     }
 }
@@ -621,6 +809,7 @@ struct FilePickerView: View {
     @State private var files: [String] = []
     @State private var isLoading = true
     @State private var didHitFileLimit = false
+    @State private var loadingFailed = false
     @State private var searchText = ""
     @State private var selectedFileIndex: Int? = nil
     @Environment(\.dismiss) private var dismiss
@@ -663,18 +852,22 @@ struct FilePickerView: View {
                         tone: workingDirectory == nil ? Theme.textTertiary : Theme.statusInfo,
                         helpText: workingDirectory
                     )
-                    PickerSummaryPill(
-                        icon: "doc.text",
-                        title: "可选文件",
-                        value: fileCountSummary,
-                        tone: didHitFileLimit ? Theme.statusWarning : (files.isEmpty ? Theme.textTertiary : Theme.accentPrimary)
-                    )
-                    PickerSummaryPill(
-                        icon: "clock",
-                        title: "最近使用",
-                        value: "\(recentFiles.count)",
-                        tone: recentFiles.isEmpty ? Theme.textTertiary : Theme.statusSuccess
-                    )
+                    if hasWorkingDirectory {
+                        PickerSummaryPill(
+                            icon: "doc.text",
+                            title: "可选文件",
+                            value: fileCountSummary,
+                            tone: didHitFileLimit ? Theme.statusWarning : (files.isEmpty ? Theme.textTertiary : Theme.accentPrimary)
+                        )
+                    }
+                    if shouldShowRecentFilesSummary {
+                        PickerSummaryPill(
+                            icon: "clock",
+                            title: "最近使用",
+                            value: "\(recentFiles.count)",
+                            tone: Theme.statusSuccess
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -682,79 +875,81 @@ struct FilePickerView: View {
             .background(Theme.bgSecondary)
             
             Divider()
-            
-            // Search bar
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                
-                TextField("搜索文件... (支持模糊匹配)", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .onChange(of: searchText) { _, _ in
-                        selectedFileIndex = nil
+
+            if hasWorkingDirectory {
+                // Search bar
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    
+                    TextField("搜索文件... (支持模糊匹配)", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .onChange(of: searchText) { _, _ in
+                            selectedFileIndex = nil
+                        }
+                    
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.plain)
                     }
-                
-                if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                            .font(.system(size: 12))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Theme.bgTertiary)
-            
-            Divider()
-            
-            // Recent files section (when no search)
-            if didHitFileLimit {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.statusWarning)
-                        .padding(.top, 2)
-                    Text("文件列表已截断到前 \(maxFilesToLoad) 个结果。搜索只覆盖当前已加载列表；如果没找到，请缩小工作目录或直接输入 @file: 绝对路径。")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Theme.statusWarning.opacity(0.08))
-
-                Divider()
-            }
-
-            if searchText.isEmpty && !recentFiles.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Image(systemName: "clock")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                        Text("最近使用")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Theme.bgTertiary.opacity(0.5))
-                    
-                    ForEach(recentFiles, id: \.self) { filePath in
-                        FileRow(filePath: filePath, workingDirectory: workingDirectory) {
-                            recordRecentFile(filePath)
-                            onSelect(filePath)
-                            dismiss()
-                        }
-                    }
-                }
+                .background(Theme.bgTertiary)
                 
                 Divider()
+                
+                // Recent files section (when no search)
+                if didHitFileLimit {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.statusWarning)
+                            .padding(.top, 2)
+                        Text("文件列表已截断到前 \(maxFilesToLoad) 个结果。搜索只覆盖当前已加载列表；如果没找到，请缩小工作目录或直接输入 @file: 绝对路径。")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Theme.statusWarning.opacity(0.08))
+
+                    Divider()
+                }
+
+                if searchText.isEmpty && !recentFiles.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Image(systemName: "clock")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Text("最近使用")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Theme.bgTertiary.opacity(0.5))
+                        
+                        ForEach(recentFiles, id: \.self) { filePath in
+                            FileRow(filePath: filePath, workingDirectory: workingDirectory) {
+                                recordRecentFile(filePath)
+                                onSelect(filePath)
+                                dismiss()
+                            }
+                        }
+                    }
+                    
+                    Divider()
+                }
             }
             
             // File list
@@ -786,7 +981,7 @@ struct FilePickerView: View {
                             .padding(.top, 4)
                     }
                     if workingDirectory == nil {
-                        Text("先在首页或输入框下方选择目录，再回来添加上下文。")
+                        Text("可以先关闭这里继续写任务；需要文件上下文时，再从输入框下方选择目录。")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary.opacity(0.7))
                             .padding(.top, 8)
@@ -822,14 +1017,13 @@ struct FilePickerView: View {
             return .handled
         }
         .onKeyPress(.return) {
-            if let idx = selectedFileIndex, idx < filteredFiles.count {
-                let filePath = filteredFiles[idx]
-                recordRecentFile(filePath)
-                onSelect(filePath)
-                dismiss()
-                return .handled
-            }
-            return .ignored
+            guard !filteredFiles.isEmpty else { return .ignored }
+            let idx = min(selectedFileIndex ?? 0, filteredFiles.count - 1)
+            let filePath = filteredFiles[idx]
+            recordRecentFile(filePath)
+            onSelect(filePath)
+            dismiss()
+            return .handled
         }
     }
     
@@ -842,19 +1036,31 @@ struct FilePickerView: View {
         }
     }
 
+    private var hasWorkingDirectory: Bool {
+        workingDirectory != nil
+    }
+
+    private var shouldShowRecentFilesSummary: Bool {
+        hasWorkingDirectory && !recentFiles.isEmpty
+    }
+
     private var emptyStateTitle: String {
-        if workingDirectory == nil { return "先选择工作目录" }
+        if workingDirectory == nil { return "还没有工作目录" }
+        if loadingFailed { return "暂时无法读取文件" }
+        if didHitFileLimit && !searchText.isEmpty { return "未匹配到已加载文件" }
         return searchText.isEmpty ? "未找到代码文件" : "未匹配到文件"
     }
 
     private var emptyStateSubtitle: String? {
-        if workingDirectory == nil { return "选择目录后可添加文件上下文" }
-        if didHitFileLimit && !searchText.isEmpty { return "当前只搜索已加载的前 \(maxFilesToLoad) 个文件" }
+        if workingDirectory == nil { return "可以先写任务；需要文件上下文时再选择目录" }
+        if loadingFailed { return "检查工作目录权限或路径是否仍然可用，然后重新打开这里" }
+        if didHitFileLimit && !searchText.isEmpty { return "当前只搜索已加载的前 \(maxFilesToLoad) 个文件；如果没找到，请缩小工作目录或直接输入 @file: 绝对路径" }
         if !searchText.isEmpty { return "尝试不同的关键词或检查拼写" }
         return nil
     }
 
     private var fileCountSummary: String {
+        if workingDirectory == nil { return "待选择" }
         if isLoading { return "加载中" }
         return didHitFileLimit ? "\(files.count)+" : "\(files.count)"
     }
@@ -868,7 +1074,7 @@ struct FilePickerView: View {
         if let workingDirectory {
             return "从 \(URL(fileURLWithPath: workingDirectory).lastPathComponent) 中挑选需要的上下文"
         }
-        return "先选择工作目录，再从代码里补充上下文"
+        return "需要文件上下文时，再选择工作目录"
     }
     
     private func recordRecentFile(_ path: String) {
@@ -923,14 +1129,19 @@ struct FilePickerView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let fileManager = FileManager.default
             let resourceKeys = [URLResourceKey.nameKey, URLResourceKey.isDirectoryKey]
+            var encounteredEnumerationError = false
             
             guard let enumerator = fileManager.enumerator(
                 at: URL(fileURLWithPath: workingDirectory),
                 includingPropertiesForKeys: resourceKeys,
                 options: [.skipsHiddenFiles],
-                errorHandler: nil
+                errorHandler: { _, _ in
+                    encounteredEnumerationError = true
+                    return true
+                }
             ) else {
                 DispatchQueue.main.async {
+                    loadingFailed = true
                     isLoading = false
                 }
                 return
@@ -968,6 +1179,7 @@ struct FilePickerView: View {
                         .localizedStandardCompare(PathSecurity.relativePath($1, from: workingDirectory)) == .orderedAscending
                 }
                 didHitFileLimit = hitLimit
+                loadingFailed = filePaths.isEmpty && encounteredEnumerationError
                 isLoading = false
             }
         }

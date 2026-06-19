@@ -8,6 +8,7 @@ enum MessageRole: String, Codable {
 
 enum MessagePresentation: String, Codable, Hashable {
     case normal
+    case finalAnswer
     case internalOnly
 }
 
@@ -112,7 +113,11 @@ struct Message: Identifiable, Codable, Hashable {
     }
 
     var isVisibleInTranscript: Bool {
-        presentation == .normal
+        presentation != .internalOnly
+    }
+
+    var isFinalAnswer: Bool {
+        presentation == .finalAnswer
     }
 
     var trimmedContent: String {

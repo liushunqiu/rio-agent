@@ -48,16 +48,28 @@ final class ExecutionPipelineViewSourceTests: XCTestCase {
             "The pipeline view should render a compact top-level insight banner for the current or exceptional stage."
         )
         XCTAssertTrue(
-            source.contains("title: exceptionalStage.status == .failed ? \"异常总览\" : \"停止总览\""),
-            "The pipeline banner should distinguish between failures and user-driven cancellation."
+            source.contains("title: exceptionalStage.status == .failed ? \"异常焦点\" : \"停止焦点\""),
+            "The pipeline banner should distinguish between failures and user-driven cancellation without sounding like a debug console."
         )
         XCTAssertTrue(
-            source.contains("title: \"当前焦点\""),
-            "When there is no exception, the pipeline should still expose the current focus stage in a readable summary banner."
+            source.contains("title: \"进行中\""),
+            "When there is no exception, the pipeline should still expose the active stage with a quieter workbench label."
         )
         XCTAssertTrue(
             source.contains(".help(detail)"),
             "The pipeline insight banner should preserve the full diagnostic guidance on hover."
+        )
+        XCTAssertTrue(
+            source.contains("CompactStatusPill(status: pipeline.overallStatus)"),
+            "The pipeline header should use compact status chrome instead of a heavier standalone indicator."
+        )
+        XCTAssertTrue(
+            source.contains("case .singleAgent: return \"单 Agent 流程\""),
+            "The pipeline title should stay short and utilitarian."
+        )
+        XCTAssertTrue(
+            source.contains("if !isCollapsed {"),
+            "The timeline should be collapsible so finished runs do not dominate the reading flow."
         )
     }
 }

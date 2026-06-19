@@ -2,6 +2,17 @@ import SwiftUI
 
 struct TaskPlanView: View {
     let plan: TaskPlan
+    let prefersCondensedCompletedState: Bool
+    @State private var showAllSubTasks = false
+    @State private var showCompletedPlanDetails = false
+
+    init(
+        plan: TaskPlan,
+        prefersCondensedCompletedState: Bool = false
+    ) {
+        self.plan = plan
+        self.prefersCondensedCompletedState = prefersCondensedCompletedState
+    }
 
     private var completedCount: Int {
         plan.subTasks.filter { $0.status == .completed }.count
@@ -31,13 +42,18 @@ struct TaskPlanView: View {
         plan.subTasks.filter(\.needsAttention).count
     }
 
+    private var prioritizedBlockedSubTask: SubTask? {
+        plan.subTasks.first(where: { $0.recoveryContext != nil && $0.needsAttention })
+    }
+
     private var nextAttentionSummary: String? {
         if let failedSubTask = plan.subTasks.first(where: { $0.status == .failed }) {
             return "先处理失败子任务“\(failedSubTask.description)”，优先查看失败原因和恢复提示。"
         }
 
-        if let blockedSubTask = plan.subTasks.first(where: { $0.recoveryContext == .multiAgentWorkerAssignment }) {
-            return "子任务“\(blockedSubTask.description)”还没有可执行 Worker，先补齐分配再继续。"
+        if let blockedSubTask = prioritizedBlockedSubTask,
+           let recoveryContext = blockedSubTask.recoveryContext {
+            return "子任务“\(blockedSubTask.description)”当前受阻，先\(recoveryContext.recoveryActionDetail)"
         }
 
         if let retrySubTask = plan.subTasks.first(where: { $0.verificationStatus == .needsRetry }) {
@@ -59,7 +75,7 @@ struct TaskPlanView: View {
         if plan.subTasks.contains(where: { $0.status == .failed }) {
             return Theme.statusError
         }
-        if plan.subTasks.contains(where: { $0.recoveryContext == .multiAgentWorkerAssignment }) {
+        if prioritizedBlockedSubTask != nil {
             return Theme.statusWarning
         }
         if plan.subTasks.contains(where: { $0.verificationStatus == .needsRetry }) {
@@ -72,6 +88,83 @@ struct TaskPlanView: View {
             return Theme.textTertiary
         }
         return Theme.accentSecondary
+    }
+
+    private var highlightedSubTasks: [SubTask] {
+        plan.subTasks.filter { subTask in
+            subTask.status == .running || subTask.needsAttention || subTask.verificationStatus == .unverified
+        }
+    }
+
+    private var stableSubTasks: [SubTask] {
+        plan.subTasks.filter { subTask in
+            subTask.status != .running && !subTask.needsAttention && subTask.verificationStatus != .unverified
+        }
+    }
+
+    private var shouldCollapseStableSubTasks: Bool {
+        plan.subTasks.count > 6 && stableSubTasks.count > 2
+    }
+
+    private var visibleSubTasks: [SubTask] {
+        guard shouldCollapseStableSubTasks && !showAllSubTasks else {
+            return plan.subTasks
+        }
+        return highlightedSubTasks + stableSubTasks.prefix(2)
+    }
+
+    private var hiddenSubTaskCount: Int {
+        max(0, plan.subTasks.count - visibleSubTasks.count)
+    }
+
+    private var collapsedSubTaskSummary: String {
+        if highlightedSubTasks.isEmpty {
+            return "其余 \(hiddenSubTaskCount) 项已折叠，展开后可查看全部执行明细。"
+        }
+        return "其余 \(hiddenSubTaskCount) 项已折叠，当前优先展示执行中、需关注和待验证子任务。"
+    }
+
+    private var collapseToggleTitle: String {
+        showAllSubTasks ? "收起稳定项" : "展开全部子任务"
+    }
+
+    private var shouldOfferCompletedSummary: Bool {
+        prefersCondensedCompletedState && plan.status == .completed
+    }
+
+    private var isShowingCompletedSummary: Bool {
+        shouldOfferCompletedSummary && !showCompletedPlanDetails
+    }
+
+    private var completedSummaryText: String {
+        if needsAttentionCount > 0 {
+            return "任务已完成汇总，但仍有 \(needsAttentionCount) 个子任务需要继续复核。主阅读流已折叠计划明细，按需展开即可继续处理。"
+        }
+        if unverifiedCount > 0 {
+            return "任务已完成汇总，但仍有 \(unverifiedCount) 个子任务缺少验证证据。主阅读流已折叠计划明细，按需展开即可继续补证。"
+        }
+        return "任务已完成，主阅读流优先展示最终答复。完整计划已折叠，需要复盘时再展开。"
+    }
+
+    private var shouldShowRunningMetric: Bool {
+        runningCount > 0 && plan.status != .completed
+    }
+
+    private var shouldShowVerifiedMetric: Bool {
+        verifiedCount > 0 && plan.status != .completed && unverifiedCount == 0
+    }
+
+    private var summaryBannerTitle: String {
+        if failedCount > 0 {
+            return "优先处理"
+        }
+        if prioritizedBlockedSubTask != nil {
+            return "优先恢复"
+        }
+        if needsAttentionCount > 0 || unverifiedCount > 0 {
+            return "优先补证"
+        }
+        return "当前重点"
     }
 
     var body: some View {
@@ -93,18 +186,21 @@ struct TaskPlanView: View {
 
             Divider().overlay(Theme.borderSubtle)
 
-            if !plan.subTasks.isEmpty {
+            if !plan.subTasks.isEmpty && !isShowingCompletedSummary {
                 HStack(spacing: 8) {
                     TaskPlanMetricChip(
                         title: "已完成",
                         value: "\(completedCount)/\(plan.subTasks.count)",
                         tone: Theme.statusSuccess
                     )
-                    TaskPlanMetricChip(
-                        title: "执行中",
-                        value: "\(runningCount)",
-                        tone: Theme.statusInfo
-                    )
+
+                    if shouldShowRunningMetric {
+                        TaskPlanMetricChip(
+                            title: "执行中",
+                            value: "\(runningCount)",
+                            tone: Theme.statusInfo
+                        )
+                    }
 
                     if failedCount > 0 {
                         TaskPlanMetricChip(
@@ -138,11 +234,13 @@ struct TaskPlanView: View {
                         )
                     }
 
-                    TaskPlanMetricChip(
-                        title: "已验证",
-                        value: "\(verifiedCount)",
-                        tone: Theme.accentSecondary
-                    )
+                    if shouldShowVerifiedMetric {
+                        TaskPlanMetricChip(
+                            title: "已验证",
+                            value: "\(verifiedCount)",
+                            tone: Theme.accentSecondary
+                        )
+                    }
                 }
 
                 if let nextAttentionSummary {
@@ -153,7 +251,7 @@ struct TaskPlanView: View {
                             .padding(.top, 1)
 
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("优先处理")
+                            Text(summaryBannerTitle)
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundColor(Theme.textPrimary)
                             Text(nextAttentionSummary)
@@ -174,32 +272,113 @@ struct TaskPlanView: View {
                 }
             }
 
-            // Original task
-            VStack(alignment: .leading, spacing: 4) {
-                Text("原始任务")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(Theme.textTertiary)
-                    .textCase(.uppercase)
+            if isShowingCompletedSummary {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("计划已收束")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.textPrimary)
 
-                Text(plan.originalTask)
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.bgInput)
-                    .cornerRadius(Theme.radiusSM)
-            }
+                        Text(completedSummaryText)
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
-            // Sub-tasks
-            if !plan.subTasks.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("子任务 (\(plan.subTasks.count))")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Theme.textTertiary)
-                        .textCase(.uppercase)
+                    Spacer(minLength: 0)
 
-                    ForEach(plan.subTasks) { subTask in
-                        DarkSubTaskRow(subTask: subTask)
+                    Button("展开计划") {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            showCompletedPlanDetails = true
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.accentPrimary)
+                }
+                .padding(10)
+                .background(Theme.bgInput)
+                .cornerRadius(Theme.radiusSM)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusSM)
+                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                )
+            } else {
+                // Original task
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("原始任务")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.textTertiary)
+                            .textCase(.uppercase)
+
+                        Spacer(minLength: 0)
+
+                        if shouldOfferCompletedSummary {
+                            Button("收起计划") {
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    showCompletedPlanDetails = false
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.accentPrimary)
+                        }
+                    }
+
+                    Text(plan.originalTask)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.bgInput)
+                        .cornerRadius(Theme.radiusSM)
+                }
+
+                // Sub-tasks
+                if !plan.subTasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("子任务 (\(plan.subTasks.count))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.textTertiary)
+                            .textCase(.uppercase)
+
+                        ForEach(visibleSubTasks) { subTask in
+                            DarkSubTaskRow(subTask: subTask)
+                        }
+
+                        if hiddenSubTaskCount > 0 {
+                            HStack(alignment: .top, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(showAllSubTasks ? "已展开全部子任务" : "已折叠稳定项")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(Theme.textPrimary)
+
+                                    Text(collapsedSubTaskSummary)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Theme.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Spacer(minLength: 0)
+
+                                Button(collapseToggleTitle) {
+                                    withAnimation(.easeInOut(duration: 0.18)) {
+                                        showAllSubTasks.toggle()
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(Theme.accentPrimary)
+                            }
+                            .padding(10)
+                            .background(Theme.bgInput)
+                            .cornerRadius(Theme.radiusSM)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                    .stroke(Theme.borderSubtle, lineWidth: 1)
+                            )
+                        }
                     }
                 }
             }
@@ -211,6 +390,10 @@ struct TaskPlanView: View {
             RoundedRectangle(cornerRadius: Theme.radiusLG)
                 .stroke(Theme.accentPrimary.opacity(0.2), lineWidth: 1)
         )
+        .onChange(of: plan.id) { _, _ in
+            showAllSubTasks = false
+            showCompletedPlanDetails = false
+        }
     }
 }
 
@@ -315,10 +498,45 @@ struct DarkSubTaskRow: View {
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(subTask.description)
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
-                    .lineLimit(3)
+                HStack(alignment: .top, spacing: 8) {
+                    Text(subTask.description)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Theme.textPrimary)
+                        .lineLimit(3)
+                        .help(subTask.description)
+
+                    Spacer(minLength: 0)
+
+                    if subTask.needsAttention {
+                        SubTaskMetaPill(
+                            icon: "sparkle.magnifyingglass",
+                            text: "需关注",
+                            tone: attentionColor
+                        )
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    SubTaskMetaPill(
+                        icon: statusIcon,
+                        text: statusDisplayText,
+                        tone: statusColor
+                    )
+
+                    SubTaskMetaPill(
+                        icon: verificationIcon,
+                        text: subTask.verificationStatus.displayText,
+                        tone: verificationColor
+                    )
+
+                    if subTask.retryCount > 0 {
+                        SubTaskMetaPill(
+                            icon: "arrow.counterclockwise",
+                            text: "重试 \(subTask.retryCount) 次",
+                            tone: Theme.statusWarning
+                        )
+                    }
+                }
 
                 if let worker = subTask.assignedWorker {
                     HStack(spacing: 6) {
@@ -338,6 +556,7 @@ struct DarkSubTaskRow: View {
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundColor(Theme.textTertiary)
                             .lineLimit(1)
+                            .help(worker.model)
                     }
                 } else {
                     Text("未分配执行 Agent")
@@ -350,25 +569,8 @@ struct DarkSubTaskRow: View {
                         .font(.system(size: 10))
                         .foregroundColor(Theme.textTertiary)
                         .lineLimit(2)
+                        .help(reason)
                 }
-
-                if subTask.retryCount > 0 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 9))
-                        Text("重试 \(subTask.retryCount) 次")
-                            .font(.system(size: 9, weight: .medium))
-                    }
-                    .foregroundColor(Theme.statusWarning)
-                }
-
-                HStack(spacing: 6) {
-                    Image(systemName: verificationIcon)
-                        .font(.system(size: 9, weight: .semibold))
-                    Text(subTask.verificationStatus.displayText)
-                        .font(.system(size: 9, weight: .medium))
-                }
-                .foregroundColor(verificationColor)
 
                 if let attentionSummary {
                     HStack(alignment: .top, spacing: 6) {
@@ -381,6 +583,7 @@ struct DarkSubTaskRow: View {
                             .font(.system(size: 10))
                             .foregroundColor(attentionColor)
                             .fixedSize(horizontal: false, vertical: true)
+                            .help(attentionSummary)
                     }
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -396,7 +599,8 @@ struct DarkSubTaskRow: View {
                     Text(summary)
                         .font(.system(size: 10))
                         .foregroundColor(verificationSummaryColor)
-                        .lineLimit(2)
+                        .lineLimit(3)
+                        .help(summary)
                 }
 
                 if let resultText {
@@ -410,6 +614,7 @@ struct DarkSubTaskRow: View {
                             .foregroundColor(resultColor)
                             .lineLimit(resultLineLimit)
                             .textSelection(.enabled)
+                            .help(resultText)
                     }
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -432,8 +637,12 @@ struct DarkSubTaskRow: View {
             }
         }
         .padding(8)
-        .background(Theme.bgTertiary)
+        .background(rowTone.opacity(0.08))
         .cornerRadius(Theme.radiusSM)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                .stroke(rowTone.opacity(0.18), lineWidth: 1)
+        )
     }
 
     private func workerIcon(_ worker: AgentConfig) -> String {
@@ -463,6 +672,16 @@ struct DarkSubTaskRow: View {
         case .completed: return Theme.statusSuccess
         case .cancelled: return Theme.textTertiary
         case .failed: return Theme.statusError
+        }
+    }
+
+    private var statusDisplayText: String {
+        switch subTask.status {
+        case .pending: return "待处理"
+        case .running: return "执行中"
+        case .completed: return "已完成"
+        case .cancelled: return "已停止"
+        case .failed: return "失败"
         }
     }
 
@@ -570,9 +789,46 @@ struct DarkSubTaskRow: View {
             return Theme.statusWarning
         }
     }
+
+    private var rowTone: Color {
+        if subTask.status == .failed || subTask.verificationStatus == .needsRetry {
+            return Theme.statusError
+        }
+        if subTask.needsAttention || subTask.verificationStatus == .unverified {
+            return Theme.statusWarning
+        }
+        if subTask.status == .cancelled {
+            return Theme.textTertiary
+        }
+        if subTask.status == .running {
+            return Theme.statusInfo
+        }
+        return Theme.accentPrimary
+    }
 }
 
 struct SubTaskRow: View {
     let subTask: SubTask
     var body: some View { DarkSubTaskRow(subTask: subTask) }
+}
+
+private struct SubTaskMetaPill: View {
+    let icon: String
+    let text: String
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 8, weight: .semibold))
+            Text(text)
+                .font(.system(size: 9, weight: .medium))
+                .lineLimit(1)
+        }
+        .foregroundColor(tone)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(tone.opacity(0.10))
+        .cornerRadius(Theme.radiusSM)
+    }
 }

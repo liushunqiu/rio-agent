@@ -55,5 +55,29 @@ final class SidebarDeleteConfirmationSourceTests: XCTestCase {
             source.contains(".help(helpText ?? text)"),
             "MetaPill should always provide a hover fallback for compact content."
         )
+        XCTAssertTrue(
+            source.contains("if let pendingDecisionLabel {\n                    MetaPill("),
+            "Conversation rows should surface pending confirmation state directly instead of making paused sessions look like normal chats."
+        )
+        XCTAssertTrue(
+            source.contains("private var previewText: String? {\n        conversation.latestPreviewContent\n    }"),
+            "Conversation row previews should reuse the centralized preview model so pills can own state labels while preview text carries the concrete task context."
+        )
+        XCTAssertTrue(
+            source.contains("return \"等待覆盖确认\""),
+            "Sidebar should give overwrite confirmations a concrete, scan-friendly label."
+        )
+        XCTAssertTrue(
+            source.contains("return \"等待模式确认\""),
+            "Sidebar should give execution-mode confirmations a concrete, scan-friendly label."
+        )
+        XCTAssertTrue(
+            source.contains("if let messageMetaLabel {\n                    MetaPill("),
+            "Conversation rows should only render the generic message-count pill when it adds new information."
+        )
+        XCTAssertTrue(
+            source.contains("private var messageMetaLabel: String? {\n        if visibleMessageCount > 0 {\n            return \"\\(visibleMessageCount) 条消息\"\n        }\n        if pendingDecisionLabel != nil || hasDraft {\n            return nil\n        }\n        return \"未开始\"\n    }"),
+            "Draft-only or pending-confirmation sessions should not repeat a generic 'not started' pill once a more specific state is already visible."
+        )
     }
 }

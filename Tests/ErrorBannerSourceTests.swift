@@ -24,6 +24,10 @@ final class ErrorBannerSourceTests: XCTestCase {
             "ErrorBanner should provide a direct copy action for complete diagnostics."
         )
         XCTAssertTrue(
+            source.contains("ErrorBannerUtilityButton("),
+            "Secondary error-banner utilities should collapse into compact icon buttons so recovery actions remain primary."
+        )
+        XCTAssertTrue(
             source.contains(".onChange(of: message)"),
             "Changing errors should reset expansion and copied state."
         )
@@ -46,6 +50,10 @@ final class ErrorBannerSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("return \"继续执行\""),
             "The banner badge should clarify that the main task continues after a degraded router flow."
+        )
+        XCTAssertTrue(
+            source.contains("return onOpenSettings == nil ? \"可恢复\" : \"可恢复 / 待配置\""),
+            "Recoverable errors that still require configuration work should expose both truths in the badge instead of collapsing them into a generic state."
         )
         XCTAssertTrue(
             source.contains("isNonBlocking ? Theme.statusWarning : Theme.statusError"),
@@ -92,8 +100,8 @@ final class ErrorBannerSourceTests: XCTestCase {
             "ContentView should delegate recovery routing to the shared router instead of embedding keyword rules."
         )
         XCTAssertTrue(
-            source.contains("Text(settingsButtonTitle ?? \"打开设置\")"),
-            "ErrorBanner should render a clear but context-aware settings action when provided."
+            source.contains("ErrorBannerUtilityButton(\n                            icon: \"gearshape\""),
+            "Settings recovery should render as a secondary utility so task recovery stays primary."
         )
         XCTAssertTrue(
             source.contains(".help(settingsHelpText ?? \"打开设置修复当前配置问题\")"),

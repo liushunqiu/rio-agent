@@ -32,27 +32,29 @@ final class PlanDisplayPrioritySourceTests: XCTestCase {
         let contentView = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
         let contextPanel = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContextPanel.swift"))
 
-        for source in [contentView, contextPanel] {
-            XCTAssertTrue(
-                source.contains("private func multiAgentSummary(for plan: TaskPlan) -> String"),
-                "Shared chrome should use an explicit Multi-Agent summary helper instead of showing only completed count."
-            )
-            XCTAssertTrue(
-                source.contains("let failed = plan.subTasks.filter { $0.status == .failed }.count"),
-                "Multi-Agent summary should count failed subtasks."
-            )
-            XCTAssertTrue(
-                source.contains("let cancelled = plan.subTasks.filter { $0.status == .cancelled }.count"),
-                "Multi-Agent summary should count cancelled subtasks."
-            )
-            XCTAssertTrue(
-                source.contains("parts.append(\"失败 \\(failed)\")"),
-                "Failed subtasks should be visible in the compact summary."
-            )
-            XCTAssertTrue(
-                source.contains("parts.append(\"停止 \\(cancelled)\")"),
-                "Cancelled subtasks should be visible in the compact summary."
-            )
-        }
+        XCTAssertTrue(
+            contentView.contains("private func multiAgentSummary(for plan: TaskPlan) -> String"),
+            "Top-bar chrome should use an explicit Multi-Agent summary helper instead of showing only completed count."
+        )
+        XCTAssertTrue(
+            contentView.contains("let failed = plan.subTasks.filter { $0.status == .failed }.count"),
+            "Multi-Agent summary should count failed subtasks."
+        )
+        XCTAssertTrue(
+            contentView.contains("let cancelled = plan.subTasks.filter { $0.status == .cancelled }.count"),
+            "Multi-Agent summary should count cancelled subtasks."
+        )
+        XCTAssertTrue(
+            contentView.contains("parts.append(\"失败 \\(failed)\")"),
+            "Failed subtasks should be visible in the compact summary."
+        )
+        XCTAssertTrue(
+            contentView.contains("parts.append(\"停止 \\(cancelled)\")"),
+            "Cancelled subtasks should be visible in the compact summary."
+        )
+        XCTAssertFalse(
+            contextPanel.contains("private func multiAgentSummary(for plan: TaskPlan) -> String"),
+            "The context panel should stop duplicating compact Multi-Agent summary logic once runtime state owns the sidebar headline."
+        )
     }
 }

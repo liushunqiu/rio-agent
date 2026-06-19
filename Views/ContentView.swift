@@ -72,7 +72,8 @@ struct ContentView: View {
                     let accepted = agentEngine.submitUserInput(text) {
                         conversationManager.updateCurrentConversation(
                             messages: agentEngine.messages,
-                            workingDirectory: .set(agentEngine.workingDirectory)
+                            workingDirectory: .set(agentEngine.workingDirectory),
+                            pendingDecision: .set(agentEngine.persistedPendingDecision)
                         )
                     }
                     if accepted {
@@ -91,7 +92,8 @@ struct ContentView: View {
                     let accepted = agentEngine.submitUserInput(text) {
                         conversationManager.updateCurrentConversation(
                             messages: agentEngine.messages,
-                            workingDirectory: .set(agentEngine.workingDirectory)
+                            workingDirectory: .set(agentEngine.workingDirectory),
+                            pendingDecision: .set(agentEngine.persistedPendingDecision)
                         )
                     }
                     if accepted {
@@ -183,7 +185,8 @@ struct ContentView: View {
             agentEngine.onUserMessageAdded = { [weak conversationManager] in
                 conversationManager?.updateCurrentConversation(
                     messages: agentEngine.messages,
-                    workingDirectory: .set(agentEngine.workingDirectory)
+                    workingDirectory: .set(agentEngine.workingDirectory),
+                    pendingDecision: .set(agentEngine.persistedPendingDecision)
                 )
             }
         }
@@ -226,7 +229,8 @@ struct ContentView: View {
         guard conversationManager.currentConversation != nil else { return }
         conversationManager.updateCurrentConversation(
             messages: agentEngine.messages,
-            workingDirectory: .set(agentEngine.workingDirectory)
+            workingDirectory: .set(agentEngine.workingDirectory),
+            pendingDecision: .set(agentEngine.persistedPendingDecision)
         )
     }
 
@@ -307,28 +311,45 @@ struct SidebarView: View {
                     Spacer()
                 }
 
-                Button(action: onNewConversation) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("新建对话")
-                            .font(.system(size: 13, weight: .medium))
+                HStack(alignment: .center, spacing: 10) {
+                    Text("最近会话")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(Theme.textTertiary)
+                        .textCase(.uppercase)
+
+                    Spacer()
+
+                    Button(action: onNewConversation) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("新建")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(Theme.textSecondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Theme.bgGlass.opacity(0.7))
+                        .cornerRadius(Theme.radiusMD)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                .stroke(Theme.borderSubtle, lineWidth: 1)
+                        )
                     }
-                    .foregroundColor(Theme.textPrimary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Theme.accentPrimary.opacity(0.13))
-                    .cornerRadius(Theme.radiusMD)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusMD)
-                            .stroke(Theme.accentPrimary.opacity(0.22), lineWidth: 1)
-                    )
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 HStack(spacing: 8) {
-                    SidebarMetric(value: "\(conversationManager.conversations.count)", label: "对话")
-                    SidebarMetric(value: draftCount == 0 ? "0" : "\(draftCount)", label: "草稿")
+                    SidebarMetric(
+                        value: "\(conversationManager.conversations.count)",
+                        label: "对话",
+                        isEmphasized: conversationManager.conversations.count > 0
+                    )
+                    SidebarMetric(
+                        value: draftCount == 0 ? "0" : "\(draftCount)",
+                        label: "草稿",
+                        isEmphasized: draftCount > 0
+                    )
                 }
             }
             .padding(.horizontal, 16)
@@ -500,11 +521,22 @@ struct ConversationRow: View {
             }
 
             HStack(spacing: 10) {
-                MetaPill(
-                    icon: "text.bubble",
-                    text: visibleMessageCount == 0 ? "未开始" : "\(visibleMessageCount) 条消息",
-                    isSelected: isSelected
-                )
+                if let pendingDecisionLabel {
+                    MetaPill(
+                        icon: "questionmark.circle",
+                        text: pendingDecisionLabel,
+                        isSelected: isSelected,
+                        tone: Theme.statusWarning
+                    )
+                }
+
+                if let messageMetaLabel {
+                    MetaPill(
+                        icon: "text.bubble",
+                        text: messageMetaLabel,
+                        isSelected: isSelected
+                    )
+                }
 
                 if conversation.workingDirectory != nil {
                     MetaPill(
@@ -541,6 +573,10 @@ struct ConversationRow: View {
         conversation.visibleMessageCount
     }
 
+    private var hasDraft: Bool {
+        !conversation.draftInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var previewText: String? {
         conversation.latestPreviewContent
     }
@@ -548,6 +584,27 @@ struct ConversationRow: View {
     private var folderName: String {
         guard let path = conversation.workingDirectory else { return "" }
         return URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    private var messageMetaLabel: String? {
+        if visibleMessageCount > 0 {
+            return "\(visibleMessageCount) 条消息"
+        }
+        if pendingDecisionLabel != nil || hasDraft {
+            return nil
+        }
+        return "未开始"
+    }
+
+    private var pendingDecisionLabel: String? {
+        guard let pendingDecision = conversation.pendingDecision else { return nil }
+
+        switch pendingDecision {
+        case .overwriteAgentFile:
+            return "等待覆盖确认"
+        case .chooseExecutionModeForTask:
+            return "等待模式确认"
+        }
     }
 }
 
@@ -597,7 +654,12 @@ struct MainContentView: View {
                 currentProvider: agentEngine.configuration.executionProvider,
                 currentModelName: agentEngine.primaryDisplayModelName,
                 currentWorkingDirectory: agentEngine.workingDirectory,
-                messageCount: agentEngine.messages.filter(\.isVisibleInTranscript).count
+                messageCount: agentEngine.messages.filter(\.isVisibleInTranscript).count,
+                prefersCompactRuntimeChrome: hasVisibleTranscript && (
+                    agentEngine.currentPipeline != nil ||
+                    agentEngine.pendingUserDecision != nil ||
+                    agentEngine.singleAgentVerificationSummary != nil
+                )
             )
 
             // Chat area
@@ -616,7 +678,10 @@ struct MainContentView: View {
                 InternalActivityView(
                     isProcessing: agentEngine.isProcessing,
                     pendingUserDecision: agentEngine.pendingUserDecision,
-                    workingDirectory: agentEngine.workingDirectory
+                    workingDirectory: agentEngine.workingDirectory,
+                    onStop: agentEngine.isProcessing && agentEngine.pendingUserDecision == nil ? {
+                        agentEngine.stopProcessing()
+                    } : nil
                 )
                 .transition(.opacity)
             } else {
@@ -639,8 +704,8 @@ struct MainContentView: View {
                 ErrorBanner(
                     message: error,
                     isNonBlocking: error.contains("已继续执行标准流程"),
-                    canResumeTask: resumableUserTask != nil,
-                    onResumeTask: restoreLastUserTaskFromConversation,
+                    canResumeTask: resumableTaskInput != nil,
+                    onResumeTask: restoreResumableTaskInput,
                     onOpenSettings: settingsShortcutAction(for: error, recoveryContext: agentEngine.errorRecoveryContext),
                     settingsButtonTitle: settingsShortcutTitle(for: error, recoveryContext: agentEngine.errorRecoveryContext),
                     settingsHelpText: settingsShortcutHelpText(for: error, recoveryContext: agentEngine.errorRecoveryContext),
@@ -688,24 +753,32 @@ struct MainContentView: View {
     }
 
     private var hasInternalActivity: Bool {
-        !hasVisibleTranscript && !agentEngine.messages.isEmpty
+        !hasVisibleTranscript && (
+            agentEngine.isProcessing ||
+            agentEngine.pendingUserDecision != nil
+        )
     }
 
     private var shouldShowInputArea: Bool {
-        hasVisibleTranscript || hasInternalActivity || agentEngine.pendingUserDecision != nil
+        hasVisibleTranscript || agentEngine.pendingUserDecision != nil
     }
 
-    private var resumableUserTask: String? {
-        agentEngine.messages
+    private var resumableTaskInput: String? {
+        let draft = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.isEmpty {
+            return draft
+        }
+
+        return agentEngine.messages
             .reversed()
             .first(where: shouldUseMessageForTaskResume)?
             .content
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func restoreLastUserTaskFromConversation() {
-        guard let resumableUserTask, !resumableUserTask.isEmpty else { return }
-        inputText = resumableUserTask
+    private func restoreResumableTaskInput() {
+        guard let resumableTaskInput, !resumableTaskInput.isEmpty else { return }
+        inputText = resumableTaskInput
         agentEngine.error = nil
         isInputFocused = true
     }
@@ -758,6 +831,7 @@ struct InternalActivityView: View {
     let isProcessing: Bool
     let pendingUserDecision: AgentEngine.PendingUserDecision?
     let workingDirectory: String?
+    var onStop: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 18) {
@@ -772,7 +846,7 @@ struct InternalActivityView: View {
                     Image(systemName: icon)
                         .font(.system(size: 21, weight: .semibold))
                         .foregroundColor(tint)
-                        .symbolEffect(.pulse, options: .repeating, value: isProcessing)
+                        .symbolEffect(.pulse, options: .repeating, value: shouldAnimateActivity)
                 }
 
                 VStack(spacing: 6) {
@@ -804,6 +878,28 @@ struct InternalActivityView: View {
                     .cornerRadius(Theme.radiusSM)
                     .help(workingDirectory)
                 }
+
+                if let onStop {
+                    Button(action: onStop) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("停止当前任务")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(Theme.statusError)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Theme.statusError.opacity(0.12))
+                        .cornerRadius(Theme.radiusSM)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                .stroke(Theme.statusError.opacity(0.18), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("停止当前任务")
+                }
             }
             .padding(24)
             .background(
@@ -832,6 +928,10 @@ struct InternalActivityView: View {
         pendingUserDecision != nil ? Theme.statusWarning : Theme.accentPrimary
     }
 
+    private var shouldAnimateActivity: Bool {
+        isProcessing && pendingUserDecision == nil
+    }
+
     private var title: String {
         if pendingUserDecision != nil {
             return "等待你的确认"
@@ -845,12 +945,12 @@ struct InternalActivityView: View {
             case .overwriteAgentFile:
                 return "系统需要确认是否覆盖已有 AGENT.md。你可以回复是/否，也可以直接输入新的任务。"
             case .chooseExecutionModeForTask:
-                return "系统已完成执行模式判断，正在等待你选择继续多 Agent 或改用单 Agent。"
+                return "系统已完成执行模式判断，正在等待你选择继续多 Agent 或改用单 Agent。你也可以直接输入新的任务，系统会自动切换。"
             }
         }
 
         if isProcessing {
-            return "当前只有内部执行上下文，还没有可显示的对话内容。完成第一步后会自动展示结果。"
+            return "系统已经开始处理当前任务，正在准备首个可见结果。完成第一步后会自动切换到主阅读流。"
         }
 
         return "当前会话没有可见消息。你可以继续输入任务。"
@@ -872,15 +972,17 @@ struct TopBar: View {
     var currentModelName: String = ""
     var currentWorkingDirectory: String?
     var messageCount: Int = 0
+    var prefersCompactRuntimeChrome = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Provider badge
             HStack(spacing: 6) {
                 Image(systemName: currentProvider.icon)
                     .font(.system(size: 11))
-                Text(currentProvider.displayName)
+                Text(topBarModelLabel)
                     .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             .foregroundColor(Theme.textSecondary)
             .padding(.horizontal, 8)
@@ -891,8 +993,9 @@ struct TopBar: View {
                 RoundedRectangle(cornerRadius: Theme.radiusSM)
                     .stroke(Theme.borderSubtle, lineWidth: 1)
             )
+            .help(modelHelpText)
 
-            if pipeline != nil || pendingUserDecision != nil {
+            if pipeline != nil || pendingUserDecision != nil || singleAgentVerification != nil {
                 HStack(spacing: 5) {
                     Image(systemName: pipelineIcon)
                         .font(.system(size: 10))
@@ -906,7 +1009,7 @@ struct TopBar: View {
                 .cornerRadius(Theme.radiusSM)
             }
 
-            if let executionSummary {
+            if shouldShowSecondaryRuntimeSummaries, let executionSummary {
                 HStack(spacing: 5) {
                     Image(systemName: summaryIcon)
                         .font(.system(size: 10))
@@ -921,7 +1024,7 @@ struct TopBar: View {
                 .cornerRadius(Theme.radiusSM)
             }
 
-            if let focusSummary {
+            if shouldShowSecondaryRuntimeSummaries, let focusSummary {
                 HStack(spacing: 5) {
                     Image(systemName: focusIcon)
                         .font(.system(size: 10))
@@ -936,22 +1039,6 @@ struct TopBar: View {
                 .padding(.vertical, 4)
                 .background(focusColor.opacity(0.08))
                 .cornerRadius(Theme.radiusSM)
-            }
-
-            if !currentModelName.isEmpty {
-                HStack(spacing: 5) {
-                    Image(systemName: "cpu")
-                        .font(.system(size: 10))
-                    Text(currentModelName)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                }
-                .foregroundColor(Theme.textSecondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Theme.bgGlass.opacity(0.7))
-                .cornerRadius(Theme.radiusSM)
-                .help(modelHelpText)
             }
 
             Spacer()
@@ -973,17 +1060,19 @@ struct TopBar: View {
                 .help(currentWorkingDirectory)
             }
 
-            HStack(spacing: 5) {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 10))
-                Text("\(messageCount)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+            if messageCount > 0 {
+                HStack(spacing: 5) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 10))
+                    Text("\(messageCount)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                }
+                .foregroundColor(Theme.textTertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.bgGlass.opacity(0.5))
+                .cornerRadius(Theme.radiusSM)
             }
-            .foregroundColor(Theme.textTertiary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Theme.bgGlass.opacity(0.5))
-            .cornerRadius(Theme.radiusSM)
 
             Button(action: {
                 settingsInitialTab = .ai
@@ -1019,7 +1108,7 @@ struct TopBar: View {
             case .unverified:
                 return "未验证"
             case .verified:
-                break
+                return "已验证"
             }
         }
 
@@ -1039,6 +1128,10 @@ struct TopBar: View {
         case .skipped, .none:
             return "流程"
         }
+    }
+
+    private var shouldShowSecondaryRuntimeSummaries: Bool {
+        !prefersCompactRuntimeChrome
     }
 
     private var pipelineColor: Color {
@@ -1087,18 +1180,25 @@ struct TopBar: View {
         if let pendingUserDecision {
             switch pendingUserDecision {
             case .overwriteAgentFile:
-                return "确认覆盖 AGENT.md"
+                return nil
             case .chooseExecutionModeForTask:
-                return "确认执行模式"
+                return nil
             }
         }
 
-        if let currentTaskPlan {
-            return multiAgentSummary(for: currentTaskPlan)
+        if singleAgentVerification != nil {
+            return nil
         }
 
-        if let singleAgentVerification {
-            return singleAgentVerificationSummary(for: singleAgentVerification)
+        if let currentTaskPlan {
+            let actionable = currentTaskPlan.subTasks.filter(\.needsAttention).count
+            if actionable > 0 {
+                return multiAgentSummary(for: currentTaskPlan)
+            }
+            if currentTaskPlan.status == .completed {
+                return nil
+            }
+            return multiAgentSummary(for: currentTaskPlan)
         }
 
         if let singleAgentPlan {
@@ -1108,6 +1208,9 @@ struct TopBar: View {
 
         if let pipeline,
            let currentStage = pipeline.currentStage {
+            if focusSummary == currentStage.type.title {
+                return nil
+            }
             return currentStage.type.title
         }
 
@@ -1142,6 +1245,9 @@ struct TopBar: View {
     }
 
     private var summaryColor: Color {
+        if pendingUserDecision != nil {
+            return Theme.statusWarning
+        }
         if let singleAgentVerification {
             return verificationTone(for: singleAgentVerification.status)
         }
@@ -1164,13 +1270,19 @@ struct TopBar: View {
         return "\(provider) · \(currentModelName)"
     }
 
+    private var topBarModelLabel: String {
+        let trimmedModel = currentModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty else { return currentProvider.displayName }
+        return trimmedModel
+    }
+
     private var focusSummary: String? {
         if let pendingUserDecision {
             switch pendingUserDecision {
             case .overwriteAgentFile:
-                return "等待覆盖确认"
+                return "覆盖 AGENT.md"
             case .chooseExecutionModeForTask:
-                return "等待模式确认"
+                return "继续多 Agent 或改单 Agent"
             }
         }
 
@@ -1178,6 +1290,9 @@ struct TopBar: View {
             let actionable = currentTaskPlan.subTasks.filter(\.needsAttention).count
             if actionable > 0 {
                 return "待处理 \(actionable) 项"
+            }
+            if currentTaskPlan.status == .completed {
+                return nil
             }
         }
 
@@ -1188,7 +1303,7 @@ struct TopBar: View {
             case .unverified:
                 return "缺少完成证据"
             case .verified:
-                break
+                return nil
             }
         }
 
@@ -1201,6 +1316,9 @@ struct TopBar: View {
         }
 
         if let currentStage = pipeline?.currentStage {
+            if pipeline?.overallStatus == .running {
+                return nil
+            }
             return currentStage.type.title
         }
 
@@ -1245,19 +1363,6 @@ struct TopBar: View {
         return Theme.accentSecondary
     }
 
-    private func singleAgentVerificationSummary(
-        for verification: VerifierService.VerificationOutcome
-    ) -> String {
-        switch verification.status {
-        case .verified:
-            return "结果已验证"
-        case .unverified:
-            return "建议补充验证"
-        case .needsRetry:
-            return "先修订再继续"
-        }
-    }
-
     private func verificationTone(for status: VerificationStatus) -> Color {
         switch status {
         case .verified:
@@ -1296,6 +1401,7 @@ struct MetaPill: View {
     let icon: String
     let text: String
     let isSelected: Bool
+    var tone: Color? = nil
     var helpText: String?
 
     var body: some View {
@@ -1307,38 +1413,57 @@ struct MetaPill: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .foregroundColor(isSelected ? Theme.textSecondary : Theme.textTertiary)
+        .foregroundColor(resolvedForegroundColor)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(
             Capsule()
-                .fill(isSelected ? Theme.accentPrimary.opacity(0.10) : Theme.bgGlass.opacity(0.55))
+                .fill(resolvedBackgroundColor)
         )
         .overlay(
             Capsule()
-                .stroke(isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.borderSubtle, lineWidth: 1)
+                .stroke(resolvedBorderColor, lineWidth: 1)
         )
         .help(helpText ?? text)
+    }
+
+    private var resolvedForegroundColor: Color {
+        tone ?? (isSelected ? Theme.textSecondary : Theme.textTertiary)
+    }
+
+    private var resolvedBackgroundColor: Color {
+        if let tone {
+            return tone.opacity(isSelected ? 0.15 : 0.11)
+        }
+        return isSelected ? Theme.accentPrimary.opacity(0.10) : Theme.bgGlass.opacity(0.55)
+    }
+
+    private var resolvedBorderColor: Color {
+        if let tone {
+            return tone.opacity(isSelected ? 0.28 : 0.20)
+        }
+        return isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.borderSubtle
     }
 }
 
 struct SidebarMetric: View {
     let value: String
     let label: String
+    var isEmphasized: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(value)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
-                .foregroundColor(Theme.textPrimary)
+                .font(.system(size: 13, weight: isEmphasized ? .semibold : .medium, design: .rounded))
+                .foregroundColor(isEmphasized ? Theme.textPrimary : Theme.textSecondary)
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(Theme.textTertiary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.bgGlass.opacity(0.7))
+        .background(Theme.bgGlass.opacity(isEmphasized ? 0.62 : 0.46))
         .cornerRadius(Theme.radiusMD)
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radiusMD)
@@ -1408,7 +1533,7 @@ struct InputArea: View {
                 }
 
                 // Bottom toolbar
-                HStack(spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     // Folder selector
                     FolderSelector(
                         workingDirectory: $workingDirectory,
@@ -1420,16 +1545,16 @@ struct InputArea: View {
                     Button(action: {
                         composer.isShowingFilePicker = true
                     }) {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Image(systemName: "at")
-                                .font(.system(size: 11))
+                                .font(.system(size: 10, weight: .semibold))
                             Text("添加文件")
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 11))
                         }
                         .foregroundColor(Theme.textSecondary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Theme.bgGlass)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.bgGlass.opacity(0.72))
                         .cornerRadius(Theme.radiusSM)
                         .overlay(
                             RoundedRectangle(cornerRadius: Theme.radiusSM)
@@ -1445,14 +1570,18 @@ struct InputArea: View {
                         HStack(spacing: 5) {
                             Image(systemName: "paperclip")
                                 .font(.system(size: 10))
-                            Text("\(composer.selectedFiles.count) 个上下文")
-                                .font(.system(size: 11, weight: .medium))
+                            Text("\(composer.selectedFiles.count) 个文件")
+                                .font(.system(size: 10, weight: .medium))
                         }
                         .foregroundColor(Theme.textSecondary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Theme.bgGlass.opacity(0.75))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.bgGlass.opacity(0.58))
                         .cornerRadius(Theme.radiusSM)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusSM)
+                                .stroke(Theme.borderSubtle.opacity(0.8), lineWidth: 1)
+                        )
                         .lineLimit(1)
                         .help(selectedFileSummaryHelp)
                     }
@@ -1464,13 +1593,22 @@ struct InputArea: View {
                         .frame(maxWidth: 180, alignment: .trailing)
                         .layoutPriority(0)
 
-                    if let pendingDecisionHint {
-                        Text(pendingDecisionHint)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Theme.statusWarning)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .layoutPriority(2)
+                    if let pendingDecisionHint, pendingUserDecision == nil {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "questionmark.circle")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(Theme.statusWarning)
+                                .padding(.top, 1)
+
+                            Text(pendingDecisionHint)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Theme.statusWarning)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help(pendingDecisionHint)
+                        }
+                        .frame(maxWidth: 240, alignment: .leading)
+                        .layoutPriority(2)
                     }
 
                     // Send / Stop button
@@ -1514,7 +1652,7 @@ struct InputArea: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.bottom, 12)
+                .padding(.vertical, 9)
             }
             .background(Theme.bgInput.opacity(0.94))
             .cornerRadius(Theme.radiusXL)
@@ -1562,7 +1700,7 @@ struct InputArea: View {
     private var fileContextNotice: String? {
         guard workingDirectory == nil else { return nil }
         guard composer.text.hasSuffix("@") else { return nil }
-        return "先选择工作目录，才能添加文件上下文。"
+        return "可以先写任务；需要添加文件上下文时，再选择工作目录。"
     }
 
     private var selectedFileSummaryHelp: String {
@@ -1600,9 +1738,9 @@ struct InputArea: View {
         guard let pendingUserDecision else { return nil }
         switch pendingUserDecision {
         case .overwriteAgentFile:
-            return "回复是/否，或直接输入新任务"
+            return "输入是/否，或直接写新任务"
         case .chooseExecutionModeForTask:
-            return "回复是继续多 Agent，回复否改为单 Agent"
+            return "输入是继续多 Agent，输入否改单 Agent，或直接写新任务"
         }
     }
 
@@ -1613,9 +1751,9 @@ struct InputArea: View {
 
         switch pendingUserDecision {
         case .overwriteAgentFile:
-            return "输入“是”覆盖，输入“否”取消，或直接写新任务"
+            return "回复是/否，或直接写新任务"
         case .chooseExecutionModeForTask:
-            return "输入“是”用 Multi-Agent，输入“否”改单 Agent，或直接写新任务"
+            return "回复是/否，或直接写新任务"
         }
     }
 
@@ -1631,7 +1769,7 @@ struct InputArea: View {
             return "请先完成当前确认，再调整文件上下文"
         }
         if workingDirectory == nil {
-            return "先选择工作目录，再添加文件上下文"
+            return "可以先写任务；需要添加文件上下文时，再选择工作目录"
         }
         return "添加文件上下文"
     }
@@ -1829,49 +1967,30 @@ struct ErrorBanner: View {
 
                 HStack(spacing: 8) {
                     if shouldShowExpandButton {
-                        Button(action: {
+                        ErrorBannerUtilityButton(
+                            icon: isExpanded ? "chevron.up" : "chevron.down",
+                            tone: Theme.textSecondary,
+                            helpText: isExpanded ? "收起错误详情" : "展开完整错误详情"
+                        ) {
                             withAnimation(.easeInOut(duration: 0.16)) {
                                 isExpanded.toggle()
                             }
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text(isExpanded ? "收起详情" : "展开详情")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundColor(Theme.textSecondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(Theme.bgGlass.opacity(0.7))
-                            .cornerRadius(Theme.radiusSM)
                         }
-                        .buttonStyle(.plain)
-                        .help(isExpanded ? "收起错误详情" : "展开完整错误详情")
                     }
 
-                    Button(action: copyErrorMessage) {
-                        HStack(spacing: 4) {
-                            Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 9, weight: .bold))
-                            Text(didCopy ? "已复制" : "复制错误")
-                                .font(.system(size: 10, weight: .medium))
-                        }
-                        .foregroundColor(didCopy ? Theme.statusSuccess : Theme.textSecondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .background(Theme.bgGlass.opacity(0.7))
-                        .cornerRadius(Theme.radiusSM)
-                    }
-                    .buttonStyle(.plain)
-                    .help("复制完整错误信息")
+                    ErrorBannerUtilityButton(
+                        icon: didCopy ? "checkmark" : "doc.on.doc",
+                        tone: didCopy ? Theme.statusSuccess : Theme.textSecondary,
+                        helpText: "复制完整错误信息",
+                        action: copyErrorMessage
+                    )
 
                     if canResumeTask, let onResumeTask {
                         Button(action: onResumeTask) {
                             HStack(spacing: 5) {
                                 Image(systemName: "arrow.uturn.backward")
                                     .font(.system(size: 9, weight: .bold))
-                                Text("继续编辑")
+                                Text("恢复任务")
                                     .font(.system(size: 10, weight: .medium))
                             }
                             .foregroundColor(Theme.textPrimary)
@@ -1881,43 +2000,26 @@ struct ErrorBanner: View {
                             .cornerRadius(Theme.radiusSM)
                         }
                         .buttonStyle(.plain)
-                        .help("将最近一条用户任务放回输入框继续修改")
+                        .help("优先恢复当前草稿；如果没有草稿，则恢复最近一条真实任务")
                     }
 
                     if let onOpenSettings {
-                        Button(action: onOpenSettings) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "gearshape")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text(settingsButtonTitle ?? "打开设置")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundColor(Theme.textPrimary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 6)
-                            .background(Theme.bgElevated.opacity(0.95))
-                            .cornerRadius(Theme.radiusSM)
-                        }
-                        .buttonStyle(.plain)
+                        ErrorBannerUtilityButton(
+                            icon: "gearshape",
+                            tone: Theme.textSecondary,
+                            helpText: settingsButtonTitle ?? settingsHelpText ?? "打开设置修复当前配置问题",
+                            action: onOpenSettings
+                        )
                         .help(settingsHelpText ?? "打开设置修复当前配置问题")
                     }
 
                     if let onDismiss {
-                        Button(action: onDismiss) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text("收起")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundColor(Theme.textTertiary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(Theme.bgGlass.opacity(0.7))
-                            .cornerRadius(Theme.radiusSM)
-                        }
-                        .buttonStyle(.plain)
-                        .help("收起错误提示")
+                        ErrorBannerUtilityButton(
+                            icon: "xmark",
+                            tone: Theme.textTertiary,
+                            helpText: "收起错误提示",
+                            action: onDismiss
+                        )
                     }
                 }
             }
@@ -1969,7 +2071,10 @@ struct ErrorBanner: View {
         if isNonBlocking {
             return "继续执行"
         }
-        return canResumeTask ? "可继续编辑" : "已停止"
+        if canResumeTask {
+            return onOpenSettings == nil ? "可恢复" : "可恢复 / 待配置"
+        }
+        return "已停止"
     }
 
     private func copyErrorMessage() {
@@ -1979,6 +2084,26 @@ struct ErrorBanner: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             didCopy = false
         }
+    }
+}
+
+private struct ErrorBannerUtilityButton: View {
+    let icon: String
+    let tone: Color
+    let helpText: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(tone)
+                .frame(width: 28, height: 28)
+                .background(Theme.bgGlass.opacity(0.7))
+                .cornerRadius(Theme.radiusSM)
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
     }
 }
 

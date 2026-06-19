@@ -95,40 +95,70 @@ struct MessageContent: View {
             // Assistant message
             if message.isStreaming {
                 // 流式输出期间使用简单的Text视图，提高性能
-                Text(message.content)
-                    .font(.system(size: 14))
-                    .foregroundColor(Theme.textPrimary)
-                    .lineSpacing(6)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .frame(maxWidth: 820, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.radiusLG)
-                            .fill(Theme.assistantBubbleBg)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusLG)
-                            .stroke(Theme.assistantBubbleBorder, lineWidth: 1)
-                    )
-                    .shadow(color: Theme.shadowSoft, radius: 10, x: 0, y: 4)
+                assistantContainer {
+                    Text(message.content)
+                        .font(.system(size: 14))
+                        .foregroundColor(Theme.textPrimary)
+                        .lineSpacing(6)
+                        .textSelection(.enabled)
+                }
             } else {
                 // 流式输出完成后使用完整的Markdown渲染
-                MarkdownRenderer(text: message.content)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .frame(maxWidth: 820, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.radiusLG)
-                            .fill(Theme.assistantBubbleBg)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusLG)
-                            .stroke(Theme.assistantBubbleBorder, lineWidth: 1)
-                    )
-                    .shadow(color: Theme.shadowSoft, radius: 10, x: 0, y: 4)
+                assistantContainer {
+                    MarkdownRenderer(text: message.content)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func assistantContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if message.isFinalAnswer {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("最终答复")
+                        .font(.system(size: 11, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Text("已交付")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(Theme.statusSuccess)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radiusSM)
+                        .fill(Theme.statusSuccess.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusSM)
+                        .stroke(Theme.statusSuccess.opacity(0.20), lineWidth: 1)
+                )
+            }
+
+            content()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: 820, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radiusLG)
+                .fill(message.isFinalAnswer ? Theme.bgGlass.opacity(0.72) : Theme.assistantBubbleBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusLG)
+                .stroke(
+                    message.isFinalAnswer ? Theme.statusSuccess.opacity(0.34) : Theme.assistantBubbleBorder,
+                    lineWidth: 1
+                )
+        )
+        .shadow(
+            color: message.isFinalAnswer ? Theme.statusSuccess.opacity(0.12) : Theme.shadowSoft,
+            radius: message.isFinalAnswer ? 16 : 10,
+            x: 0,
+            y: message.isFinalAnswer ? 7 : 4
+        )
     }
 }
 
@@ -140,6 +170,12 @@ struct MessageFooter: View {
 
     var body: some View {
         HStack(spacing: 14) {
+            if message.isFinalAnswer {
+                Label("最终结果", systemImage: "flag.checkered.2.crossed")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.statusSuccess)
+            }
+
             Text(message.timestamp, style: .time)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(Theme.textSecondary.opacity(0.7))

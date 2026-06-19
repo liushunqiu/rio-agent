@@ -4,69 +4,86 @@ import SwiftUI
 struct ExecutionPipelineView: View {
     let pipeline: ExecutionPipeline
     @State private var expandedStages: Set<UUID> = []
+    @State private var isCollapsed = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
             HStack(spacing: 10) {
                 Image(systemName: pipelineIcon)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(pipelineColor)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pipelineTitle)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Theme.textPrimary)
 
-                    if let duration = formattedDuration {
-                        Text(duration)
-                            .font(.system(size: 11, design: .monospaced))
+                    if let metaSummary {
+                        Text(metaSummary)
+                            .font(.system(size: 11))
                             .foregroundColor(Theme.textTertiary)
+                            .lineLimit(1)
+                            .help(metaSummary)
                     }
                 }
 
                 Spacer()
 
-                StatusIndicator(status: pipeline.overallStatus)
-            }
+                CompactStatusPill(status: pipeline.overallStatus)
 
-            Divider().overlay(Theme.borderSubtle)
+                if hasExpandableTimeline {
+                    Button(action: { isCollapsed.toggle() }) {
+                        Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.textTertiary)
+                            .frame(width: 28, height: 28)
+                            .background(Theme.bgTertiary)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .help(isCollapsed ? "展开阶段明细" : "收起阶段明细")
+                }
+            }
 
             if let exceptionalStage {
                 PipelineInsightBanner(
                     icon: exceptionalStage.status == .failed ? "exclamationmark.triangle.fill" : "slash.circle.fill",
-                    title: exceptionalStage.status == .failed ? "异常总览" : "停止总览",
+                    title: exceptionalStage.status == .failed ? "异常焦点" : "停止焦点",
                     detail: exceptionalStageSummary,
                     tone: exceptionalStage.status == .failed ? Theme.statusError : Theme.textTertiary
                 )
             } else if let currentStage = pipeline.currentStage {
                 PipelineInsightBanner(
                     icon: currentStage.type.icon,
-                    title: "当前焦点",
+                    title: "进行中",
                     detail: currentStageSummary(for: currentStage),
                     tone: Theme.statusInfo
                 )
             }
 
-            // Stages
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(pipeline.stages.enumerated()), id: \.element.id) { index, stage in
-                    VStack(spacing: 0) {
-                        StageRow(
-                            stage: stage,
-                            isExpanded: expandedStages.contains(stage.id),
-                            onToggle: {
-                                if expandedStages.contains(stage.id) {
-                                    expandedStages.remove(stage.id)
-                                } else {
-                                    expandedStages.insert(stage.id)
-                                }
-                            }
-                        )
+            if !isCollapsed {
+                Divider().overlay(Theme.borderSubtle)
 
-                        // Connector line to next stage
-                        if index < pipeline.stages.count - 1 {
-                            ConnectorLine(fromStatus: stage.status)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(pipeline.stages.enumerated()), id: \.element.id) { index, stage in
+                        VStack(spacing: 0) {
+                            StageRow(
+                                stage: stage,
+                                isExpanded: expandedStages.contains(stage.id),
+                                onToggle: {
+                                    if expandedStages.contains(stage.id) {
+                                        expandedStages.remove(stage.id)
+                                    } else {
+                                        expandedStages.insert(stage.id)
+                                    }
+                                }
+                            )
+
+                            // Connector line to next stage
+                            if index < pipeline.stages.count - 1 {
+                                ConnectorLine(fromStatus: stage.status)
+                            }
                         }
                     }
                 }
@@ -74,10 +91,10 @@ struct ExecutionPipelineView: View {
         }
         .padding(16)
         .background(Theme.bgSecondary)
-        .cornerRadius(Theme.radiusLG)
+        .cornerRadius(8)
         .overlay(
-            RoundedRectangle(cornerRadius: Theme.radiusLG)
-                .stroke(pipelineColor.opacity(0.3), lineWidth: 1.5)
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Theme.borderSubtle, lineWidth: 1)
         )
         .onAppear {
             expandRelevantStages()
@@ -110,8 +127,8 @@ struct ExecutionPipelineView: View {
 
     private var pipelineTitle: String {
         switch pipeline.mode {
-        case .singleAgent: return "Single Agent 执行流程"
-        case .multiAgent: return "Multi-Agent 执行流程"
+        case .singleAgent: return "单 Agent 流程"
+        case .multiAgent: return "多 Agent 流程"
         }
     }
 
@@ -136,6 +153,22 @@ struct ExecutionPipelineView: View {
             let seconds = Int(duration.truncatingRemainder(dividingBy: 60))
             return "\(minutes)m \(seconds)s"
         }
+    }
+
+    private var metaSummary: String? {
+        let stageSummary = "\(completedStageCount)/\(pipeline.stages.count) 阶段"
+        guard let formattedDuration else { return stageSummary }
+        return "\(stageSummary) · \(formattedDuration)"
+    }
+
+    private var completedStageCount: Int {
+        pipeline.stages.filter {
+            $0.status == .completed || $0.status == .cancelled || $0.status == .failed || $0.status == .skipped
+        }.count
+    }
+
+    private var hasExpandableTimeline: Bool {
+        !pipeline.stages.isEmpty
     }
 
     private var exceptionalStage: PipelineStage? {
@@ -193,6 +226,47 @@ struct ExecutionPipelineView: View {
             return reason
         case .skipped(let reason):
             return reason
+        }
+    }
+}
+
+private struct CompactStatusPill: View {
+    let status: PipelineStageStatus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(tone)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.textSecondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Theme.bgTertiary)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var label: String {
+        switch status {
+        case .pending: return "待开始"
+        case .running: return "执行中"
+        case .completed: return "已完成"
+        case .cancelled: return "已停止"
+        case .failed: return "需处理"
+        case .skipped: return "已跳过"
+        }
+    }
+
+    private var tone: Color {
+        switch status {
+        case .pending: return Theme.textTertiary
+        case .running: return Theme.statusInfo
+        case .completed: return Theme.statusSuccess
+        case .cancelled: return Theme.textTertiary
+        case .failed: return Theme.statusError
+        case .skipped: return Theme.textTertiary.opacity(0.6)
         }
     }
 }

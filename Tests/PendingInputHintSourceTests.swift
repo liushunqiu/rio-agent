@@ -12,12 +12,16 @@ final class PendingInputHintSourceTests: XCTestCase {
             "InputArea should use a dynamic placeholder instead of the normal task placeholder while waiting for confirmation."
         )
         XCTAssertTrue(
-            source.contains("输入“是”覆盖，输入“否”取消，或直接写新任务"),
-            "Overwrite confirmation should tell the user exactly how yes/no/new-task input will be interpreted."
+            source.contains("回复是/否，或直接写新任务"),
+            "Pending confirmation placeholders should stay concise once the detailed decision semantics already live in the runtime cards."
         )
         XCTAssertTrue(
-            source.contains("输入“是”用 Multi-Agent，输入“否”改单 Agent，或直接写新任务"),
-            "Execution-mode confirmation should tell the user how to choose the mode or start a new task."
+            source.contains("case .overwriteAgentFile:\n            return \"回复是/否，或直接写新任务\"\n        case .chooseExecutionModeForTask:\n            return \"回复是/否，或直接写新任务\""),
+            "InputArea should reuse the same compact pending-reply placeholder across confirmation types instead of restating full decision copy in the bottom composer."
+        )
+        XCTAssertTrue(
+            source.contains("if let pendingDecisionHint, pendingUserDecision == nil"),
+            "Inline pending-decision hints should disappear once confirmation mode is active and the dedicated placeholder/confirmation block already explains the response options."
         )
         XCTAssertTrue(
             source.contains("提交回复或新任务 (Cmd+Return)"),

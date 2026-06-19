@@ -17,8 +17,12 @@ final class FileContextDisplaySourceTests: XCTestCase {
         XCTAssertTrue(newChatPage.contains("workingDirectory: workingDirectory.wrappedValue"))
         XCTAssertTrue(newChatPage.contains("PathSecurity.relativePath(filePath, from: workingDirectory)"))
         XCTAssertTrue(
-            newChatPage.contains("helpText: workingDirectory.wrappedValue"),
-            "The new-chat workspace summary should expose the full selected path, not only the folder name."
+            newChatPage.contains("helpText: workspaceHelpText"),
+            "The new-chat workspace summary should route hover text through a dedicated helper so it can explain optional workspace selection before a directory is chosen."
+        )
+        XCTAssertTrue(
+            newChatPage.contains("return \"可以先直接描述任务；需要引用文件或扫描仓库时，再选择工作目录。\""),
+            "When no workspace is selected, the landing page should explain that directory selection is optional until file-aware context is needed."
         )
         XCTAssertTrue(
             newChatPage.contains(".help(helpText ?? value)"),
