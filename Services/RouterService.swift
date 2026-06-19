@@ -121,16 +121,17 @@ enum RouterService {
             ["role": "system", "content": systemPrompt],
             ["role": "user", "content": input]
         ]
+        let sampling = config.normalizedQwenSamplingParameters
         
         // 构建请求体，参考用户提供的 Python 代码
         var body: [String: Any] = [
             "model": config.qwenModel.trimmingCharacters(in: .whitespacesAndNewlines),
             "messages": messages,
             "max_tokens": config.maxTokens,
-            "temperature": config.temperature,
-            "top_p": config.topP,
-            "top_k": config.topK,
-            "presence_penalty": config.presencePenalty,
+            "temperature": sampling.temperature,
+            "top_p": sampling.topP,
+            "top_k": sampling.topK,
+            "presence_penalty": sampling.presencePenalty,
             "repetition_penalty": 1.0,
             "stream": false
         ]

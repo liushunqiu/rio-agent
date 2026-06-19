@@ -19,6 +19,8 @@ struct ContentView: View {
             // Sidebar
             SidebarView(
                 conversationManager: conversationManager,
+                isNavigationLocked: isConversationNavigationLocked,
+                isSettingsLocked: isRuntimeConfigurationLocked,
                 onSelect: { conversation in
                     prepareForConversationContextChange()
                     conversationManager.selectConversation(conversation)
@@ -41,17 +43,9 @@ struct ContentView: View {
                         agentEngine.clearConversation()
                     }
                 },
-                onNewConversation: {
-                    prepareForConversationContextChange()
-                    let newConversation = conversationManager.createNewConversation(
-                        workingDirectory: agentEngine.workingDirectory
-                    )
-                    agentEngine.loadConversation(newConversation)
-                },
+                onNewConversation: requestNewConversation,
                 onOpenSettings: {
-                    settingsInitialTab = .ai
-                    settingsLaunchContext = nil
-                    showingSettings = true
+                    openSettings()
                 }
             )
             .frame(width: 260)
@@ -192,11 +186,7 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .createNewConversation)) { _ in
-            prepareForConversationContextChange()
-            let newConversation = conversationManager.createNewConversation(
-                workingDirectory: agentEngine.workingDirectory
-            )
-            agentEngine.loadConversation(newConversation)
+            requestNewConversation()
         }
         .onChange(of: agentEngine.workingDirectory) { _, newValue in
             conversationManager.updateWorkingDirectory(newValue)
@@ -226,6 +216,38 @@ struct ContentView: View {
         persistCurrentConversationState()
     }
 
+    private var isConversationNavigationLocked: Bool {
+        agentEngine.isProcessing && agentEngine.pendingUserDecision == nil
+    }
+
+    private var isRuntimeConfigurationLocked: Bool {
+        agentEngine.isProcessing && agentEngine.pendingUserDecision == nil
+    }
+
+    private func openSettings(tab: SettingsTab = .ai, launchContext: SettingsLaunchContext? = nil) {
+        guard !isRuntimeConfigurationLocked else {
+            agentEngine.error = "当前任务运行中，完成或停止后再修改设置。"
+            return
+        }
+
+        settingsInitialTab = tab
+        settingsLaunchContext = launchContext
+        showingSettings = true
+    }
+
+    private func requestNewConversation() {
+        guard !isConversationNavigationLocked else {
+            agentEngine.error = "当前任务运行中，完成或停止后再新建会话。"
+            return
+        }
+
+        prepareForConversationContextChange()
+        let newConversation = conversationManager.createNewConversation(
+            workingDirectory: agentEngine.workingDirectory
+        )
+        agentEngine.loadConversation(newConversation)
+    }
+
     private func persistCurrentConversationState() {
         guard conversationManager.currentConversation != nil else { return }
         conversationManager.updateCurrentConversation(
@@ -243,7 +265,15 @@ struct ContentView: View {
     private var conversationDraftBinding: Binding<String> {
         Binding(
             get: { conversationManager.currentConversation?.draftInput ?? "" },
-            set: { conversationManager.updateDraftInput($0) }
+            set: { newValue in
+                if conversationManager.currentConversation == nil {
+                    guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                    _ = conversationManager.createNewConversation(
+                        workingDirectory: agentEngine.workingDirectory
+                    )
+                }
+                conversationManager.updateDraftInput(newValue)
+            }
         )
     }
 }
@@ -273,6 +303,8 @@ struct AppBackgroundView: View {
 
 struct SidebarView: View {
     @ObservedObject var conversationManager: ConversationManager
+    let isNavigationLocked: Bool
+    let isSettingsLocked: Bool
     let onSelect: (Conversation) -> Void
     let onDelete: (Conversation) -> Void
     let onNewConversation: () -> Void
@@ -320,7 +352,10 @@ struct SidebarView: View {
 
                     Spacer()
 
-                    Button(action: onNewConversation) {
+                    Button(action: {
+                        guard !isNavigationLocked else { return }
+                        onNewConversation()
+                    }) {
                         HStack(spacing: 6) {
                             Image(systemName: "plus")
                                 .font(.system(size: 11, weight: .semibold))
@@ -338,6 +373,9 @@ struct SidebarView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .disabled(isNavigationLocked)
+                    .opacity(isNavigationLocked ? 0.52 : 1)
+                    .help(newConversationHelpText)
                 }
 
                 HStack(spacing: 8) {
@@ -351,6 +389,29 @@ struct SidebarView: View {
                         label: "草稿",
                         isEmphasized: draftCount > 0
                     )
+                }
+
+                if isNavigationLocked {
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "hourglass")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(Theme.statusInfo)
+                            .padding(.top, 1)
+                        Text("当前任务运行中，完成或停止后再切换会话。")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Theme.bgGlass.opacity(0.48))
+                    .cornerRadius(Theme.radiusMD)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusMD)
+                            .stroke(Theme.statusInfo.opacity(0.14), lineWidth: 1)
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .padding(.horizontal, 16)
@@ -386,9 +447,11 @@ struct SidebarView: View {
                             ConversationRow(
                                 conversation: conversation,
                                 isSelected: conversationManager.currentConversation?.id == conversation.id,
-                                isHovered: hoveredConversation == conversation.id
+                                isHovered: hoveredConversation == conversation.id,
+                                isDisabled: isNavigationLocked
                             )
                             .onTapGesture {
+                                guard !isNavigationLocked else { return }
                                 onSelect(conversation)
                             }
                             .onHover { hovering in
@@ -396,8 +459,10 @@ struct SidebarView: View {
                             }
                             .contextMenu {
                                 Button("删除", role: .destructive) {
+                                    guard !isNavigationLocked else { return }
                                     pendingDeleteConversation = conversation
                                 }
+                                .disabled(isNavigationLocked)
                             }
                         }
                     }
@@ -414,7 +479,10 @@ struct SidebarView: View {
                     .fill(Theme.borderSubtle)
                     .frame(height: 1)
 
-                Button(action: onOpenSettings) {
+                Button(action: {
+                    guard !isSettingsLocked else { return }
+                    onOpenSettings()
+                }) {
                     HStack(spacing: 8) {
                         Image(systemName: "gearshape")
                             .font(.system(size: 13))
@@ -432,6 +500,9 @@ struct SidebarView: View {
                     .background(Theme.bgGlass.opacity(0.5))
                 }
                 .buttonStyle(.plain)
+                .disabled(isSettingsLocked)
+                .opacity(isSettingsLocked ? 0.52 : 1)
+                .help(settingsHelpText)
                 .hoverHighlight()
             }
         }
@@ -455,6 +526,15 @@ struct SidebarView: View {
         } message: {
             Text(deleteConfirmationMessage)
         }
+        .animation(.easeInOut(duration: 0.16), value: isNavigationLocked)
+    }
+
+    private var newConversationHelpText: String {
+        isNavigationLocked ? "当前任务运行中，完成或停止后再新建会话" : "新建会话"
+    }
+
+    private var settingsHelpText: String {
+        isSettingsLocked ? "当前任务运行中，完成或停止后再修改设置" : "设置"
     }
 
     private var deleteConfirmationBinding: Binding<Bool> {
@@ -486,6 +566,7 @@ struct ConversationRow: View {
     let conversation: Conversation
     let isSelected: Bool
     let isHovered: Bool
+    var isDisabled: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -567,7 +648,13 @@ struct ConversationRow: View {
             RoundedRectangle(cornerRadius: Theme.radiusMD)
                 .stroke(isSelected ? Theme.accentPrimary.opacity(0.28) : Color.clear, lineWidth: 1)
         )
+        .opacity(isDisabled && !isSelected ? 0.58 : 1)
         .contentShape(Rectangle())
+        .help(rowHelpText)
+    }
+
+    private var rowHelpText: String {
+        isDisabled ? "当前任务运行中，完成或停止后再切换会话" : conversation.title
     }
 
     private var visibleMessageCount: Int {
@@ -652,6 +739,7 @@ struct MainContentView: View {
                 singleAgentVerification: agentEngine.singleAgentVerificationSummary,
                 currentTaskPlan: agentEngine.currentTaskPlan,
                 pendingUserDecision: agentEngine.pendingUserDecision,
+                isSettingsLocked: isRuntimeConfigurationLocked,
                 currentProvider: agentEngine.configuration.executionProvider,
                 currentModelName: agentEngine.primaryDisplayModelName,
                 currentWorkingDirectory: agentEngine.workingDirectory,
@@ -764,6 +852,10 @@ struct MainContentView: View {
         hasVisibleTranscript || agentEngine.pendingUserDecision != nil
     }
 
+    private var isRuntimeConfigurationLocked: Bool {
+        agentEngine.isProcessing && agentEngine.pendingUserDecision == nil
+    }
+
     private var resumableTaskInput: String? {
         let draft = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !draft.isEmpty {
@@ -794,6 +886,11 @@ struct MainContentView: View {
     ) -> (() -> Void)? {
         guard let launchContext = resolvedSettingsLaunchContext(for: error, recoveryContext: recoveryContext) else { return nil }
         return {
+            guard !isRuntimeConfigurationLocked else {
+                agentEngine.error = "当前任务运行中，完成或停止后再修改设置。"
+                return
+            }
+
             settingsInitialTab = launchContext.tab
             settingsLaunchContext = launchContext
             showingSettings = true
@@ -969,6 +1066,7 @@ struct TopBar: View {
     var singleAgentVerification: VerifierService.VerificationOutcome?
     var currentTaskPlan: TaskPlan?
     var pendingUserDecision: AgentEngine.PendingUserDecision?
+    var isSettingsLocked = false
     var currentProvider: AIProvider = .claude
     var currentModelName: String = ""
     var currentWorkingDirectory: String?
@@ -1076,6 +1174,7 @@ struct TopBar: View {
             }
 
             Button(action: {
+                guard !isSettingsLocked else { return }
                 settingsInitialTab = .ai
                 settingsLaunchContext = nil
                 showingSettings = true
@@ -1086,8 +1185,10 @@ struct TopBar: View {
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)
+            .disabled(isSettingsLocked)
+            .opacity(isSettingsLocked ? 0.52 : 1)
             .hoverHighlight()
-            .help("设置")
+            .help(settingsHelpText)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 8)
@@ -1099,6 +1200,10 @@ struct TopBar: View {
                         .frame(height: 1)
                 }
         )
+    }
+
+    private var settingsHelpText: String {
+        isSettingsLocked ? "当前任务运行中，完成或停止后再修改设置" : "设置"
     }
 
     private var pipelineLabel: String {
@@ -1564,9 +1669,6 @@ struct InputArea: View {
                     .lineLimit(1...8)
                     .focused($isFocused)
                     .foregroundColor(Theme.textPrimary)
-                    .onSubmit {
-                        submitIfPossible()
-                    }
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
                     .padding(.bottom, 12)

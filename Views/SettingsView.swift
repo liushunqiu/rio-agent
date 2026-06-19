@@ -143,6 +143,7 @@ struct SettingsView: View {
     @State private var maxContextMessages: Int
     @State private var singleAgentSystemPrompt: String
     @State private var memoryFilePath: String
+    @State private var showingPromptResetConfirmation = false
     @State private var showingClearMemoryConfirmation = false
     @State private var pendingDeleteMemoryNote: AgentMemory.MemoryNote?
     @State private var promptApplyTask: Task<Void, Never>?
@@ -239,6 +240,14 @@ struct SettingsView: View {
         .frame(width: 880, height: 660)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+        .alert("恢复默认提示词？", isPresented: $showingPromptResetConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("恢复默认", role: .destructive) {
+                singleAgentSystemPrompt = AIConfiguration.defaultSingleAgentSystemPrompt
+            }
+        } message: {
+            Text("这会用内置单 Agent 提示词覆盖当前编辑内容。设置会自动应用。")
+        }
         .alert("清空 MEMORY.md？", isPresented: $showingClearMemoryConfirmation) {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) {
@@ -558,7 +567,7 @@ struct SettingsView: View {
                     HStack {
                         Spacer()
                         Button("恢复默认") {
-                            singleAgentSystemPrompt = AIConfiguration.defaultSingleAgentSystemPrompt
+                            showingPromptResetConfirmation = true
                         }
                         .buttonStyle(.bordered)
                         .tint(Theme.accentSecondary)

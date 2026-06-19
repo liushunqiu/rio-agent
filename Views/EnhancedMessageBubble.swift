@@ -547,11 +547,11 @@ private struct TranscriptRuntimeCard: View {
         if let exceptionalStage {
             return exceptionalStage.status == .failed ? failureHeadline : "流程已停止"
         }
-        if let currentStage {
-            return currentStage.type.title
-        }
         if pipeline?.overallStatus == .completed {
             return "进入交付复核"
+        }
+        if let currentStage {
+            return currentStage.type.title
         }
         return "等待开始"
     }
@@ -693,11 +693,11 @@ private struct TranscriptRuntimeCard: View {
         if let exceptionalStage {
             return exceptionalStage.status == .failed ? failedStageFocusText(for: exceptionalStage) : stageSummary(for: exceptionalStage)
         }
-        if let currentStage {
-            return stageSummary(for: currentStage)
-        }
         if pipeline?.overallStatus == .completed {
             return "优先核对结果、文件改动和验证状态。"
+        }
+        if let currentStage {
+            return stageSummary(for: currentStage)
         }
         return nil
     }
@@ -735,12 +735,12 @@ private struct TranscriptRuntimeCard: View {
             }
         }
 
-        if let currentStage {
-            return "当前正在进行 \(currentStage.type.title)。如果长时间无进展，优先检查该阶段的执行输出与模型配置。"
-        }
-
         if pipeline?.overallStatus == .completed {
             return "复核无误后，直接开始下一项任务。"
+        }
+
+        if let currentStage {
+            return "当前正在进行 \(currentStage.type.title)。如果长时间无进展，优先检查该阶段的执行输出与模型配置。"
         }
 
         return "当前没有活动流程，提交新任务即可开始。"

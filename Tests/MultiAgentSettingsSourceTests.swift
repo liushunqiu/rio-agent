@@ -117,6 +117,43 @@ final class MultiAgentSettingsSourceTests: XCTestCase {
         )
     }
 
+    func testWorkerSheetsConfirmDiscardingUnsavedChanges() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/MultiAgentSettingsView.swift"))
+
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "@State private var showingDiscardConfirmation = false").count - 1,
+            2,
+            "Add and edit worker sheets should each stage discard confirmation state."
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "private var hasUnsavedChanges: Bool").count - 1,
+            2,
+            "Worker sheets should detect local edits before allowing dismissal."
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "Button(\"取消\") { requestDismiss() }").count - 1,
+            2,
+            "Worker cancel buttons should route through discard confirmation instead of dismissing immediately."
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: ".interactiveDismissDisabled(hasUnsavedChanges)").count - 1,
+            2,
+            "Worker sheets should not silently discard edits through interactive dismissal."
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: ".alert(\"放弃未保存的子 Agent？\", isPresented: $showingDiscardConfirmation)").count - 1,
+            2,
+            "Discarding unsaved worker edits should require an explicit confirmation in both add and edit flows."
+        )
+        XCTAssertTrue(
+            source.contains("name: trimmedName") && source.contains("updated.name = trimmedName"),
+            "Worker save flows should persist trimmed names so accidental leading or trailing spaces do not leak into the worker list."
+        )
+    }
+
     func testMultiAgentHeaderReflectsSelectedTaskSplitStrategy() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -197,6 +234,30 @@ final class MultiAgentSettingsSourceTests: XCTestCase {
         )
     }
 
+    func testQwenRouterSamplingParametersAreNormalizedAndExplained() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/MultiAgentSettingsView.swift"))
+
+        XCTAssertTrue(
+            source.contains("RouterConfig.normalizedQwenSamplingParameters("),
+            "Multi-Agent settings should normalize free-form Qwen sampling inputs before persisting them."
+        )
+        XCTAssertTrue(
+            source.contains("private func normalizeQwenSamplingInputs()"),
+            "The settings UI should also update the editable state after normalization so users see the saved values."
+        )
+        XCTAssertTrue(
+            source.contains("Text(qwenSamplingHelpText)"),
+            "The Qwen sampling section should explain accepted ranges near the fields."
+        )
+        XCTAssertTrue(
+            source.contains("超出范围会自动归一化"),
+            "The sampling help should be explicit that out-of-range values are corrected instead of failing later at runtime."
+        )
+    }
+
     func testMultiAgentSettingsSupportTargetedRecoveryHighlighting() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -274,6 +335,34 @@ final class MultiAgentSettingsSourceTests: XCTestCase {
         XCTAssertFalse(
             source.contains("onDelete: { worker in\n                        workers.removeAll"),
             "The worker section should not delete rows immediately from its onDelete callback."
+        )
+    }
+
+    func testWorkerPoolKeepsAtLeastOneWorkerFromRowDeletion() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/MultiAgentSettingsView.swift"))
+
+        XCTAssertTrue(
+            source.contains("canDelete: workers.count > 1"),
+            "Worker rows should know when deleting would leave Multi-Agent without any executable worker."
+        )
+        XCTAssertTrue(
+            source.contains("let canDelete: Bool"),
+            "DarkWorkerRow should receive an explicit deletion affordance instead of inferring global worker-pool state."
+        )
+        XCTAssertTrue(
+            source.contains("guard canDelete else { return }\n                    onDelete()"),
+            "The delete action should no-op when it would remove the last worker."
+        )
+        XCTAssertTrue(
+            source.contains(".disabled(!canDelete)") && source.contains(".help(deleteHelpText)"),
+            "The last worker's delete button should be visibly disabled and explain the constraint."
+        )
+        XCTAssertTrue(
+            source.contains("至少保留一个子 Agent；如需替换，请先添加新的子 Agent"),
+            "The disabled delete affordance should tell users how to replace the final worker without creating an invalid pool."
         )
     }
 }

@@ -55,6 +55,57 @@ final class ConfigSetTests: XCTestCase {
         XCTAssertEqual(configSet.readinessIssue, "缺少 API Key")
     }
 
+    func testHostedProviderWithBlankBaseURLUsesOfficialDefaultEndpoint() {
+        XCTAssertEqual(
+            AIProvider.claude.resolvedBaseURL("   "),
+            "https://api.anthropic.com"
+        )
+        XCTAssertEqual(
+            AIProvider.openAI.resolvedBaseURL("   "),
+            "https://api.openai.com"
+        )
+        XCTAssertEqual(
+            AIProvider.openAICompatible.resolvedBaseURL("   "),
+            ""
+        )
+        XCTAssertEqual(
+            AIProvider.openAI.resolvedBaseURL(" https://gateway.example.com/v1 "),
+            "https://gateway.example.com/v1"
+        )
+    }
+
+    func testHostedProviderConfigCanBeReadyWithoutCustomBaseURL() {
+        let configSet = ConfigSet(
+            id: UUID(),
+            name: "Claude",
+            provider: .claude,
+            baseURL: "   ",
+            model: "claude-sonnet-4-20250514"
+        )
+        defer { configSet.saveAPIKey("") }
+        configSet.saveAPIKey("secret")
+
+        XCTAssertTrue(configSet.isConfigured)
+        XCTAssertNil(configSet.readinessIssue)
+    }
+
+    func testAIServiceFactoryUsesProviderResolvedBaseURL() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Services/AIService.swift"))
+
+        XCTAssertTrue(
+            source.contains("let resolvedBaseURL = provider.resolvedBaseURL(baseURL)"),
+            "AIServiceFactory should resolve blank hosted-provider endpoints before constructing concrete services."
+        )
+        XCTAssertTrue(
+            source.contains("ClaudeService(apiKey: apiKey, baseURL: resolvedBaseURL)")
+                && source.contains("OpenAIService(apiKey: apiKey, baseURL: resolvedBaseURL)"),
+            "All concrete AI services should receive the normalized endpoint from the factory."
+        )
+    }
+
     func testDeleteConfigSetRemovesStoredAPIKey() throws {
         let configSet = ConfigSet(
             id: UUID(),

@@ -168,7 +168,7 @@ struct ConfigSetManagementView: View {
             }
             .buttonStyle(.plain)
             
-            if manager.configSets.count > 1 {
+            if canDeleteConfigSet(configSet) {
                 Button {
                     pendingDeleteConfigSet = configSet
                 } label: {
@@ -177,11 +177,12 @@ struct ConfigSetManagementView: View {
                         .foregroundColor(Theme.statusError.opacity(0.7))
                 }
                 .buttonStyle(.plain)
+                .help("删除模型配置")
             } else {
                 Image(systemName: "lock.circle")
                     .font(.system(size: 16))
                     .foregroundColor(Theme.textTertiary.opacity(0.65))
-                    .help("至少保留一个模型配置，避免设置页失去可选项。")
+                    .help(deleteDisabledReason(for: configSet))
             }
         }
         .padding(10)
@@ -195,6 +196,18 @@ struct ConfigSetManagementView: View {
 
     private func readinessHint(for configSet: ConfigSet) -> String? {
         configSet.readinessIssue
+    }
+
+    private func canDeleteConfigSet(_ configSet: ConfigSet) -> Bool {
+        guard manager.configSets.count > 1 else { return false }
+        return !configSet.isConfigured || configuredCount > 1
+    }
+
+    private func deleteDisabledReason(for configSet: ConfigSet) -> String {
+        if configSet.isConfigured && configuredCount <= 1 {
+            return "至少保留一个可用模型配置；如需替换，请先添加并保存新的可用配置。"
+        }
+        return "至少保留一个模型配置，避免设置页失去可选项。"
     }
 }
 
@@ -210,16 +223,35 @@ struct ConfigSetEditorView: View {
     @State private var baseURL: String
     @State private var apiKey: String
     @State private var model: String
+    @State private var showingDiscardConfirmation = false
+
+    private let originalName: String
+    private let originalProvider: AIProvider
+    private let originalBaseURL: String
+    private let originalAPIKey: String
+    private let originalModel: String
     
     init(configSet: ConfigSet?, onSave: @escaping (ConfigSet) -> Void) {
         self.configSet = configSet
         self.onSave = onSave
-        
-        _name = State(initialValue: configSet?.name ?? "")
-        _provider = State(initialValue: configSet?.provider ?? .openAICompatible)
-        _baseURL = State(initialValue: configSet?.baseURL ?? "")
-        _apiKey = State(initialValue: configSet?.loadAPIKey() ?? "")
-        _model = State(initialValue: configSet?.model ?? "")
+
+        let initialName = configSet?.name ?? ""
+        let initialProvider = configSet?.provider ?? .openAICompatible
+        let initialBaseURL = configSet?.baseURL ?? ""
+        let initialAPIKey = configSet?.loadAPIKey() ?? ""
+        let initialModel = configSet?.model ?? ""
+
+        self.originalName = initialName.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.originalProvider = initialProvider
+        self.originalBaseURL = initialBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.originalAPIKey = initialAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.originalModel = initialModel.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        _name = State(initialValue: initialName)
+        _provider = State(initialValue: initialProvider)
+        _baseURL = State(initialValue: initialBaseURL)
+        _apiKey = State(initialValue: initialAPIKey)
+        _model = State(initialValue: initialModel)
     }
     
     var body: some View {
@@ -281,18 +313,25 @@ struct ConfigSetEditorView: View {
                     
                     // API 端点
                     fieldGroup(label: "API 端点") {
-                        TextField(placeholderURL, text: $baseURL)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 13, design: .monospaced))
-                            .foregroundColor(Theme.textPrimary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            .background(Theme.bgInput)
-                            .cornerRadius(Theme.radiusMD)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Theme.radiusMD)
-                                    .stroke(Theme.borderSubtle, lineWidth: 1)
-                            )
+                        VStack(alignment: .leading, spacing: 6) {
+                            TextField(placeholderURL, text: $baseURL)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundColor(Theme.textPrimary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(Theme.bgInput)
+                                .cornerRadius(Theme.radiusMD)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Theme.radiusMD)
+                                        .stroke(Theme.borderSubtle, lineWidth: 1)
+                                )
+
+                            Text(endpointHelpText)
+                                .font(.system(size: 10))
+                                .foregroundColor(Theme.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     
                     // API Key
@@ -345,9 +384,10 @@ struct ConfigSetEditorView: View {
             // Footer buttons
             HStack {
                 Button("取消") {
-                    dismiss()
+                    requestDismiss()
                 }
                 .buttonStyle(.bordered)
+                .help(hasUnsavedChanges ? "有未保存更改，取消前需要确认" : "关闭编辑器")
                 
                 Spacer()
                 
@@ -365,13 +405,31 @@ struct ConfigSetEditorView: View {
         .frame(width: 500, height: 480)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(hasUnsavedChanges)
+        .alert("放弃未保存的模型配置？", isPresented: $showingDiscardConfirmation) {
+            Button("继续编辑", role: .cancel) {}
+            Button("放弃更改", role: .destructive) {
+                dismiss()
+            }
+        } message: {
+            Text("当前模型配置还有未保存更改，关闭后这些修改不会保存。")
+        }
     }
     
     private var placeholderURL: String {
         switch provider {
-        case .claude: return "https://api.anthropic.com"
-        case .openAI: return "https://api.openai.com"
+        case .claude: return AIProvider.claude.defaultBaseURL ?? "https://api.anthropic.com"
+        case .openAI: return AIProvider.openAI.defaultBaseURL ?? "https://api.openai.com"
         case .openAICompatible: return "https://your-endpoint.com/v1"
+        }
+    }
+
+    private var endpointHelpText: String {
+        switch provider {
+        case .claude, .openAI:
+            return "留空使用官方默认端点：\(provider.resolvedBaseURL(""))"
+        case .openAICompatible:
+            return "自定义 OpenAI 兼容端点必填，例如本地 vLLM、Ollama 网关或第三方聚合服务。"
         }
     }
     
@@ -397,6 +455,14 @@ struct ConfigSetEditorView: View {
 
     private var trimmedModel: String {
         model.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        trimmedName != originalName ||
+            provider != originalProvider ||
+            trimmedBaseURL != originalBaseURL ||
+            trimmedAPIKey != originalAPIKey ||
+            trimmedModel != originalModel
     }
 
     private var canSave: Bool {
@@ -494,5 +560,13 @@ struct ConfigSetEditorView: View {
         )
         newSet.saveAPIKey(trimmedAPIKey)
         onSave(newSet)
+    }
+
+    private func requestDismiss() {
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
     }
 }

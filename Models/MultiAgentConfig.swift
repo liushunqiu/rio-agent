@@ -502,6 +502,13 @@ extension MultiAgentConfig {
 
 // MARK: - Router Configuration
 
+struct QwenSamplingParameters: Equatable {
+    let temperature: Float
+    let topP: Float
+    let topK: Int
+    let presencePenalty: Float
+}
+
 struct RouterConfig: Codable {
     var enabled: Bool = false
     var configSetId: UUID?
@@ -535,6 +542,23 @@ struct RouterConfig: Codable {
         return URL(string: "\(trimmedBaseUrl)/v1/chat/completions")
     }
 
+    var normalizedQwenSamplingParameters: QwenSamplingParameters {
+        Self.normalizedQwenSamplingParameters(
+            temperature: temperature,
+            topP: topP,
+            topK: topK,
+            presencePenalty: presencePenalty
+        )
+    }
+
+    mutating func normalizeQwenSamplingParameters() {
+        let normalized = normalizedQwenSamplingParameters
+        temperature = normalized.temperature
+        topP = normalized.topP
+        topK = normalized.topK
+        presencePenalty = normalized.presencePenalty
+    }
+
     static func qwenReadinessIssue(baseUrl: String, model: String) -> String? {
         let trimmedBaseUrl = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedBaseUrl.isEmpty else { return "缺少 vLLM 服务地址" }
@@ -550,6 +574,30 @@ struct RouterConfig: Codable {
         }
 
         return nil
+    }
+
+    static let qwenTemperatureRange: ClosedRange<Float> = 0...2
+    static let qwenTopPRange: ClosedRange<Float> = 0...1
+    static let qwenTopKRange: ClosedRange<Int> = 1...100
+    static let qwenPresencePenaltyRange: ClosedRange<Float> = -2...2
+
+    static func normalizedQwenSamplingParameters(
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        presencePenalty: Float
+    ) -> QwenSamplingParameters {
+        QwenSamplingParameters(
+            temperature: clamped(temperature, to: qwenTemperatureRange, fallback: RouterConfig().temperature),
+            topP: clamped(topP, to: qwenTopPRange, fallback: RouterConfig().topP),
+            topK: min(max(topK, qwenTopKRange.lowerBound), qwenTopKRange.upperBound),
+            presencePenalty: clamped(presencePenalty, to: qwenPresencePenaltyRange, fallback: RouterConfig().presencePenalty)
+        )
+    }
+
+    private static func clamped(_ value: Float, to range: ClosedRange<Float>, fallback: Float) -> Float {
+        guard value.isFinite else { return fallback }
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 
     static let previousDefaultPrompt = """

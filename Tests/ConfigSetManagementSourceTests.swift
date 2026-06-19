@@ -84,4 +84,101 @@ final class ConfigSetManagementSourceTests: XCTestCase {
             "The optional API Key state should explain why it differs from hosted providers."
         )
     }
+
+    func testConfigEditorExplainsDefaultAndCustomBaseURLs() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+
+        XCTAssertTrue(
+            source.contains("private var endpointHelpText: String"),
+            "The endpoint field should explain provider-specific default and required endpoint behavior."
+        )
+        XCTAssertTrue(
+            source.contains("留空使用官方默认端点：\\(provider.resolvedBaseURL(\"\"))"),
+            "Hosted providers should explain that a blank endpoint uses the official default."
+        )
+        XCTAssertTrue(
+            source.contains("自定义 OpenAI 兼容端点必填"),
+            "OpenAI-compatible configs should keep endpoint requirements visible near the field."
+        )
+        XCTAssertTrue(
+            source.contains("Text(endpointHelpText)"),
+            "Endpoint guidance should be visible in the editor, not only encoded in validation rules."
+        )
+    }
+
+    func testConfigEditorConfirmsDiscardingUnsavedChanges() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+
+        XCTAssertTrue(
+            source.contains("@State private var showingDiscardConfirmation = false"),
+            "The model config editor should stage discard confirmation instead of closing immediately with unsaved edits."
+        )
+        XCTAssertTrue(
+            source.contains("private var hasUnsavedChanges: Bool"),
+            "The editor should compare current fields against its initial snapshot before dismissing."
+        )
+        XCTAssertTrue(
+            source.contains("trimmedName != originalName")
+                && source.contains("provider != originalProvider")
+                && source.contains("trimmedBaseURL != originalBaseURL")
+                && source.contains("trimmedAPIKey != originalAPIKey")
+                && source.contains("trimmedModel != originalModel"),
+            "Unsaved-change detection should cover every editable model config field, including API Key."
+        )
+        XCTAssertTrue(
+            source.contains("Button(\"取消\") {\n                    requestDismiss()\n                }"),
+            "The cancel button should route through discard confirmation instead of calling dismiss directly."
+        )
+        XCTAssertTrue(
+            source.contains(".interactiveDismissDisabled(hasUnsavedChanges)"),
+            "Interactive sheet dismissal should not silently discard changed model configuration."
+        )
+        XCTAssertTrue(
+            source.contains(".alert(\"放弃未保存的模型配置？\", isPresented: $showingDiscardConfirmation)"),
+            "Discarding unsaved model config changes should require an explicit confirmation alert."
+        )
+        XCTAssertTrue(
+            source.contains("Button(\"继续编辑\", role: .cancel)")
+                && source.contains("Button(\"放弃更改\", role: .destructive)"),
+            "The discard confirmation should make the safe path and destructive path explicit."
+        )
+    }
+
+    func testConfigSetDeletionKeepsAtLeastOneUsableModelConfig() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+
+        XCTAssertTrue(
+            source.contains("if canDeleteConfigSet(configSet)"),
+            "Config rows should derive deletion availability from usable configuration state, not only raw row count."
+        )
+        XCTAssertTrue(
+            source.contains("private func canDeleteConfigSet(_ configSet: ConfigSet) -> Bool"),
+            "The delete affordance should centralize its last-usable-config rule."
+        )
+        XCTAssertTrue(
+            source.contains("guard manager.configSets.count > 1 else { return false }"),
+            "The settings UI should still keep at least one config row available for editing."
+        )
+        XCTAssertTrue(
+            source.contains("return !configSet.isConfigured || configuredCount > 1"),
+            "Deleting incomplete configs should remain possible, but deleting the last usable config should be blocked."
+        )
+        XCTAssertTrue(
+            source.contains("至少保留一个可用模型配置；如需替换，请先添加并保存新的可用配置。"),
+            "The disabled delete affordance should explain how to replace the last usable model config safely."
+        )
+        XCTAssertTrue(
+            source.contains(".help(deleteDisabledReason(for: configSet))"),
+            "Locked delete controls should expose the specific reason on hover."
+        )
+    }
 }

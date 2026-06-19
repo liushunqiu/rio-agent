@@ -53,6 +53,26 @@ final class ConversationPersistenceSourceTests: XCTestCase {
         )
     }
 
+    func testLandingPageDraftCreatesConversationBeforeFirstSubmit() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+
+        XCTAssertTrue(
+            source.contains("if conversationManager.currentConversation == nil {\n                    guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }\n                    _ = conversationManager.createNewConversation("),
+            "Typing a first non-empty landing-page draft should create a conversation immediately so the draft can be restored after backgrounding or restart."
+        )
+        XCTAssertTrue(
+            source.contains("workingDirectory: agentEngine.workingDirectory"),
+            "The draft-created conversation should keep the current workspace context."
+        )
+        XCTAssertTrue(
+            source.contains("conversationManager.updateDraftInput(newValue)"),
+            "After creating the draft conversation, the binding should persist the user's actual draft text."
+        )
+    }
+
     func testDeletingFinalConversationClearsEngineWorkspaceState() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

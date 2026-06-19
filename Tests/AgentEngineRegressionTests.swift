@@ -277,6 +277,17 @@ final class AgentEngineRegressionTests: XCTestCase {
         XCTAssertNil(engine.errorRecoveryContext)
     }
 
+    func testPlainErrorAssignmentClearsStaleRecoveryContext() {
+        let engine = AgentEngine()
+        engine.error = "Router 未选择模型配置"
+        engine.errorRecoveryContext = .routerModel
+
+        engine.error = "当前任务运行中，完成或停止后再修改设置。"
+
+        XCTAssertEqual(engine.error, "当前任务运行中，完成或停止后再修改设置。")
+        XCTAssertNil(engine.errorRecoveryContext)
+    }
+
     func testAgentEngineContainsStructuredMultiAgentRecoveryMapping() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -417,6 +428,52 @@ final class AgentEngineRegressionTests: XCTestCase {
 
         XCTAssertEqual(contextMessages.count, 3)
         XCTAssertEqual(contextMessages.dropFirst().map(\.content), ["third", "fourth"])
+    }
+
+    func testActiveProcessingRejectsRuntimeConfigurationUpdates() {
+        let engine = AgentEngine()
+        let originalContextLimit = engine.configuration.maxContextMessages
+        let originalMaxRetries = engine.multiAgentConfig.maxRetries
+        engine.isProcessing = true
+
+        var config = engine.configuration
+        config.maxContextMessages = 20
+        engine.updateConfiguration(config)
+
+        var multiAgentConfig = engine.multiAgentConfig
+        multiAgentConfig.maxRetries = 5
+        engine.updateMultiAgentConfig(multiAgentConfig)
+
+        XCTAssertEqual(engine.configuration.maxContextMessages, originalContextLimit)
+        XCTAssertEqual(engine.multiAgentConfig.maxRetries, originalMaxRetries)
+        XCTAssertEqual(engine.error, "当前任务运行中，完成或停止后再修改设置。")
+    }
+
+    func testPendingUserDecisionAllowsRuntimeConfigurationRecoveryUpdates() async {
+        let engine = AgentEngine()
+        var manualConfig = engine.multiAgentConfig
+        manualConfig.taskSplitStrategy = .manual
+        engine.updateMultiAgentConfig(manualConfig)
+
+        await engine.processUserInput("请分析这个项目并修改多个文件后再测试")
+        XCTAssertEqual(
+            engine.pendingUserDecision,
+            .chooseExecutionModeForTask("请分析这个项目并修改多个文件后再测试")
+        )
+
+        // A stale processing flag can coexist with a persisted pending decision after restoring state.
+        engine.isProcessing = true
+
+        var config = engine.configuration
+        config.maxContextMessages = 20
+        engine.updateConfiguration(config)
+
+        var recoveryConfig = engine.multiAgentConfig
+        recoveryConfig.maxRetries = 5
+        engine.updateMultiAgentConfig(recoveryConfig)
+
+        XCTAssertEqual(engine.configuration.maxContextMessages, 20)
+        XCTAssertEqual(engine.multiAgentConfig.maxRetries, 5)
     }
 
     func testManualTaskSplitStrategyPromptsBeforeStartingMultiAgent() async {

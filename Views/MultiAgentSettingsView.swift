@@ -54,10 +54,16 @@ struct MultiAgentSettingsDraft {
         updated.router.qwenBaseUrl = qwenBaseUrl
         updated.router.qwenModel = qwenModel
         updated.router.disableThinking = disableThinking
-        updated.router.temperature = qwenTemperature
-        updated.router.topP = qwenTopP
-        updated.router.topK = qwenTopK
-        updated.router.presencePenalty = qwenPresencePenalty
+        let sampling = RouterConfig.normalizedQwenSamplingParameters(
+            temperature: qwenTemperature,
+            topP: qwenTopP,
+            topK: qwenTopK,
+            presencePenalty: qwenPresencePenalty
+        )
+        updated.router.temperature = sampling.temperature
+        updated.router.topP = sampling.topP
+        updated.router.topK = sampling.topK
+        updated.router.presencePenalty = sampling.presencePenalty
         updated.reconcileConfigSets(with: readyConfigSets)
         return updated
     }
@@ -161,7 +167,21 @@ struct MultiAgentSettingsView: View {
 
     private func applyDraft() {
         reconcileSelections()
+        normalizeQwenSamplingInputs()
         config = currentDraft().applied(to: config, availableConfigSets: aiConfig.allConfigSets)
+    }
+
+    private func normalizeQwenSamplingInputs() {
+        let sampling = RouterConfig.normalizedQwenSamplingParameters(
+            temperature: qwenTemperature,
+            topP: qwenTopP,
+            topK: qwenTopK,
+            presencePenalty: qwenPresencePenalty
+        )
+        qwenTemperature = sampling.temperature
+        qwenTopP = sampling.topP
+        qwenTopK = sampling.topK
+        qwenPresencePenalty = sampling.presencePenalty
     }
 
     private func scheduleDraftApply() {
@@ -288,6 +308,10 @@ struct MultiAgentSettingsView: View {
 
     private var qwenRouterReadinessIssue: String? {
         RouterConfig.qwenReadinessIssue(baseUrl: qwenBaseUrl, model: qwenModel)
+    }
+
+    private var qwenSamplingHelpText: String {
+        "范围：Temperature 0-2，Top P 0-1，Top K 1-100，Presence Penalty -2-2；超出范围会自动归一化。"
     }
 
     var body: some View {
@@ -752,6 +776,12 @@ struct MultiAgentSettingsView: View {
                                                         .onChange(of: qwenPresencePenalty) { _, _ in scheduleDraftApply() }
                                                 }
                                             }
+
+                                            Text(qwenSamplingHelpText)
+                                                .font(.system(size: 10))
+                                                .foregroundColor(Theme.textTertiary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                                .help(qwenSamplingHelpText)
                                         }
                                         
                                         // 使用说明
@@ -1359,6 +1389,7 @@ struct WorkersSection: View {
                         ForEach(workers) { worker in
                             DarkWorkerRow(
                                 worker: worker,
+                                canDelete: workers.count > 1,
                                 onEdit: { onEdit(worker) },
                                 onDelete: { onDelete(worker) }
                             )
@@ -1372,6 +1403,7 @@ struct WorkersSection: View {
 
 struct DarkWorkerRow: View {
     let worker: AgentConfig
+    let canDelete: Bool
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -1411,17 +1443,27 @@ struct DarkWorkerRow: View {
                 }
                 .buttonStyle(.plain)
 
-                Button(action: onDelete) {
+                Button(action: {
+                    guard canDelete else { return }
+                    onDelete()
+                }) {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 16))
                         .foregroundColor(Theme.statusError)
                 }
                 .buttonStyle(.plain)
+                .disabled(!canDelete)
+                .opacity(canDelete ? 1 : 0.45)
+                .help(deleteHelpText)
             }
         }
         .padding(10)
         .background(Theme.bgTertiary)
         .cornerRadius(Theme.radiusMD)
+    }
+
+    private var deleteHelpText: String {
+        canDelete ? "删除子 Agent" : "至少保留一个子 Agent；如需替换，请先添加新的子 Agent"
     }
 
     private var workerIcon: String {
@@ -1447,7 +1489,7 @@ struct WorkerRow: View {
     let onEdit: () -> Void
     let onDelete: () -> Void
     var body: some View {
-        DarkWorkerRow(worker: worker, onEdit: onEdit, onDelete: onDelete)
+        DarkWorkerRow(worker: worker, canDelete: true, onEdit: onEdit, onDelete: onDelete)
     }
 }
 
@@ -1462,6 +1504,9 @@ struct AddWorkerSheet: View {
     @State private var configSetId: UUID?
     @State private var capability: AgentCapability = .general
     @State private var systemPrompt = ""
+    @State private var showingDiscardConfirmation = false
+
+    private let originalConfigSetId: UUID?
 
     private var readyConfigSets: [ConfigSet] {
         aiConfig.allConfigSets.filter(\.isConfigured)
@@ -1473,7 +1518,7 @@ struct AddWorkerSheet: View {
     }
 
     private var saveDisabledReason: String? {
-        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if trimmedName.isEmpty {
             return "请先填写子 Agent 名称"
         }
         if selectedReadyConfigSet == nil {
@@ -1485,7 +1530,9 @@ struct AddWorkerSheet: View {
     init(aiConfig: AIConfigInfo, onAdd: @escaping (AgentConfig) -> Void) {
         self.aiConfig = aiConfig
         self.onAdd = onAdd
-        self._configSetId = State(initialValue: aiConfig.allConfigSets.first(where: { $0.isConfigured })?.id)
+        let initialConfigSetId = aiConfig.allConfigSets.first(where: { $0.isConfigured })?.id
+        self.originalConfigSetId = initialConfigSetId
+        self._configSetId = State(initialValue: initialConfigSetId)
     }
 
     var body: some View {
@@ -1495,9 +1542,10 @@ struct AddWorkerSheet: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(Theme.textPrimary)
                 Spacer()
-                Button("取消") { dismiss() }
+                Button("取消") { requestDismiss() }
                     .buttonStyle(.plain)
                     .foregroundColor(Theme.textTertiary)
+                    .help(hasUnsavedChanges ? "有未保存更改，取消前需要确认" : "关闭编辑器")
             }
             .padding(16)
 
@@ -1553,7 +1601,7 @@ struct AddWorkerSheet: View {
                 Button("添加") {
                     guard let selectedConfigSet = selectedReadyConfigSet else { return }
                     let worker = AgentConfig(
-                        name: name.isEmpty ? "子 Agent" : name,
+                        name: trimmedName,
                         role: .worker,
                         capability: capability,
                         configSetId: selectedConfigSet.id,
@@ -1574,6 +1622,34 @@ struct AddWorkerSheet: View {
         .frame(width: 500, height: 480)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(hasUnsavedChanges)
+        .alert("放弃未保存的子 Agent？", isPresented: $showingDiscardConfirmation) {
+            Button("继续编辑", role: .cancel) {}
+            Button("放弃更改", role: .destructive) {
+                dismiss()
+            }
+        } message: {
+            Text("当前子 Agent 配置还有未保存更改，关闭后这些修改不会保存。")
+        }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        !trimmedName.isEmpty ||
+            configSetId != originalConfigSetId ||
+            capability != .general ||
+            !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func requestDismiss() {
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
     }
 }
 
@@ -1589,6 +1665,12 @@ struct EditWorkerSheet: View {
     @State private var configSetId: UUID?
     @State private var capability: AgentCapability
     @State private var systemPrompt: String
+    @State private var showingDiscardConfirmation = false
+
+    private let originalName: String
+    private let originalConfigSetId: UUID?
+    private let originalCapability: AgentCapability
+    private let originalSystemPrompt: String
 
     private var readyConfigSets: [ConfigSet] {
         aiConfig.allConfigSets.filter(\.isConfigured)
@@ -1600,7 +1682,7 @@ struct EditWorkerSheet: View {
     }
 
     private var saveDisabledReason: String? {
-        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if trimmedName.isEmpty {
             return "请先填写子 Agent 名称"
         }
         if selectedReadyConfigSet == nil {
@@ -1613,9 +1695,13 @@ struct EditWorkerSheet: View {
         self.worker = worker
         self.aiConfig = aiConfig
         self.onSave = onSave
-        self._name = State(initialValue: worker.name)
         let readyConfigSets = aiConfig.allConfigSets.filter(\.isConfigured)
         let resolvedConfigSet = worker.resolvedConfigSet(from: readyConfigSets) ?? readyConfigSets.first
+        self.originalName = worker.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.originalConfigSetId = resolvedConfigSet?.id
+        self.originalCapability = worker.capability
+        self.originalSystemPrompt = worker.systemPrompt
+        self._name = State(initialValue: worker.name)
         self._configSetId = State(initialValue: resolvedConfigSet?.id)
         self._capability = State(initialValue: worker.capability)
         self._systemPrompt = State(initialValue: worker.systemPrompt)
@@ -1628,9 +1714,10 @@ struct EditWorkerSheet: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(Theme.textPrimary)
                 Spacer()
-                Button("取消") { dismiss() }
+                Button("取消") { requestDismiss() }
                     .buttonStyle(.plain)
                     .foregroundColor(Theme.textTertiary)
+                    .help(hasUnsavedChanges ? "有未保存更改，取消前需要确认" : "关闭编辑器")
             }
             .padding(16)
 
@@ -1686,7 +1773,7 @@ struct EditWorkerSheet: View {
                 Button("保存") {
                     guard let selectedConfigSet = selectedReadyConfigSet else { return }
                     var updated = worker
-                    updated.name = name
+                    updated.name = trimmedName
                     updated.applyConfigSet(selectedConfigSet)
                     updated.capability = capability
                     updated.systemPrompt = systemPrompt
@@ -1703,5 +1790,33 @@ struct EditWorkerSheet: View {
         .frame(width: 500, height: 480)
         .background(Theme.bgPrimary)
         .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(hasUnsavedChanges)
+        .alert("放弃未保存的子 Agent？", isPresented: $showingDiscardConfirmation) {
+            Button("继续编辑", role: .cancel) {}
+            Button("放弃更改", role: .destructive) {
+                dismiss()
+            }
+        } message: {
+            Text("当前子 Agent 配置还有未保存更改，关闭后这些修改不会保存。")
+        }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        trimmedName != originalName ||
+            configSetId != originalConfigSetId ||
+            capability != originalCapability ||
+            systemPrompt != originalSystemPrompt
+    }
+
+    private func requestDismiss() {
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
     }
 }

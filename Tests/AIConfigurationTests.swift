@@ -170,6 +170,63 @@ final class AIConfigurationTests: XCTestCase {
         XCTAssertEqual(router.qwenChatCompletionsURL?.absoluteString, "http://localhost:8000/v1/chat/completions")
     }
 
+    func testQwenRouterSamplingParametersAreNormalizedBeforeUse() {
+        let sampling = RouterConfig.normalizedQwenSamplingParameters(
+            temperature: 4.5,
+            topP: -0.4,
+            topK: 0,
+            presencePenalty: 9
+        )
+
+        XCTAssertEqual(sampling.temperature, 2, accuracy: 0.0001)
+        XCTAssertEqual(sampling.topP, 0, accuracy: 0.0001)
+        XCTAssertEqual(sampling.topK, 1)
+        XCTAssertEqual(sampling.presencePenalty, 2, accuracy: 0.0001)
+
+        let fallbackSampling = RouterConfig.normalizedQwenSamplingParameters(
+            temperature: .nan,
+            topP: .infinity,
+            topK: 250,
+            presencePenalty: -.infinity
+        )
+
+        XCTAssertEqual(fallbackSampling.temperature, RouterConfig().temperature, accuracy: 0.0001)
+        XCTAssertEqual(fallbackSampling.topP, RouterConfig().topP, accuracy: 0.0001)
+        XCTAssertEqual(fallbackSampling.topK, 100)
+        XCTAssertEqual(fallbackSampling.presencePenalty, RouterConfig().presencePenalty, accuracy: 0.0001)
+    }
+
+    func testMultiAgentDraftNormalizesQwenSamplingParametersBeforeSavingConfig() {
+        let draft = MultiAgentSettingsDraft(
+            orchestratorConfigSetId: nil,
+            orchestratorPrompt: "orchestrator",
+            workers: [],
+            maxParallel: 3,
+            taskStrategy: .automatic,
+            maxRetries: 2,
+            enableCritic: true,
+            routerEnabled: true,
+            routerConfigSetId: nil,
+            routerModel: "",
+            routerPrompt: "router",
+            enableQwenRouter: true,
+            qwenBaseUrl: "http://localhost:8000",
+            qwenModel: "Qwen/Qwen3.5-4B",
+            disableThinking: true,
+            qwenTemperature: -1,
+            qwenTopP: 1.8,
+            qwenTopK: -20,
+            qwenPresencePenalty: -9
+        )
+
+        let applied = draft.applied(to: MultiAgentConfig(), availableConfigSets: [])
+
+        XCTAssertEqual(applied.router.temperature, 0, accuracy: 0.0001)
+        XCTAssertEqual(applied.router.topP, 1, accuracy: 0.0001)
+        XCTAssertEqual(applied.router.topK, 1)
+        XCTAssertEqual(applied.router.presencePenalty, -2, accuracy: 0.0001)
+    }
+
     func testMultiAgentDraftRefreshesBoundWorkersWhenConfigSetContentChanges() {
         let workerSet = ConfigSet(
             id: UUID(),

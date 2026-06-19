@@ -223,4 +223,44 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
             "Completed task plans in the transcript should collapse only once a final answer is already present in the main reading flow."
         )
     }
+
+    func testCompletedTranscriptRuntimeStateOutranksStaleCurrentStage() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/EnhancedMessageBubble.swift"))
+
+        func section(from startMarker: String, to endMarker: String) throws -> String {
+            let start = try XCTUnwrap(source.range(of: startMarker))
+            let end = try XCTUnwrap(source.range(of: endMarker, range: start.upperBound..<source.endIndex))
+            return String(source[start.lowerBound..<end.lowerBound])
+        }
+
+        let headlineSource = try section(from: "private var headline: String", to: "private var statusText: String")
+        let headlineCompleted = try XCTUnwrap(headlineSource.range(of: "if pipeline?.overallStatus == .completed"))
+        let headlineCurrentStage = try XCTUnwrap(headlineSource.range(of: "if let currentStage"))
+        XCTAssertLessThan(
+            headlineCompleted.lowerBound,
+            headlineCurrentStage.lowerBound,
+            "Completed transcript runtime headlines should not be shadowed by a stale currentStage."
+        )
+
+        let focusTextSource = try section(from: "private var focusText: String?", to: "private var nextActionText: String")
+        let focusCompleted = try XCTUnwrap(focusTextSource.range(of: "if pipeline?.overallStatus == .completed"))
+        let focusCurrentStage = try XCTUnwrap(focusTextSource.range(of: "if let currentStage"))
+        XCTAssertLessThan(
+            focusCompleted.lowerBound,
+            focusCurrentStage.lowerBound,
+            "Completed transcript focus text should stay in delivery-review mode even when the last stage remains addressable."
+        )
+
+        let nextActionSource = try section(from: "private var nextActionText: String", to: "private var failureSourceLabel: String")
+        let nextActionCompleted = try XCTUnwrap(nextActionSource.range(of: "if pipeline?.overallStatus == .completed"))
+        let nextActionCurrentStage = try XCTUnwrap(nextActionSource.range(of: "if let currentStage"))
+        XCTAssertLessThan(
+            nextActionCompleted.lowerBound,
+            nextActionCurrentStage.lowerBound,
+            "Completed transcript next actions should not tell users a finished stage is still running."
+        )
+    }
 }

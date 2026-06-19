@@ -233,6 +233,20 @@ enum AIProvider: String, Codable, CaseIterable {
         }
     }
 
+    var defaultBaseURL: String? {
+        switch self {
+        case .claude: return "https://api.anthropic.com"
+        case .openAI: return "https://api.openai.com"
+        case .openAICompatible: return nil
+        }
+    }
+
+    func resolvedBaseURL(_ baseURL: String) -> String {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedBaseURL.isEmpty else { return trimmedBaseURL }
+        return defaultBaseURL ?? trimmedBaseURL
+    }
+
     var icon: String {
         switch self {
         case .claude: return "brain.head.profile"

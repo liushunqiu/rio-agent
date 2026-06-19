@@ -49,11 +49,12 @@ enum StreamChunk {
 
 class AIServiceFactory {
     static func createService(provider: AIProvider, apiKey: String, baseURL: String) -> AIService {
+        let resolvedBaseURL = provider.resolvedBaseURL(baseURL)
         switch provider {
         case .claude:
-            return ClaudeService(apiKey: apiKey, baseURL: baseURL)
+            return ClaudeService(apiKey: apiKey, baseURL: resolvedBaseURL)
         case .openAI, .openAICompatible:
-            return OpenAIService(apiKey: apiKey, baseURL: baseURL)
+            return OpenAIService(apiKey: apiKey, baseURL: resolvedBaseURL)
         }
     }
 }

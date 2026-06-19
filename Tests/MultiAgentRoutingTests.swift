@@ -399,6 +399,17 @@ final class MultiAgentRoutingTests: XCTestCase {
             "Qwen router should send a trimmed model id after readiness validation."
         )
         XCTAssertTrue(
+            source.contains("let sampling = config.normalizedQwenSamplingParameters"),
+            "Qwen router requests should normalize sampling values even when config was loaded from older persisted settings."
+        )
+        XCTAssertTrue(
+            source.contains("\"temperature\": sampling.temperature")
+                && source.contains("\"top_p\": sampling.topP")
+                && source.contains("\"top_k\": sampling.topK")
+                && source.contains("\"presence_penalty\": sampling.presencePenalty"),
+            "The Qwen request body should use normalized sampling values instead of raw editable config values."
+        )
+        XCTAssertTrue(
             source.contains("Qwen 路由请求失败：HTTP")
                 && source.contains("Qwen Router 响应不是有效 JSON 路由决策")
                 && source.contains("Router 响应不是有效 JSON 路由决策"),

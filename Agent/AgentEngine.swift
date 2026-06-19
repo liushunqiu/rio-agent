@@ -31,9 +31,7 @@ class AgentEngine: ObservableObject {
     @Published var isProcessing = false
     @Published var error: String? {
         didSet {
-            if error == nil {
-                errorRecoveryContext = nil
-            }
+            errorRecoveryContext = nil
         }
     }
     @Published var errorRecoveryContext: ErrorRecoveryContext?
@@ -350,7 +348,20 @@ class AgentEngine: ObservableObject {
         multiAgentEngine = engine
     }
 
+    private var isRuntimeConfigurationLocked: Bool {
+        isProcessing && pendingUserDecision == nil
+    }
+
+    private func canApplyRuntimeConfigurationUpdate() -> Bool {
+        guard !isRuntimeConfigurationLocked else {
+            error = "当前任务运行中，完成或停止后再修改设置。"
+            return false
+        }
+        return true
+    }
+
     func updateConfiguration(_ newConfig: AIConfiguration) {
+        guard canApplyRuntimeConfigurationUpdate() else { return }
         configuration = newConfig
         setupAIService()
         setupMultiAgentEngine()
@@ -358,6 +369,7 @@ class AgentEngine: ObservableObject {
     }
 
     func updateMultiAgentConfig(_ newConfig: MultiAgentConfig) {
+        guard canApplyRuntimeConfigurationUpdate() else { return }
         multiAgentConfig = newConfig
         setupMultiAgentEngine()
         saveMultiAgentConfig()
