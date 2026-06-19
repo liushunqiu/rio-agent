@@ -4,7 +4,7 @@ import XCTest
 @MainActor
 final class AgentMemoryMarkdownTests: XCTestCase {
     func testMemoryMarkdownIsCreatedAndUpdatedFromVerifiedSignals() {
-        let memory = AgentMemory()
+        let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         let path = memory.memoryMarkdownPath()
@@ -28,7 +28,7 @@ final class AgentMemoryMarkdownTests: XCTestCase {
     }
 
     func testGenerateMemoryContextIncludesVerifiedMemorySummariesOnly() {
-        let memory = AgentMemory()
+        let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         memory.recordSuccessfulPattern(taskType: "search", tool: "read_file")
@@ -41,7 +41,7 @@ final class AgentMemoryMarkdownTests: XCTestCase {
     }
 
     func testDeleteMemoryNoteRemovesOnlyTargetEntry() {
-        let memory = AgentMemory()
+        let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         memory.recordSuccessfulPattern(taskType: "search", tool: "read_file")
@@ -56,7 +56,7 @@ final class AgentMemoryMarkdownTests: XCTestCase {
     }
 
     func testDeleteMemoryNoteByIDRemovesOnlyOneDuplicateSummary() throws {
-        let memory = AgentMemory()
+        let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         let content = """
@@ -87,7 +87,7 @@ final class AgentMemoryMarkdownTests: XCTestCase {
     }
 
     func testClearMemoryMarkdownRemovesPersistedNotes() {
-        let memory = AgentMemory()
+        let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         memory.recordSuccessfulPattern(taskType: "code_fix", tool: "apply_patch")

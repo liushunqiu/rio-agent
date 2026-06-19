@@ -3,7 +3,7 @@ import XCTest
 
 final class StreamingDedupRegressionTests: XCTestCase {
     func testConversationLoopDoesNotAppendDuplicateAssistantMessageWhenStreamingAlreadyRenderedContent() async throws {
-        let engine = await MainActor.run { AgentEngine() }
+        let engine = await MainActor.run { makeIsolatedAgentEngine(testCase: self) }
 
         await MainActor.run {
             engine.appendMessage(.user("hello"))
@@ -37,7 +37,7 @@ final class StreamingDedupRegressionTests: XCTestCase {
     }
 
     func testStreamingTextToolCallContentTriggersRedirectWithoutDuplicatingAssistantMessage() async throws {
-        let engine = await MainActor.run { AgentEngine() }
+        let engine = await MainActor.run { makeIsolatedAgentEngine(testCase: self) }
         var invocationCount = 0
 
         await MainActor.run {
@@ -88,7 +88,7 @@ final class StreamingDedupRegressionTests: XCTestCase {
     }
 
     func testConversationLoopStopsAfterCancelledToolResult() async throws {
-        let engine = await MainActor.run { AgentEngine() }
+        let engine = await MainActor.run { makeIsolatedAgentEngine(testCase: self) }
         var invocationCount = 0
 
         await MainActor.run {

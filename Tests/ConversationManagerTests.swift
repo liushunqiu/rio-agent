@@ -3,8 +3,41 @@ import XCTest
 
 @MainActor
 final class ConversationManagerTests: XCTestCase {
+    private func makeIsolatedManager() -> ConversationManager {
+        let suiteName = "rio-agent-conversation-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return ConversationManager(
+            userDefaults: defaults,
+            saveKey: "saved_conversations_\(UUID().uuidString)"
+        )
+    }
+
+    func testConversationManagerCanUseInjectedStorageForIsolation() {
+        let suiteName = "rio-agent-conversation-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let saveKey = "saved_conversations_test"
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let manager = ConversationManager(userDefaults: defaults, saveKey: saveKey)
+        manager.conversations = []
+        manager.currentConversation = nil
+        let conversation = manager.createNewConversation(workingDirectory: "/tmp/project")
+        manager.updateDraftInput("isolated draft")
+        manager.flushPendingSave()
+
+        let reloaded = ConversationManager(userDefaults: defaults, saveKey: saveKey)
+
+        XCTAssertEqual(reloaded.currentConversation?.id, conversation.id)
+        XCTAssertEqual(reloaded.currentConversation?.draftInput, "isolated draft")
+        XCTAssertNil(UserDefaults.standard.data(forKey: saveKey))
+    }
+
     func testUpdateCurrentConversationMovesConversationToTop() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let older = Conversation(
@@ -29,7 +62,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testDeletingNonCurrentConversationKeepsCurrentConversationSelected() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let current = Conversation(
@@ -51,7 +84,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testCreateNewConversationCanCarryWorkingDirectory() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let conversation = manager.createNewConversation(workingDirectory: "/tmp/project")
@@ -62,7 +95,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testSelectConversationUsesStoredConversationSnapshot() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let id = UUID()
@@ -93,7 +126,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateCurrentConversationSkipsRedundantUpdates() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
         let sameMessage = Message.user("same")
 
@@ -123,7 +156,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateCurrentConversationPreservesWorkingDirectoryWhenOmitted() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let current = Conversation(
@@ -143,7 +176,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateCurrentConversationCanExplicitlyClearWorkingDirectory() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let current = Conversation(
@@ -166,7 +199,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateCurrentConversationPersistsPendingDecision() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let current = Conversation(
@@ -188,7 +221,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateCurrentConversationGeneratesTitleWithoutSecondMutation() throws {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
         let firstMessage = Message.user("这是第一次发送的内容")
 
@@ -217,7 +250,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateDraftInputPersistsToCurrentConversation() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let updatedAt = Date(timeIntervalSince1970: 50)
@@ -240,7 +273,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateDraftInputDoesNotReorderConversations() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let older = Conversation(
@@ -265,7 +298,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateDraftInputCanRestoreLatestUserTaskWithoutReorderingConversation() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let older = Conversation(
@@ -295,7 +328,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateWorkingDirectoryPersistsWithoutReorderingOrTouchingUpdatedAt() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let older = Conversation(
@@ -384,7 +417,7 @@ final class ConversationManagerTests: XCTestCase {
     }
 
     func testUpdateCurrentConversationTitleSkipsConfirmationReplyAndUsesFirstRealTask() {
-        let manager = ConversationManager()
+        let manager = makeIsolatedManager()
         manager.conversations = []
 
         let current = Conversation(

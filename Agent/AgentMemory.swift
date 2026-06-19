@@ -72,15 +72,24 @@ class AgentMemory: ObservableObject {
     @Published var session: SessionMemory = SessionMemory()
     @Published private(set) var persistedNotes: [MemoryNote] = []
     private var longTerm: LongTermMemory = LongTermMemory()
-    
-    private let memoryKey = "agent_long_term_memory"
+
+    private let userDefaults: UserDefaults
+    private let memoryKey: String
+    private let customMarkdownURL: URL?
     private let maxRecentItems = 20
     private let maxErrorPatterns = 100
     private let markdownFileName = "MEMORY.md"
     
     // MARK: - Initialization
     
-    init() {
+    init(
+        userDefaults: UserDefaults = .standard,
+        memoryKey: String = "agent_long_term_memory",
+        markdownURL: URL? = nil
+    ) {
+        self.userDefaults = userDefaults
+        self.memoryKey = memoryKey
+        self.customMarkdownURL = markdownURL
         loadLongTermMemory()
         loadMemoryMarkdown()
         refreshPersistedNotes()
@@ -402,7 +411,7 @@ class AgentMemory: ObservableObject {
     // MARK: - Persistence
     
     private func loadLongTermMemory() {
-        guard let data = UserDefaults.standard.data(forKey: memoryKey) else {
+        guard let data = userDefaults.data(forKey: memoryKey) else {
             return
         }
         
@@ -416,7 +425,7 @@ class AgentMemory: ObservableObject {
     private func saveLongTermMemory() {
         do {
             let data = try JSONEncoder().encode(longTerm)
-            UserDefaults.standard.set(data, forKey: memoryKey)
+            userDefaults.set(data, forKey: memoryKey)
         } catch {
             RioLogger.config.error("⚠️ 保存长期记忆失败: \(error.localizedDescription, privacy: .public)")
         }
@@ -442,6 +451,10 @@ class AgentMemory: ObservableObject {
     }
 
     func memoryMarkdownPath() -> String {
+        if let customMarkdownURL {
+            return customMarkdownURL.path
+        }
+
         let baseURL: URL
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             baseURL = appSupport.appendingPathComponent("RioAgent", isDirectory: true)

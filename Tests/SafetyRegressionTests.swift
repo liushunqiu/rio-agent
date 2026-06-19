@@ -171,6 +171,61 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertEqual(confirmationCount, 2)
     }
 
+    func testShellToolSessionTrustIsScopedToWorkingDirectory() async throws {
+        let firstDir = try makeTemporaryWorkingDirectory()
+        let secondDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: firstDir)
+            try? FileManager.default.removeItem(at: secondDir)
+        }
+
+        let tool = ShellTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        _ = try await tool.execute(arguments: [
+            "command": "touch marker.txt",
+            "working_directory": firstDir.path
+        ])
+        _ = try await tool.execute(arguments: [
+            "command": "touch marker.txt",
+            "working_directory": secondDir.path
+        ])
+        _ = try await tool.execute(arguments: [
+            "command": "touch marker.txt",
+            "working_directory": firstDir.path
+        ])
+
+        XCTAssertEqual(confirmationCount, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstDir.appendingPathComponent("marker.txt").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondDir.appendingPathComponent("marker.txt").path))
+    }
+
+    func testShellToolConfirmationExplainsSessionTrustScope() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let tool = ShellTool()
+        var capturedMessage = ""
+        tool.setConfirmationCallback { _, message, _ in
+            capturedMessage = message
+            return .denied
+        }
+
+        _ = try await tool.execute(arguments: [
+            "command": "touch scoped.txt",
+            "working_directory": tempDir.path
+        ])
+
+        XCTAssertTrue(capturedMessage.contains("工作目录:\n\(tempDir.path)"))
+        XCTAssertTrue(capturedMessage.contains("只会信任该命令在当前工作目录下再次执行"))
+    }
+
     func testDangerousShellCommandRejectsSessionTrust() async throws {
         let tempDir = try makeTemporaryWorkingDirectory()
         defer {
@@ -236,6 +291,59 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertTrue(writeResult.error?.contains("absolute path") == true)
         XCTAssertEqual(editResult.status, .error)
         XCTAssertTrue(editResult.error?.contains("absolute path") == true)
+    }
+
+    func testEditFileRequiresCrossDirectoryConfirmationBeforeReadingContent() async throws {
+        let workDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: workDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let outsideFile = outsideDir.appendingPathComponent("Outside.swift")
+        try "let visible = true\n".write(to: outsideFile, atomically: true, encoding: .utf8)
+
+        let tool = EditFileTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .denied
+        }
+
+        let result = try await withTemporaryWorkingDirectory(workDir.path) {
+            try await tool.execute(arguments: [
+                "path": outsideFile.path,
+                "old_text": "missing text that should not be checked before confirmation",
+                "new_text": "replacement"
+            ])
+        }
+
+        XCTAssertEqual(result.status, .cancelled)
+        XCTAssertEqual(result.error, "User cancelled the edit")
+        XCTAssertEqual(confirmationCount, 1)
+    }
+
+    func testEditFileWithoutConfirmationDoesNotRevealOutsideFileExistenceFirst() async throws {
+        let workDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: workDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let missingOutsideFile = outsideDir.appendingPathComponent("Missing.swift")
+
+        let result = try await withTemporaryWorkingDirectory(workDir.path) {
+            try await EditFileTool().execute(arguments: [
+                "path": missingOutsideFile.path,
+                "old_text": "old",
+                "new_text": "new"
+            ])
+        }
+
+        XCTAssertEqual(result.status, .error)
+        XCTAssertEqual(result.error, "Editing files outside the working directory requires confirmation")
     }
 
     func testDirectoryToolsRejectRelativeExplicitPaths() async throws {

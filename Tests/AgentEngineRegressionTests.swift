@@ -5,7 +5,7 @@ import XCTest
 final class AgentEngineRegressionTests: XCTestCase {
 
     func testContextMessagesReflectUpdatedWorkingDirectoryAfterInitialBuild() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.appendMessage(.user("hello"))
 
         let initialSystemPrompt = engine.buildContextMessages().first?.content ?? ""
@@ -18,7 +18,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testClearConversationResetsUsageTracking() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
 
         engine.trackTokenUsage(.init(promptTokens: 120, completionTokens: 45))
         engine.isProcessing = true
@@ -36,7 +36,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testClearConversationClearsWorkingDirectoryAndPendingDecision() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.workingDirectory = "/tmp/rio-agent-project"
 
         var config = engine.multiAgentConfig
@@ -57,7 +57,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testLoadConversationResetsUsageTracking() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
 
         engine.trackTokenUsage(.init(promptTokens: 80, completionTokens: 20))
         engine.isProcessing = true
@@ -78,7 +78,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testLoadConversationClearsVisibleRuntimeState() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.singleAgentVerificationSummary = .init(status: .unverified, summary: "旧摘要")
         engine.currentPipeline = ExecutionPipeline(mode: .singleAgent)
         engine.currentPipeline?.stages = [
@@ -98,7 +98,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testClearConversationInvalidatesInFlightProcessingRun() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.isProcessing = true
 
         let oldRunID = Mirror(reflecting: engine).children.first { $0.label == "processingRunID" }?.value as? UUID
@@ -111,7 +111,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testClearConversationInvalidatesInFlightErrorWrites() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
 
         let oldRunID = Mirror(reflecting: engine).children.first { $0.label == "processingRunID" }?.value as? UUID
         engine.clearConversation()
@@ -166,7 +166,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testProcessingWithoutPendingDecisionRejectsNewUserInput() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var didComplete = false
         engine.isProcessing = true
 
@@ -181,7 +181,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testMissingExecutionConfigReportsUnselectedModelConfiguration() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.configuration
         config.executionConfigSetId = nil
         engine.updateConfiguration(config)
@@ -207,7 +207,7 @@ final class AgentEngineRegressionTests: XCTestCase {
         )
         ConfigSetManager.shared.configSets = [brokenConfig]
 
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.configuration
         config.executionConfigSetId = brokenConfig.id
         engine.updateConfiguration(config)
@@ -233,7 +233,7 @@ final class AgentEngineRegressionTests: XCTestCase {
         )
         ConfigSetManager.shared.configSets = [brokenConfig]
 
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.configuration
         config.executionConfigSetId = brokenConfig.id
         engine.updateConfiguration(config)
@@ -248,7 +248,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testMissingRouterConfigPointsToMultiAgentRouterSettings() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.multiAgentConfig
         config.router.enabled = true
         config.router.enableQwenRouter = false
@@ -266,7 +266,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testStopProcessingClearsRecoveryContext() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.isProcessing = true
         engine.error = "旧错误"
         engine.errorRecoveryContext = .routerModel
@@ -278,7 +278,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testPlainErrorAssignmentClearsStaleRecoveryContext() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.error = "Router 未选择模型配置"
         engine.errorRecoveryContext = .routerModel
 
@@ -360,7 +360,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testPendingDecisionAllowsUserInputEvenWhenProcessingFlagIsStale() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-init-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -390,7 +390,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testLoadConversationClearsTransientExecutionState() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("旧任务")
         _ = await engine.buildToolResultReflection(
             toolCalls: [ToolCall(name: "execute_command")],
@@ -412,7 +412,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testContextMessagesHonorConfiguredMessageLimit() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
 
         engine.appendMessage(.system("system note"))
         engine.appendMessage(.user("first"))
@@ -431,7 +431,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testActiveProcessingRejectsRuntimeConfigurationUpdates() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let originalContextLimit = engine.configuration.maxContextMessages
         let originalMaxRetries = engine.multiAgentConfig.maxRetries
         engine.isProcessing = true
@@ -450,7 +450,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testPendingUserDecisionAllowsRuntimeConfigurationRecoveryUpdates() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var manualConfig = engine.multiAgentConfig
         manualConfig.taskSplitStrategy = .manual
         engine.updateMultiAgentConfig(manualConfig)
@@ -477,7 +477,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testManualTaskSplitStrategyPromptsBeforeStartingMultiAgent() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.multiAgentConfig
         config.taskSplitStrategy = .manual
         engine.updateMultiAgentConfig(config)
@@ -494,7 +494,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testManualExecutionConfirmationKeepsOriginalTaskInMemory() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.multiAgentConfig
         config.taskSplitStrategy = .manual
         engine.updateMultiAgentConfig(config)
@@ -506,7 +506,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testInitConfirmationKeepsOriginalDirectoryContext() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-init-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -527,7 +527,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testInitExecutionPromptStaysInternalOnly() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-init-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -545,7 +545,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testInitConfirmationTreatsFreshInputAsNewTask() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-init-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -570,7 +570,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testManualExecutionConfirmationTreatsFreshInputAsNewTask() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.multiAgentConfig
         config.taskSplitStrategy = .manual
         engine.updateMultiAgentConfig(config)
@@ -590,7 +590,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testClearConversationClearsPendingUserDecision() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-init-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -608,7 +608,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testOlderLargeToolOutputsAreCompressedButRecentOnesStayIntact() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let largeOutput = String(repeating: "0123456789", count: 300)
         var config = engine.configuration
         config.maxContextMessages = 999
@@ -638,7 +638,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testCompressedToolMessagesPreservePresentationAndSourceMetadata() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let largeOutput = String(repeating: "0123456789", count: 300)
         let timestamp = Date(timeIntervalSince1970: 123)
         let source = MessageSource(providerName: "Provider", modelName: "model", agentName: "Agent")
@@ -699,7 +699,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testOlderLargeToolErrorsAreCompressedForContext() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let largeError = String(repeating: "Permission denied while reading protected file. ", count: 80)
         var config = engine.configuration
         config.maxContextMessages = 999
@@ -726,7 +726,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testHandleFinalContentSkipsVerificationWhenNoToolEvidenceExists() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("just chat")
 
         let finalized = await engine.handleFinalContent("这是普通回答。")
@@ -736,7 +736,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testHandleFinalContentAppendsUnverifiedNoteWhenEvidenceIsWeak() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("修改文件")
 
         _ = await engine.buildToolResultReflection(
@@ -753,7 +753,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testHandleFinalContentRequestsRevisionWhenVerifierNeedsRetry() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("运行测试")
 
         _ = await engine.buildToolResultReflection(
@@ -772,7 +772,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testHandleFinalContentKeepsSingleAgentVerificationSummaryVisibleAfterFinalize() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("修改文件")
 
         _ = await engine.buildToolResultReflection(
@@ -788,7 +788,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testHandleFinalContentMarksDeliveredAssistantReplyAsFinalAnswer() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("just chat")
 
         let finalized = await engine.handleFinalContent("这是最后交付的回答。")
@@ -799,7 +799,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testHandleFinalContentDemotesPreviousFinalAnswerWhenNewOneArrives() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.memory.setCurrentTask("just chat")
 
         _ = await engine.handleFinalContent("第一版最终答复。")
@@ -814,7 +814,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testMultiAgentSynthesisAppendsFinalAnswerPresentation() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
 
         engine.appendMessage(.assistant("过程消息"))
         engine.appendMessage(.assistant("多 Agent 汇总结果", source: nil, presentation: .finalAnswer))
@@ -824,7 +824,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testProcessUserInputAppendsUserMessageImmediatelyForNormalTurn() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var callbackCount = 0
         engine.onUserMessageAdded = {
             callbackCount += 1
@@ -839,7 +839,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testProcessUserInputClearsPreviousSingleAgentPlanStateBeforeNewRun() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.currentSingleAgentPlan = AgentEngine.SingleAgentPlan(
             originalTask: "old",
             steps: ["step 1"],
@@ -863,7 +863,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testProcessUserInputClearsPreviousSingleAgentVerificationSummaryBeforeNewRun() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.singleAgentVerificationSummary = .init(status: .unverified, summary: "旧的验证摘要")
 
         await engine.processUserInput("新的任务，帮我看下项目")
@@ -872,7 +872,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testFinalizePreparedTaskExecutionKeepsCancelledSingleAgentPlanCancelled() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.currentSingleAgentPlan = AgentEngine.SingleAgentPlan(
             originalTask: "cancel me",
             steps: ["step 1", "step 2"],
@@ -890,7 +890,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testStopProcessingClearsStaleErrorAndPendingDecisionState() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.error = "旧的失败提示"
         engine.isProcessing = true
         engine.singleAgentVerificationSummary = .init(status: .unverified, summary: "旧的验证摘要")
@@ -919,7 +919,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testClearCommandClearsCurrentConversationStateImmediately() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.appendMessage(.user("old"))
         engine.trackTokenUsage(.init(promptTokens: 10, completionTokens: 5))
         engine.isProcessing = true
@@ -934,7 +934,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testExportAsMarkdownOmitsInternalOnlyMessages() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.workingDirectory = "/tmp/project"
         engine.appendMessage(.user("visible user"))
         engine.appendMessage(Message.assistant("visible assistant"))
@@ -958,7 +958,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testExportAsMarkdownPreservesToolErrorsAndCancellationReasons() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.appendMessage(Message(
             role: .assistant,
             content: "执行记录",
@@ -979,7 +979,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testExportAsMarkdownPreservesCompleteToolResultOutput() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let longOutput = String(repeating: "0123456789", count: 80) + "TAIL-MARKER"
         engine.appendMessage(Message(
             role: .assistant,
@@ -995,7 +995,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testExportAsMarkdownUsesSafeFenceForToolOutputContainingBackticks() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let output = "before\n```swift\nprint(\"hello\")\n```\nafter"
         engine.appendMessage(Message(
             role: .assistant,
@@ -1009,7 +1009,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testExportConversationPreservesWorkingDirectory() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         engine.workingDirectory = "/tmp/exported-project"
         engine.appendMessage(.user("visible user"))
 
@@ -1020,7 +1020,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testExportConversationPreservesPendingUserDecision() async {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         var config = engine.multiAgentConfig
         config.taskSplitStrategy = .manual
         engine.updateMultiAgentConfig(config)
@@ -1036,7 +1036,7 @@ final class AgentEngineRegressionTests: XCTestCase {
     }
 
     func testLoadConversationRestoresPendingUserDecision() {
-        let engine = AgentEngine()
+        let engine = makeIsolatedAgentEngine(testCase: self)
         let conversation = Conversation(
             messages: [
                 .user("请分析这个项目并修改多个文件后再测试"),

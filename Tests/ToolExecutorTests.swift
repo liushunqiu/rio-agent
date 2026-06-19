@@ -8,7 +8,7 @@ final class ToolExecutorTests: XCTestCase {
             DelayedReadOnlyTool(name: "read_file", delayNanoseconds: 250_000_000),
             DelayedReadOnlyTool(name: "search_files", delayNanoseconds: 250_000_000)
         ])
-        let executor = ToolExecutor(toolRegistry: registry, memory: AgentMemory())
+        let executor = ToolExecutor(toolRegistry: registry, memory: makeIsolatedAgentMemory(testCase: self))
 
         let start = Date()
         let results = await executor.executeToolCalls([
@@ -27,7 +27,7 @@ final class ToolExecutorTests: XCTestCase {
             DelayedReadOnlyTool(name: "read_file", delayNanoseconds: 250_000_000),
             DelayedReadOnlyTool(name: "search_files", delayNanoseconds: 40_000_000)
         ])
-        let executor = ToolExecutor(toolRegistry: registry, memory: AgentMemory())
+        let executor = ToolExecutor(toolRegistry: registry, memory: makeIsolatedAgentMemory(testCase: self))
         var completedToolIds: [String] = []
 
         executor.onExecutionStateChanged = { state in
@@ -50,7 +50,7 @@ final class ToolExecutorTests: XCTestCase {
         let registry = ToolRegistry(tools: [
             CancellingTool(name: "execute_command")
         ])
-        let executor = ToolExecutor(toolRegistry: registry, memory: AgentMemory())
+        let executor = ToolExecutor(toolRegistry: registry, memory: makeIsolatedAgentMemory(testCase: self))
 
         let results = await executor.executeToolCalls([
             ToolCall(id: "cancelled-command", name: "execute_command")
@@ -65,7 +65,7 @@ final class ToolExecutorTests: XCTestCase {
     func testToolExecutionContextExposesCurrentToolCallDuringExecution() async throws {
         let contextTool = ContextCapturingTool(name: "execute_command")
         let registry = ToolRegistry(tools: [contextTool])
-        let executor = ToolExecutor(toolRegistry: registry, memory: AgentMemory())
+        let executor = ToolExecutor(toolRegistry: registry, memory: makeIsolatedAgentMemory(testCase: self))
 
         let results = await executor.executeToolCalls([
             ToolCall(id: "context-command", name: "execute_command")
@@ -82,7 +82,7 @@ final class ToolExecutorTests: XCTestCase {
             CancellingTool(name: "execute_command"),
             followUpTool
         ])
-        let executor = ToolExecutor(toolRegistry: registry, memory: AgentMemory())
+        let executor = ToolExecutor(toolRegistry: registry, memory: makeIsolatedAgentMemory(testCase: self))
         var completedToolIds: [String] = []
 
         executor.onExecutionStateChanged = { state in

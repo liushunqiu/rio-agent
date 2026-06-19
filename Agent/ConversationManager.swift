@@ -16,10 +16,16 @@ class ConversationManager: ObservableObject {
     @Published var conversations: [Conversation] = []
     @Published var currentConversation: Conversation?
 
-    private let saveKey = "saved_conversations"
+    private let userDefaults: UserDefaults
+    private let saveKey: String
     private var saveDebounceTask: Task<Void, Never>?
 
-    init() {
+    init(
+        userDefaults: UserDefaults = .standard,
+        saveKey: String = "saved_conversations"
+    ) {
+        self.userDefaults = userDefaults
+        self.saveKey = saveKey
         loadConversations()
     }
 
@@ -145,14 +151,14 @@ class ConversationManager: ObservableObject {
     private func saveConversations() {
         do {
             let data = try JSONEncoder().encode(conversations)
-            UserDefaults.standard.set(data, forKey: saveKey)
+            userDefaults.set(data, forKey: saveKey)
         } catch {
             RioLogger.config.error("保存对话失败: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func loadConversations() {
-        guard let data = UserDefaults.standard.data(forKey: saveKey) else { return }
+        guard let data = userDefaults.data(forKey: saveKey) else { return }
         do {
             conversations = try JSONDecoder().decode([Conversation].self, from: data)
             conversations.sort { $0.updatedAt > $1.updatedAt }

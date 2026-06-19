@@ -34,6 +34,33 @@ final class ConversationPersistenceSourceTests: XCTestCase {
         )
     }
 
+    func testConversationPersistenceCanUseInjectedStorage() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let managerSource = try String(contentsOf: repoRoot.appendingPathComponent("Agent/ConversationManager.swift"))
+        let testSource = try String(contentsOf: repoRoot.appendingPathComponent("Tests/ConversationManagerTests.swift"))
+
+        XCTAssertTrue(
+            managerSource.contains("private let userDefaults: UserDefaults"),
+            "ConversationManager should keep its backing store injectable so tests and development runs do not overwrite real user conversations."
+        )
+        XCTAssertTrue(
+            managerSource.contains("init(\n        userDefaults: UserDefaults = .standard,\n        saveKey: String = \"saved_conversations\"\n    )"),
+            "The app should keep the existing default persistence while allowing isolated stores."
+        )
+        XCTAssertTrue(
+            managerSource.contains("userDefaults.set(data, forKey: saveKey)")
+                && managerSource.contains("guard let data = userDefaults.data(forKey: saveKey) else { return }"),
+            "Conversation persistence should consistently use the injected store for both reads and writes."
+        )
+        XCTAssertTrue(
+            testSource.contains("private func makeIsolatedManager() -> ConversationManager")
+                && testSource.contains("ConversationManager(\n            userDefaults: defaults,"),
+            "ConversationManager tests should use isolated storage instead of touching the real saved_conversations key."
+        )
+    }
+
     func testAcceptedSubmissionsClearDraftInBothComposerSurfaces() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

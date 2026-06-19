@@ -125,7 +125,7 @@ class AgentEngine: ObservableObject {
     }
 
     private let toolRegistry = ToolRegistry.shared
-    let memory = AgentMemory()
+    let memory: AgentMemory
     let multiFileCoordinator = MultiFileCoordinator()
     private var planningService: AIService?
     private var executionService: AIService?
@@ -133,6 +133,9 @@ class AgentEngine: ObservableObject {
     private var verifierService: VerifierService?
     var configuration: AIConfiguration
     var multiAgentConfig: MultiAgentConfig
+    private let userDefaults: UserDefaults
+    private let configurationKey: String
+    private let multiAgentConfigKey: String
     private var multiAgentEngine: MultiAgentEngine?
 
     /// 优化的 Token 追踪器（准确度提升 30%，性能提升 3-5x）
@@ -180,9 +183,20 @@ class AgentEngine: ObservableObject {
     @Published var singleAgentVerificationSummary: VerifierService.VerificationOutcome?
     var textToolCallRedirectCount = 0
 
-    init(configuration: AIConfiguration = AIConfiguration(), multiAgentConfig: MultiAgentConfig = MultiAgentConfig()) {
+    init(
+        configuration: AIConfiguration = AIConfiguration(),
+        multiAgentConfig: MultiAgentConfig = MultiAgentConfig(),
+        userDefaults: UserDefaults = .standard,
+        configurationKey: String = "ai_configuration",
+        multiAgentConfigKey: String = "multi_agent_configuration",
+        memory: AgentMemory? = nil
+    ) {
         self.configuration = configuration
         self.multiAgentConfig = multiAgentConfig
+        self.userDefaults = userDefaults
+        self.configurationKey = configurationKey
+        self.multiAgentConfigKey = multiAgentConfigKey
+        self.memory = memory ?? AgentMemory()
         loadConfiguration()
         loadMultiAgentConfig()
         setupAIService()
@@ -435,13 +449,10 @@ class AgentEngine: ObservableObject {
 
     // MARK: - Configuration Persistence
 
-    private let configurationKey = "ai_configuration"
-    private let multiAgentConfigKey = "multi_agent_configuration"
-
     func saveConfiguration() {
         do {
             let data = try JSONEncoder().encode(configuration)
-            UserDefaults.standard.set(data, forKey: configurationKey)
+            userDefaults.set(data, forKey: configurationKey)
             RioLogger.config.info("💾 配置已保存 - 规划: \(self.configuration.planningProvider.displayName, privacy: .public)/\(self.configuration.planningModel, privacy: .public), 执行: \(self.configuration.executionProvider.displayName, privacy: .public)/\(self.configuration.executionModel, privacy: .public)")
         } catch {
             RioLogger.config.error("⚠️ 保存配置失败: \(error.localizedDescription, privacy: .public)")
@@ -449,7 +460,7 @@ class AgentEngine: ObservableObject {
     }
 
     func loadConfiguration() {
-        guard let data = UserDefaults.standard.data(forKey: configurationKey) else {
+        guard let data = userDefaults.data(forKey: configurationKey) else {
             RioLogger.config.info("📂 未找到已保存的配置，使用默认值")
             return
         }
@@ -465,14 +476,14 @@ class AgentEngine: ObservableObject {
     private func saveMultiAgentConfig() {
         do {
             let data = try JSONEncoder().encode(multiAgentConfig)
-            UserDefaults.standard.set(data, forKey: multiAgentConfigKey)
+            userDefaults.set(data, forKey: multiAgentConfigKey)
         } catch {
             RioLogger.config.error("⚠️ 保存 Multi-Agent 配置失败: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func loadMultiAgentConfig() {
-        guard let data = UserDefaults.standard.data(forKey: multiAgentConfigKey) else { return }
+        guard let data = userDefaults.data(forKey: multiAgentConfigKey) else { return }
         do {
             multiAgentConfig = try JSONDecoder().decode(MultiAgentConfig.self, from: data)
             multiAgentConfig.migrateBuiltInPromptsIfNeeded()

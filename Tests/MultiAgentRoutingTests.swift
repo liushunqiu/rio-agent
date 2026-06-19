@@ -847,7 +847,7 @@ final class MultiAgentRoutingTests: XCTestCase {
 
     @MainActor
     func testBuildProjectContextIncludesVerifiedMemoryWhenAvailable() {
-        let memory = AgentMemory()
+        let memory = makeIsolatedAgentMemory(testCase: self)
         memory.clearAllMemory()
         memory.recordSuccessfulPattern(taskType: "search", tool: "read_file")
 

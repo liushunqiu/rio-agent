@@ -35,33 +35,6 @@ class EditFileTool: Tool {
             return ToolResult.error(toolCallId: name, error: "path must be an absolute path. Resolve relative paths from the working directory before calling edit_file.")
         }
 
-        // Check if file exists
-        guard FileManager.default.fileExists(atPath: path) else {
-            return ToolResult.error(toolCallId: name, error: "File not found: \(path)")
-        }
-
-        // 将文件读取操作移到后台线程，避免阻塞主线程/UI
-        let content: String
-        do {
-            content = try await Task.detached(priority: .userInitiated) {
-                try String(contentsOfFile: path, encoding: .utf8)
-            }.value
-        } catch {
-            return ToolResult.error(toolCallId: name, error: "Cannot read file: \(error.localizedDescription)")
-        }
-
-        // Check that old_text exists and is unique
-        let components = content.components(separatedBy: oldText)
-        let matchCount = components.count - 1
-
-        if matchCount == 0 {
-            return ToolResult.error(toolCallId: name, error: "old_text not found in file. Make sure the text matches exactly (including whitespace and indentation).")
-        }
-
-        if matchCount > 1 {
-            return ToolResult.error(toolCallId: name, error: "old_text found \(matchCount) times in the file. It must be unique. Provide more surrounding context to make it unique.")
-        }
-
         // Confirmation check for cross-directory writes
         let normalizedPath = PathSecurity.normalizedPath(path)
         let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
@@ -88,6 +61,33 @@ class EditFileTool: Tool {
             }
         } else {
             return ToolResult.error(toolCallId: name, error: "Editing files outside the working directory requires confirmation")
+        }
+
+        // Check if file exists after any required cross-directory confirmation.
+        guard FileManager.default.fileExists(atPath: path) else {
+            return ToolResult.error(toolCallId: name, error: "File not found: \(path)")
+        }
+
+        // 将文件读取操作移到后台线程，避免阻塞主线程/UI
+        let content: String
+        do {
+            content = try await Task.detached(priority: .userInitiated) {
+                try String(contentsOfFile: path, encoding: .utf8)
+            }.value
+        } catch {
+            return ToolResult.error(toolCallId: name, error: "Cannot read file: \(error.localizedDescription)")
+        }
+
+        // Check that old_text exists and is unique
+        let components = content.components(separatedBy: oldText)
+        let matchCount = components.count - 1
+
+        if matchCount == 0 {
+            return ToolResult.error(toolCallId: name, error: "old_text not found in file. Make sure the text matches exactly (including whitespace and indentation).")
+        }
+
+        if matchCount > 1 {
+            return ToolResult.error(toolCallId: name, error: "old_text found \(matchCount) times in the file. It must be unique. Provide more surrounding context to make it unique.")
         }
 
         // Perform the replacement

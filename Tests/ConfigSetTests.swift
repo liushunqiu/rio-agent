@@ -2,9 +2,17 @@ import XCTest
 @testable import RioAgent
 
 final class ConfigSetTests: XCTestCase {
-    override func tearDown() {
-        ConfigSetManager.shared.configSets.removeAll()
-        super.tearDown()
+    private func makeIsolatedManager() -> ConfigSetManager {
+        let suiteName = "rio-agent-config-set-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+        }
+        return ConfigSetManager(
+            userDefaults: defaults,
+            storageKey: "config_sets_test_\(UUID().uuidString)"
+        )
     }
 
     func testCompatibleEndpointWithoutAPIKeyIsTreatedAsConfigured() {
@@ -114,7 +122,7 @@ final class ConfigSetTests: XCTestCase {
             baseURL: "https://api.openai.com",
             model: "gpt-4o"
         )
-        let manager = ConfigSetManager.shared
+        let manager = makeIsolatedManager()
         manager.configSets = [configSet]
         configSet.saveAPIKey("secret")
 
@@ -127,7 +135,7 @@ final class ConfigSetTests: XCTestCase {
     }
 
     func testRevisionChangesWhenExistingConfigSetIsUpdated() {
-        let manager = ConfigSetManager.shared
+        let manager = makeIsolatedManager()
         let configSet = ConfigSet(
             id: UUID(),
             name: "Gateway",

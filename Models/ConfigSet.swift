@@ -63,6 +63,9 @@ struct ConfigSet: Identifiable, Codable {
 class ConfigSetManager: ObservableObject {
     static let shared = ConfigSetManager()
     static let storageKey = "config_sets_v2"
+
+    private let userDefaults: UserDefaults
+    private let saveKey: String
     
     @Published var configSets: [ConfigSet] = [] {
         didSet {
@@ -71,7 +74,12 @@ class ConfigSetManager: ObservableObject {
     }
     @Published private(set) var revision: Int = 0
     
-    init() {
+    init(
+        userDefaults: UserDefaults = .standard,
+        storageKey: String = ConfigSetManager.storageKey
+    ) {
+        self.userDefaults = userDefaults
+        self.saveKey = storageKey
         loadFromUserDefaults()
     }
     
@@ -106,12 +114,12 @@ class ConfigSetManager: ObservableObject {
     
     private func saveToUserDefaults() {
         if let data = try? JSONEncoder().encode(configSets) {
-            UserDefaults.standard.set(data, forKey: Self.storageKey)
+            userDefaults.set(data, forKey: saveKey)
         }
     }
     
     private func loadFromUserDefaults() {
-        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+        if let data = userDefaults.data(forKey: saveKey),
            let sets = try? JSONDecoder().decode([ConfigSet].self, from: data) {
             configSets = sets
         }

@@ -9,27 +9,50 @@ class ShellTool: Tool {
         "working_directory": ToolParameter(type: "string", description: "命令执行的工作目录（绝对路径）。不指定则使用当前工作目录。")
     ]
 
+    private struct TrustedCommandScope: Hashable {
+        let command: String
+        let workingDirectory: String?
+    }
+
     private var confirmationCallback: ConfirmationCallback?
-    private var trustedCommands: Set<String> = []
+    private var trustedCommands: Set<TrustedCommandScope> = []
 
     func setConfirmationCallback(_ callback: @escaping ConfirmationCallback) {
         self.confirmationCallback = callback
     }
 
     func setTrustedCommands(_ commands: Set<String>) {
-        self.trustedCommands = commands
+        trustedCommands = Set(commands.map { trustScope(for: $0, workingDirectory: nil) })
     }
 
     func addTrustedCommand(_ command: String) {
-        trustedCommands.insert(normalizedTrustedCommand(command))
+        addTrustedCommand(command, workingDirectory: nil)
     }
 
-    private func isCommandTrusted(_ command: String) -> Bool {
-        trustedCommands.contains(normalizedTrustedCommand(command))
+    func addTrustedCommand(_ command: String, workingDirectory: String?) {
+        trustedCommands.insert(trustScope(for: command, workingDirectory: workingDirectory))
+    }
+
+    private func isCommandTrusted(_ command: String, workingDirectory: String?) -> Bool {
+        trustedCommands.contains(trustScope(for: command, workingDirectory: workingDirectory))
+    }
+
+    private func trustScope(for command: String, workingDirectory: String?) -> TrustedCommandScope {
+        TrustedCommandScope(
+            command: normalizedTrustedCommand(command),
+            workingDirectory: normalizedTrustedWorkingDirectory(workingDirectory)
+        )
     }
 
     private func normalizedTrustedCommand(_ command: String) -> String {
         command.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizedTrustedWorkingDirectory(_ workingDirectory: String?) -> String? {
+        guard let workingDirectory else { return nil }
+        let trimmed = workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return PathSecurity.normalizedPath(trimmed)
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
@@ -60,7 +83,7 @@ class ShellTool: Tool {
 
         case .normal:
             // Check if already trusted for this session (with fuzzy matching)
-            if isCommandTrusted(command) {
+            if isCommandTrusted(command, workingDirectory: workDir) {
                 break
             }
 
@@ -68,7 +91,7 @@ class ShellTool: Tool {
             if let confirm = confirmationCallback {
                 let result = await confirm(
                     "执行命令确认",
-                    "即将执行命令:\n\n\(command)\n\n是否继续？",
+                    normalCommandConfirmationMessage(command: command, workingDirectory: workDir),
                     true
                 )
 
@@ -76,7 +99,7 @@ class ShellTool: Tool {
                 case .approved:
                     break
                 case .trustedForSession:
-                    addTrustedCommand(command)
+                    addTrustedCommand(command, workingDirectory: workDir)
                 case .denied:
                     return ToolResult.cancelled(toolCallId: "shell", reason: "用户取消执行")
                 }
@@ -107,6 +130,23 @@ class ShellTool: Tool {
         }
 
         return try await runCommand(command, workingDirectory: workDir)
+    }
+
+    private func normalCommandConfirmationMessage(command: String, workingDirectory: String?) -> String {
+        let directory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let directoryText = directory?.isEmpty == false ? directory! : "未指定"
+        return """
+        即将执行命令:
+
+        \(command)
+
+        工作目录:
+        \(directoryText)
+
+        选择“信任本会话”只会信任该命令在当前工作目录下再次执行。
+
+        是否继续？
+        """
     }
 
     /// Maximum output characters to prevent token overflow

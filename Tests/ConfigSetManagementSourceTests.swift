@@ -1,6 +1,34 @@
 import XCTest
 
 final class ConfigSetManagementSourceTests: XCTestCase {
+    func testConfigSetManagerCanUseInjectedStorage() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let managerSource = try String(contentsOf: repoRoot.appendingPathComponent("Models/ConfigSet.swift"))
+        let testSource = try String(contentsOf: repoRoot.appendingPathComponent("Tests/ConfigSetTests.swift"))
+
+        XCTAssertTrue(
+            managerSource.contains("private let userDefaults: UserDefaults")
+                && managerSource.contains("private let saveKey: String"),
+            "ConfigSetManager should keep its persistence backend injectable."
+        )
+        XCTAssertTrue(
+            managerSource.contains("init(\n        userDefaults: UserDefaults = .standard,\n        storageKey: String = ConfigSetManager.storageKey\n    )"),
+            "The app should keep the existing shared defaults while tests can provide isolated storage."
+        )
+        XCTAssertTrue(
+            managerSource.contains("userDefaults.set(data, forKey: saveKey)")
+                && managerSource.contains("if let data = userDefaults.data(forKey: saveKey),"),
+            "ConfigSetManager should consistently read and write through the injected UserDefaults store."
+        )
+        XCTAssertTrue(
+            testSource.contains("private func makeIsolatedManager() -> ConfigSetManager")
+                && testSource.contains("ConfigSetManager(\n            userDefaults: defaults,"),
+            "ConfigSet tests should not mutate the real shared model configuration storage."
+        )
+    }
+
     func testConfigEditorSaveGuidanceIsSpecificAndDiscoverable() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

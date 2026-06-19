@@ -77,8 +77,10 @@ struct ToolExecutionView: View {
 
     private var statusMessage: String {
         switch state {
-        case .pending: return "等待用户确认"
-        case .confirming: return "请在弹窗中确认是否执行"
+        case .pending:
+            return "已加入工具队列，等待当前步骤开始。"
+        case .confirming(let toolCall):
+            return confirmationDetail(for: toolCall)
         case .executing: return "正在执行命令..."
         case .completed(let toolCall, let result):
             return statusDetail(for: toolCall, result: result)
@@ -89,6 +91,8 @@ struct ToolExecutionView: View {
 
     private var statusMessageLineLimit: Int {
         switch state {
+        case .confirming:
+            return 4
         case .completed(_, let result):
             switch result.status {
             case .success: return 2
@@ -107,6 +111,42 @@ struct ToolExecutionView: View {
             return text
         }
         return String(text.prefix(160)) + "..."
+    }
+
+    private func confirmationDetail(for toolCall: ToolCall) -> String {
+        if let command = stringArgument("command", in: toolCall) {
+            return "等待确认命令：\(shortened(command))"
+        }
+
+        if let path = stringArgument("path", in: toolCall) {
+            return "等待确认文件：\(shortened(path))"
+        }
+
+        if let patch = stringArgument("patch", in: toolCall) {
+            let fileCount = patch.components(separatedBy: "\n")
+                .filter { line in
+                    line.hasPrefix("*** Add File:")
+                        || line.hasPrefix("*** Update File:")
+                        || line.hasPrefix("*** Delete File:")
+                }
+                .count
+            if fileCount > 0 {
+                return "等待确认补丁：涉及 \(fileCount) 个文件。"
+            }
+        }
+
+        return "请在弹窗中确认是否执行；取消后不会继续该工具。"
+    }
+
+    private func stringArgument(_ key: String, in toolCall: ToolCall) -> String? {
+        guard let value = toolCall.arguments[key]?.value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func shortened(_ text: String, limit: Int = 160) -> String {
+        guard text.count > limit else { return text }
+        return String(text.prefix(limit)) + "..."
     }
 
     private func statusDetail(for toolCall: ToolCall, result: ToolResult) -> String {
