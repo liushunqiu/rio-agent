@@ -193,6 +193,25 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertEqual(config.orchestrator.configSetId, first.id)
     }
 
+    func testReconcileConfigSetsUpdatesRouterModelWhenStaleConfigFallsBack() {
+        let fallback = ConfigSet(
+            id: UUID(),
+            name: "Router Fallback",
+            provider: .openAICompatible,
+            baseURL: "https://router.example.com/v1",
+            model: "ready-router-model"
+        )
+
+        var config = MultiAgentConfig()
+        config.router.configSetId = UUID()
+        config.router.model = "deleted-router-model"
+
+        config.reconcileConfigSets(with: [fallback])
+
+        XCTAssertEqual(config.router.configSetId, fallback.id)
+        XCTAssertEqual(config.router.model, fallback.model)
+    }
+
     func testRoutingDecisionMapsTargetToPreferredCapability() {
         let codeDecision = RoutingDecision.routeToTarget(
             target: "code_expert",
@@ -210,6 +229,41 @@ final class MultiAgentRoutingTests: XCTestCase {
         XCTAssertEqual(codeDecision.preferredWorkerCapability, .code)
         XCTAssertEqual(searchDecision.preferredWorkerCapability, .search)
         XCTAssertNil(RoutingDecision.skip(reason: "闲聊").preferredWorkerCapability)
+    }
+
+    func testGenericRouterParsesFencedJSONWithLeadingText() {
+        let response = """
+        可以，路由如下：
+
+        ```json
+        {
+          "mode": "code_expert",
+          "confidence": 0.83,
+          "reasoning": "需要修改包含 {state} 占位符的代码"
+        }
+        ```
+        """
+
+        guard case let .routeToTarget(target, _, confidence, reasoning) = RouterService.parseRoutingResponse(response) else {
+            return XCTFail("Expected a route target decision")
+        }
+
+        XCTAssertEqual(target, "code_expert")
+        XCTAssertEqual(confidence, 0.83, accuracy: 0.001)
+        XCTAssertEqual(reasoning, "需要修改包含 {state} 占位符的代码")
+    }
+
+    func testQwenRouterParsesEmbeddedJSONSkipDecision() {
+        let response = """
+        路由结果：
+        {"target_node":"chitchat","extracted_params":{},"confidence":0.91,"reasoning":"只是确认 {ok} 状态"}
+        """
+
+        guard case let .skip(reason) = RouterService.parseQwenRoutingResponse(response) else {
+            return XCTFail("Expected a skip decision")
+        }
+
+        XCTAssertEqual(reason, "只是确认 {ok} 状态")
     }
 
     @MainActor
@@ -415,6 +469,37 @@ final class MultiAgentRoutingTests: XCTestCase {
                 && source.contains("Router 响应不是有效 JSON 路由决策"),
             "Detailed router failures should classify HTTP failures and invalid JSON decisions separately."
         )
+        XCTAssertTrue(
+            source.contains("request.httpBody = try JSONSerialization.data(withJSONObject: body)")
+                && source.contains("Qwen 路由请求构建失败"),
+            "Qwen router request body construction should fail explicitly instead of sending an empty request body after serialization errors."
+        )
+        XCTAssertTrue(
+            source.contains("static func parseQwenRoutingResponse(_ text: String) -> RoutingDecision?")
+                && source.contains("static func parseRoutingResponse(_ text: String) -> RoutingDecision?")
+                && source.contains("balancedJSONObjectCandidates(in: text)"),
+            "Router parsing should accept JSON objects embedded in model prose or fenced code blocks."
+        )
+    }
+
+    func testSynthesisRejectsEmptyModelResponsesInsteadOfReturningPlaceholderText() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/MultiAgentEngine.swift"))
+
+        XCTAssertTrue(
+            source.contains("private func nonEmptySynthesisContent(from response: AIResponse) throws -> String"),
+            "Multi-Agent synthesis should share a dedicated empty-response guard instead of silently producing placeholder text."
+        )
+        XCTAssertTrue(
+            source.contains("throw AIServiceError.emptyResponse"),
+            "Empty synthesis responses should surface as an actionable model error."
+        )
+        XCTAssertFalse(
+            source.contains("return response.content ?? \"无法生成最终结果\""),
+            "Synthesis should not make an empty model response look like a normal final answer."
+        )
     }
 
     @MainActor
@@ -562,6 +647,68 @@ final class MultiAgentRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testParseSubTasksAcceptsFencedJSONResponse() {
+        let workerId = UUID()
+        let worker = AgentConfig(
+            id: workerId,
+            name: "Code",
+            role: .worker,
+            capability: .code,
+            provider: .openAICompatible,
+            model: "code-model"
+        )
+        let engine = MultiAgentEngine(config: MultiAgentConfig(workers: [worker]))
+        let taskId = UUID()
+        let response = """
+        可以，拆分如下：
+
+        ```json
+        {
+          "sub_tasks": [
+            {
+              "task_id": "\(taskId.uuidString)",
+              "description": "修改登录按钮状态",
+              "worker_id": "\(workerId.uuidString)",
+              "worker_type": "code",
+              "reason": "需要修改代码",
+              "depends_on": []
+            }
+          ]
+        }
+        ```
+        """
+
+        let subTasks = engine.parseSubTasks(from: response)
+
+        XCTAssertEqual(subTasks.count, 1)
+        XCTAssertEqual(subTasks.first?.id, taskId)
+        XCTAssertEqual(subTasks.first?.assignedWorker?.id, workerId)
+    }
+
+    @MainActor
+    func testParseSubTasksHandlesBracesInsideJSONString() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let taskId = UUID()
+        let response = """
+        {
+          "sub_tasks": [
+            {
+              "task_id": "\(taskId.uuidString)",
+              "description": "检查模板字符串里的 {name} 占位符",
+              "worker_type": "general",
+              "depends_on": []
+            }
+          ]
+        }
+        """
+
+        let subTasks = engine.parseSubTasks(from: response)
+
+        XCTAssertEqual(subTasks.count, 1)
+        XCTAssertEqual(subTasks.first?.description, "检查模板字符串里的 {name} 占位符")
+    }
+
+    @MainActor
     func testExecutionBatchesRespectMaxParallelWorkers() {
         let config = MultiAgentConfig(maxParallelWorkers: 2)
         let engine = MultiAgentEngine(config: config)
@@ -667,6 +814,34 @@ final class MultiAgentRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testUnverifiedSubTaskResultDoesNotBecomeCompleted() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let result = ExecutionResult(
+            subTaskId: UUID(),
+            output: "无结果",
+            errors: [],
+            retryCount: 0,
+            verificationStatus: .unverified,
+            verificationSummary: "没有收集到可审计的工具证据。",
+            recoveryContext: nil
+        )
+
+        XCTAssertEqual(engine.subTaskStatus(for: result), .failed)
+        XCTAssertEqual(engine.failureSource(for: result, status: .failed), .verification)
+    }
+
+    @MainActor
+    func testTerminalPlanStatusFailsWhenAnySubTaskIsUnverified() {
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let subTasks = [
+            SubTask(description: "verified work", status: .completed, verificationStatus: .verified),
+            SubTask(description: "no evidence", status: .failed, verificationStatus: .unverified)
+        ]
+
+        XCTAssertEqual(engine.terminalPlanStatus(for: subTasks), .failed)
+    }
+
+    @MainActor
     func testSynthesisResultsTextFollowsPlanOrder() throws {
         let firstId = UUID()
         let secondId = UUID()
@@ -701,6 +876,34 @@ final class MultiAgentRoutingTests: XCTestCase {
         let firstRange = try XCTUnwrap(text.range(of: "子任务 1：first planned step"))
         let secondRange = try XCTUnwrap(text.range(of: "子任务 2：second planned step"))
         XCTAssertLessThan(firstRange.lowerBound, secondRange.lowerBound)
+    }
+
+    @MainActor
+    func testSynthesisResultsTextIncludesMissingSubTaskResults() {
+        let completedId = UUID()
+        let missingId = UUID()
+        let engine = MultiAgentEngine(config: MultiAgentConfig())
+        let subTasks = [
+            SubTask(id: completedId, description: "completed step", status: .completed, verificationStatus: .verified),
+            SubTask(id: missingId, description: "missing execution step", status: .pending, verificationStatus: .unverified)
+        ]
+        let results: [UUID: ExecutionResult] = [
+            completedId: ExecutionResult(
+                subTaskId: completedId,
+                output: "completed output",
+                errors: [],
+                retryCount: 0,
+                verificationStatus: .verified,
+                verificationSummary: nil,
+                recoveryContext: nil
+            )
+        ]
+
+        let text = engine.synthesisResultsText(results: results, subTasks: subTasks)
+
+        XCTAssertTrue(text.contains("子任务 2：missing execution step"))
+        XCTAssertTrue(text.contains("执行状态: 等待中"))
+        XCTAssertTrue(text.contains("缺少执行结果，不能视为完成"))
     }
 
     @MainActor

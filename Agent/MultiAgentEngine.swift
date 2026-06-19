@@ -388,7 +388,7 @@ class MultiAgentEngine: ObservableObject {
     }
 
     func parseSubTasks(from response: String) -> [SubTask] {
-        guard let data = response.data(using: .utf8),
+        guard let data = subTaskJSONData(from: response),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let subTasksArray = json["sub_tasks"] as? [[String: Any]] else {
             return []
@@ -431,6 +431,83 @@ class MultiAgentEngine: ObservableObject {
                 dependencies: dependencies
             )
         }
+    }
+
+    private func subTaskJSONData(from response: String) -> Data? {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = [trimmed] + balancedJSONObjectCandidates(in: response)
+
+        for candidate in candidates {
+            guard let data = candidate.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["sub_tasks"] != nil else {
+                continue
+            }
+            return data
+        }
+
+        return nil
+    }
+
+    private func balancedJSONObjectCandidates(in text: String) -> [String] {
+        var candidates: [String] = []
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            if text[index] == "{", let candidate = balancedJSONObject(in: text, from: index) {
+                candidates.append(candidate)
+            }
+            index = text.index(after: index)
+        }
+
+        return candidates
+    }
+
+    private func balancedJSONObject(in text: String, from start: String.Index) -> String? {
+        var depth = 0
+        var quote: Character?
+        var escaped = false
+        var index = start
+
+        while index < text.endIndex {
+            let char = text[index]
+
+            if escaped {
+                escaped = false
+                index = text.index(after: index)
+                continue
+            }
+
+            if char == "\\" {
+                escaped = true
+                index = text.index(after: index)
+                continue
+            }
+
+            if let currentQuote = quote {
+                if char == currentQuote {
+                    quote = nil
+                }
+                index = text.index(after: index)
+                continue
+            }
+
+            if char == "\"" {
+                quote = char
+            } else if char == "{" {
+                depth += 1
+            } else if char == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let end = text.index(after: index)
+                    return String(text[start..<end])
+                }
+            }
+
+            index = text.index(after: index)
+        }
+
+        return nil
     }
 
     // MARK: - Worker Selection
@@ -541,7 +618,7 @@ class MultiAgentEngine: ObservableObject {
     }
 
     func subTaskStatus(for result: ExecutionResult) -> SubTaskStatus {
-        (result.hasErrors || result.verificationStatus == .needsRetry) ? .failed : .completed
+        (result.hasErrors || result.verificationStatus != .verified) ? .failed : .completed
     }
 
     func failureSource(for result: ExecutionResult, status: SubTaskStatus) -> SubTaskFailureSource? {
@@ -556,7 +633,7 @@ class MultiAgentEngine: ObservableObject {
             return .execution
         }
 
-        if result.verificationStatus == .needsRetry,
+        if result.verificationStatus != .verified,
            result.verificationSummary?.contains("执行失败") != true {
             return .verification
         }
@@ -934,7 +1011,7 @@ class MultiAgentEngine: ObservableObject {
             let response = try await orchestratorService.sendMessage(
                 messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens
             )
-            return response.content ?? "无法生成最终结果"
+            return try nonEmptySynthesisContent(from: response)
         }
 
         let statusSummary = synthesisStatusSummary(results: results, subTasks: subTasks)
@@ -967,7 +1044,15 @@ class MultiAgentEngine: ObservableObject {
             messages, tools: [], model: config.orchestrator.model, maxTokens: config.effectiveMaxTokens
         )
 
-        return response.content ?? "无法生成最终结果"
+        return try nonEmptySynthesisContent(from: response)
+    }
+
+    private func nonEmptySynthesisContent(from response: AIResponse) throws -> String {
+        guard let content = response.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !content.isEmpty else {
+            throw AIServiceError.emptyResponse
+        }
+        return content
     }
 
     // MARK: - Plan Update Helpers
@@ -977,7 +1062,7 @@ class MultiAgentEngine: ObservableObject {
             return .cancelled
         }
 
-        if subTasks.contains(where: { $0.status == .failed || $0.verificationStatus == .needsRetry }) {
+        if subTasks.contains(where: { $0.status == .failed || $0.verificationStatus != .verified }) {
             return .failed
         }
 
@@ -985,7 +1070,10 @@ class MultiAgentEngine: ObservableObject {
     }
 
     func synthesisStatusSummary(results: [UUID: ExecutionResult], subTasks: [SubTask]) -> String {
-        let failedCount = subTasks.filter { $0.status == .failed || $0.verificationStatus == .needsRetry }.count
+        let failedCount = subTasks.filter {
+            ($0.status == .failed || $0.verificationStatus == .needsRetry)
+                && $0.verificationStatus != .unverified
+        }.count
         let unverifiedCount = subTasks.filter { $0.verificationStatus == .unverified }.count
         let verifiedCount = subTasks.filter { $0.verificationStatus == .verified }.count
         let missingResultCount = subTasks.filter { results[$0.id] == nil }.count
@@ -1008,15 +1096,14 @@ class MultiAgentEngine: ObservableObject {
     }
 
     func synthesisResultsText(results: [UUID: ExecutionResult], subTasks: [SubTask]) -> String {
-        let orderedEntries = subTasks.compactMap { subTask -> (SubTask?, ExecutionResult)? in
-            guard let result = results[subTask.id] else { return nil }
-            return (subTask, result)
+        let orderedEntries = subTasks.map { subTask -> (SubTask?, ExecutionResult?) in
+            (subTask, results[subTask.id])
         }
-        let orderedIds = Set(orderedEntries.map { $0.1.subTaskId })
+        let orderedIds = Set(subTasks.map(\.id))
         let extraEntries = results.values
             .filter { !orderedIds.contains($0.subTaskId) }
             .sorted { $0.subTaskId.uuidString < $1.subTaskId.uuidString }
-            .map { (nil as SubTask?, $0) }
+            .map { (nil as SubTask?, Optional($0)) }
 
         return (orderedEntries + extraEntries).enumerated().map { index, entry in
             let (subTask, result) = entry
@@ -1026,6 +1113,14 @@ class MultiAgentEngine: ObservableObject {
                 text += "：\(description)"
             }
             text += " ===\n"
+            guard let result else {
+                let statusText = subTask.map { subTaskStatusLabel($0.status) } ?? "未知"
+                let verificationText = subTask?.verificationStatus.displayText ?? "未验证"
+                text += "执行状态: \(statusText)\n"
+                text += "验证状态: \(verificationText)\n"
+                text += "⚠️ 缺少执行结果，不能视为完成。"
+                return text
+            }
             if result.retryCount > 0 {
                 text += "（经过 \(result.retryCount) 次重试）\n"
             }
@@ -1039,6 +1134,21 @@ class MultiAgentEngine: ObservableObject {
             }
             return text
         }.joined(separator: "\n\n")
+    }
+
+    private func subTaskStatusLabel(_ status: SubTaskStatus) -> String {
+        switch status {
+        case .pending:
+            return "等待中"
+        case .running:
+            return "运行中"
+        case .completed:
+            return "已完成"
+        case .cancelled:
+            return "已取消"
+        case .failed:
+            return "失败"
+        }
     }
 
     func applyExecutionResult(

@@ -39,16 +39,24 @@ class ConversationManager: ObservableObject {
         return conversation
     }
 
-    func selectConversation(_ conversation: Conversation) {
-        currentConversation = conversations.first(where: { $0.id == conversation.id }) ?? conversation
+    @discardableResult
+    func selectConversation(_ conversation: Conversation) -> Conversation? {
+        guard let storedConversation = conversations.first(where: { $0.id == conversation.id }) else {
+            return nil
+        }
+
+        currentConversation = storedConversation
+        return storedConversation
     }
 
-    func deleteConversation(_ conversation: Conversation) {
+    @discardableResult
+    func deleteConversation(_ conversation: Conversation) -> Conversation? {
         conversations.removeAll { $0.id == conversation.id }
         if currentConversation?.id == conversation.id {
             currentConversation = conversations.first
         }
         debouncedSave()
+        return currentConversation
     }
 
     func updateCurrentConversation(

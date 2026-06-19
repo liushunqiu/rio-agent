@@ -100,6 +100,7 @@ struct MultiAgentSettingsView: View {
     @State private var qwenTopK: Int
     @State private var qwenPresencePenalty: Float
     @State private var draftApplyTask: Task<Void, Never>?
+    @State private var isSyncingAppliedDraft = false
 
     init(config: Binding<MultiAgentConfig>, aiConfig: AIConfigInfo, launchContext: SettingsLaunchContext? = nil) {
         self._config = config
@@ -166,9 +167,38 @@ struct MultiAgentSettingsView: View {
     }
 
     private func applyDraft() {
+        guard !isSyncingAppliedDraft else { return }
         reconcileSelections()
         normalizeQwenSamplingInputs()
-        config = currentDraft().applied(to: config, availableConfigSets: aiConfig.allConfigSets)
+        let appliedConfig = currentDraft().applied(to: config, availableConfigSets: aiConfig.allConfigSets)
+        config = appliedConfig
+        syncLocalState(from: appliedConfig)
+    }
+
+    private func syncLocalState(from appliedConfig: MultiAgentConfig) {
+        isSyncingAppliedDraft = true
+        orchestratorConfigSetId = appliedConfig.orchestrator.configSetId
+        orchestratorPrompt = appliedConfig.orchestrator.systemPrompt
+        workers = appliedConfig.workers
+        maxParallel = appliedConfig.maxParallelWorkers
+        taskStrategy = appliedConfig.taskSplitStrategy
+        maxRetries = appliedConfig.maxRetries
+        enableCritic = appliedConfig.enableCritic
+        routerEnabled = appliedConfig.router.enabled
+        routerConfigSetId = appliedConfig.router.configSetId
+        routerModel = appliedConfig.router.model
+        routerPrompt = appliedConfig.router.prompt
+        enableQwenRouter = appliedConfig.router.enableQwenRouter
+        qwenBaseUrl = appliedConfig.router.qwenBaseUrl
+        qwenModel = appliedConfig.router.qwenModel
+        disableThinking = appliedConfig.router.disableThinking
+        qwenTemperature = appliedConfig.router.temperature
+        qwenTopP = appliedConfig.router.topP
+        qwenTopK = appliedConfig.router.topK
+        qwenPresencePenalty = appliedConfig.router.presencePenalty
+        Task { @MainActor in
+            isSyncingAppliedDraft = false
+        }
     }
 
     private func normalizeQwenSamplingInputs() {
@@ -185,6 +215,7 @@ struct MultiAgentSettingsView: View {
     }
 
     private func scheduleDraftApply() {
+        guard !isSyncingAppliedDraft else { return }
         draftApplyTask?.cancel()
         draftApplyTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 600_000_000)

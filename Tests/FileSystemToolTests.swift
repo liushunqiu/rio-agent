@@ -43,6 +43,32 @@ final class FileSystemToolTests: XCTestCase {
         XCTAssertFalse(result.output.contains("Tests/App/KeepTests.swift"))
     }
 
+    func testFindFilesKeepsUsableMatchesWhenOneDirectoryCannotBeRead() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        let blockedDir = tempDir.appendingPathComponent("Blocked", isDirectory: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blockedDir.path)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        try write("match", to: tempDir.appendingPathComponent("Sources/App/Keep.swift"))
+        try write("hidden", to: blockedDir.appendingPathComponent("Hidden.swift"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: blockedDir.path)
+
+        let result = try await FindFilesTool().execute(arguments: [
+            "path": tempDir.path,
+            "pattern": "*.swift"
+        ])
+
+        guard result.output.contains("部分目录无法读取") else {
+            throw XCTSkip("Current filesystem did not report a traversal error for a chmod 000 directory.")
+        }
+
+        XCTAssertEqual(result.status, .success)
+        XCTAssertTrue(result.output.contains("Keep.swift"))
+        XCTAssertFalse(result.output.contains("Hidden.swift"))
+    }
+
     func testSearchFilesHonorsFilePatternAndLineNumbers() async throws {
         let tempDir = try makeTemporaryWorkingDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -77,6 +103,31 @@ final class FileSystemToolTests: XCTestCase {
 
         XCTAssertEqual(result.status, .success)
         XCTAssertTrue(result.output.contains("\(file.path):1:let targetValue = 1"))
+    }
+
+    func testSearchFilesSurfacesUnreadableFileDiagnostics() async throws {
+        let tempDir = try makeTemporaryWorkingDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let readableFile = tempDir.appendingPathComponent("Readable.swift")
+        let invalidUTF8File = tempDir.appendingPathComponent("Binary.swift")
+        try write("let targetValue = 1", to: readableFile)
+        try FileManager.default.createDirectory(
+            at: invalidUTF8File.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data([0xff, 0xfe, 0xfd]).write(to: invalidUTF8File)
+
+        let result = try await SearchFilesTool().execute(arguments: [
+            "path": tempDir.path,
+            "pattern": "targetValue",
+            "file_pattern": "*.swift"
+        ])
+
+        XCTAssertEqual(result.status, .success)
+        XCTAssertTrue(result.output.contains("\(readableFile.path):1:let targetValue = 1"))
+        XCTAssertTrue(result.output.contains("部分文件无法读取"))
+        XCTAssertTrue(result.output.contains(invalidUTF8File.path))
     }
 
     func testListDirectoryProducesStableNativeListing() async throws {

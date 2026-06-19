@@ -46,6 +46,10 @@ final class SidebarNavigationLockSourceTests: XCTestCase {
             "Conversation deletion should not be staged while active execution is running."
         )
         XCTAssertTrue(
+            source.contains("Button(\"删除\", role: .destructive) {\n                guard !isNavigationLocked else {\n                    pendingDeleteConversation = nil\n                    return\n                }"),
+            "The deletion confirmation should re-check the navigation lock in case active execution starts while the alert is already open."
+        )
+        XCTAssertTrue(
             source.contains("当前任务运行中，完成或停止后再切换会话。"),
             "The sidebar should make the temporary navigation lock visible instead of silently ignoring clicks."
         )

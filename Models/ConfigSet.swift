@@ -45,16 +45,29 @@ struct ConfigSet: Identifiable, Codable {
         KeychainManager.load(forKey: apiKeyKeychainKey) ?? ""
     }
     
-    func saveAPIKey(_ key: String) {
-        if key.isEmpty {
-            try? KeychainManager.delete(forKey: apiKeyKeychainKey)
+    func saveAPIKey(_ key: String) throws {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmedKey.isEmpty {
+            try KeychainManager.delete(forKey: apiKeyKeychainKey)
         } else {
-            try? KeychainManager.save(key, forKey: apiKeyKeychainKey)
+            try KeychainManager.save(trimmedKey, forKey: apiKeyKeychainKey)
         }
     }
     
     private var apiKeyKeychainKey: String {
         "config_set_\(id.uuidString)_api_key"
+    }
+}
+
+enum ConfigSetPersistenceError: LocalizedError {
+    case encodeFailed(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .encodeFailed(let error):
+            return "模型配置无法编码：\(error.localizedDescription)"
+        }
     }
 }
 
@@ -85,24 +98,42 @@ class ConfigSetManager: ObservableObject {
     
     // MARK: - CRUD
     
-    func addConfigSet(_ configSet: ConfigSet) {
+    func addConfigSet(_ configSet: ConfigSet) throws {
+        let previousConfigSets = configSets
         configSets.append(configSet)
-        saveToUserDefaults()
+        do {
+            try saveToUserDefaults()
+        } catch {
+            configSets = previousConfigSets
+            throw error
+        }
     }
     
-    func updateConfigSet(_ configSet: ConfigSet) {
+    func updateConfigSet(_ configSet: ConfigSet) throws {
         if let index = configSets.firstIndex(where: { $0.id == configSet.id }) {
+            let previousConfigSets = configSets
             configSets[index] = configSet
-            saveToUserDefaults()
+            do {
+                try saveToUserDefaults()
+            } catch {
+                configSets = previousConfigSets
+                throw error
+            }
         }
     }
     
-    func deleteConfigSet(id: UUID) {
+    func deleteConfigSet(id: UUID) throws {
         if let configSet = configSets.first(where: { $0.id == id }) {
-            configSet.saveAPIKey("")
+            try configSet.saveAPIKey("")
         }
+        let previousConfigSets = configSets
         configSets.removeAll { $0.id == id }
-        saveToUserDefaults()
+        do {
+            try saveToUserDefaults()
+        } catch {
+            configSets = previousConfigSets
+            throw error
+        }
     }
     
     func configSet(for id: UUID?) -> ConfigSet? {
@@ -112,9 +143,12 @@ class ConfigSetManager: ObservableObject {
     
     // MARK: - Persistence
     
-    private func saveToUserDefaults() {
-        if let data = try? JSONEncoder().encode(configSets) {
+    private func saveToUserDefaults() throws {
+        do {
+            let data = try JSONEncoder().encode(configSets)
             userDefaults.set(data, forKey: saveKey)
+        } catch {
+            throw ConfigSetPersistenceError.encodeFailed(error)
         }
     }
     

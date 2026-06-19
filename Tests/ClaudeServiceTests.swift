@@ -2,6 +2,15 @@ import XCTest
 @testable import RioAgent
 
 final class ClaudeServiceTests: XCTestCase {
+    func testStreamingErrorDescriptionExtractsAnthropicErrorMessage() {
+        let error = AIServiceError.streamingError(
+            message: #"{"type":"error","error":{"type":"overloaded_error","message":"Anthropic is temporarily overloaded"}}"#
+        )
+
+        XCTAssertTrue(error.localizedDescription.contains("Anthropic is temporarily overloaded"))
+        XCTAssertTrue(error.localizedDescription.contains("流式响应错误"))
+    }
+
     func testBuildRequestBodyUsesDedicatedSystemFieldAndClaudeToolSchema() throws {
         let service = ClaudeService(apiKey: "test")
         let tools: [[String: Any]] = [

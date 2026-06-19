@@ -29,6 +29,22 @@ final class FileReferenceParserTests: XCTestCase {
         )
     }
 
+    func testFileReferencesCanParseMultipleStandaloneReferencesOnOneLine() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift @file:/tmp/project/Model.swift
+        这里提到 @file:/tmp/project/Ignored.swift 但不是独立引用
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.fileReferences(in: text),
+            [
+                PathSecurity.normalizedPath("/tmp/project/App.swift"),
+                PathSecurity.normalizedPath("/tmp/project/Model.swift")
+            ]
+        )
+    }
+
     func testFileReferencesNormalizeAbsolutePathsBeforeDeduplication() {
         let text = """
         请分析
@@ -86,6 +102,18 @@ final class FileReferenceParserTests: XCTestCase {
         )
     }
 
+    func testRemovingReferencePreservesOtherReferencesFromSameLine() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift @file:/tmp/project/Model.swift
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.removingReference(from: text, path: "/tmp/project/App.swift"),
+            "请分析\n@file:/tmp/project/Model.swift"
+        )
+    }
+
     func testAppendingReferenceNormalizesPathAndSkipsInvalidPaths() {
         XCTAssertEqual(
             FileReferenceParser.appendingReference(
@@ -131,6 +159,21 @@ final class FileReferenceParserTests: XCTestCase {
                 workingDirectory: "/tmp/project"
             ),
             "请分析\n@file:/tmp/project/App.swift"
+        )
+    }
+
+    func testRemovingReferencesOutsideWorkingDirectoryPreservesValidReferencesFromSameLine() {
+        let text = """
+        请分析
+        @file:/tmp/project/App.swift @file:/tmp/other/Legacy.swift @file:/tmp/project/Model.swift
+        """
+
+        XCTAssertEqual(
+            FileReferenceParser.removingReferencesOutsideWorkingDirectory(
+                from: text,
+                workingDirectory: "/tmp/project"
+            ),
+            "请分析\n@file:/tmp/project/App.swift\n@file:/tmp/project/Model.swift"
         )
     }
 

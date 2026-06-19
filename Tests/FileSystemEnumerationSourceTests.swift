@@ -1,7 +1,7 @@
 import XCTest
 
 final class FileSystemEnumerationSourceTests: XCTestCase {
-    func testRecursiveFileEnumerationFailsLoudlyOnTraversalErrors() throws {
+    func testRecursiveFileEnumerationContinuesWithPartialScanWarning() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -17,8 +17,12 @@ final class FileSystemEnumerationSourceTests: XCTestCase {
             "Traversal failures should be logged so partial repository scans are diagnosable."
         )
         XCTAssertTrue(
-            source.contains("throw ToolError.executionFailed(\"Unable to fully enumerate path: \\(rootPath). \\(enumerationFailure.localizedDescription)\")"),
-            "Tool-facing repository scans should fail loudly when enumeration becomes incomplete."
+            source.contains("return true"),
+            "Recursive enumeration should continue after a per-directory traversal error so usable matches are not discarded."
+        )
+        XCTAssertTrue(
+            source.contains("static func partialScanWarning(for scan: RecursiveFileScan) -> String"),
+            "Tool-facing repository scans should surface a partial-result warning when some directories could not be read."
         )
     }
 
@@ -37,5 +41,27 @@ final class FileSystemEnumerationSourceTests: XCTestCase {
             "The picker should distinguish a genuine read failure from a partial scan that still produced files."
         )
     }
-}
 
+    func testSearchToolsAppendPartialScanWarningsToOutputs() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let findSource = try String(contentsOf: repoRoot.appendingPathComponent("Tools/FindFilesTool.swift"))
+        let searchSource = try String(contentsOf: repoRoot.appendingPathComponent("Tools/SearchFilesTool.swift"))
+
+        XCTAssertTrue(findSource.contains("FileSystemToolSupport.partialScanWarning(for: scan)"))
+        XCTAssertTrue(searchSource.contains("FileSystemToolSupport.partialScanWarning(for: scan)"))
+        XCTAssertTrue(
+            findSource.contains("output: \"No files found matching pattern: \\(pattern)\\(warning)\""),
+            "find_files should show partial-scan diagnostics even when the matched file list is empty."
+        )
+        XCTAssertTrue(
+            searchSource.contains("output: \"No matches found for pattern: \\(pattern)\\(diagnostics)\""),
+            "search_files should show partial-scan diagnostics even when no matching line was found."
+        )
+        XCTAssertTrue(
+            searchSource.contains("diagnostics += \"\\n\\n⚠️ 部分文件无法读取，搜索结果可能不完整：\""),
+            "search_files should also diagnose files that were enumerated but could not be decoded."
+        )
+    }
+}

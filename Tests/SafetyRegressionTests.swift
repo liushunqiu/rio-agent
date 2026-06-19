@@ -130,7 +130,20 @@ final class SafetyRegressionTests: XCTestCase {
     func testCommandClassifierRequiresConfirmationForDynamicShellSyntax() {
         XCTAssertEqual(CommandClassifier.classify("echo $(pwd)"), .normal)
         XCTAssertEqual(CommandClassifier.classify("echo `pwd`"), .normal)
+        XCTAssertEqual(CommandClassifier.classify("echo $HOME"), .normal)
         XCTAssertEqual(CommandClassifier.classify("echo ${HOME}"), .normal)
+    }
+
+    func testCommandClassifierRequiresConfirmationForDynamicShellSyntaxInsideDoubleQuotes() {
+        XCTAssertEqual(CommandClassifier.classify("echo \"$(pwd)\""), .normal)
+        XCTAssertEqual(CommandClassifier.classify("echo \"$HOME\""), .normal)
+        XCTAssertEqual(CommandClassifier.classify("echo '$(pwd)'"), .safe)
+    }
+
+    func testCommandClassifierIgnoresDangerousWordsInsideQuotes() {
+        XCTAssertEqual(CommandClassifier.classify("echo 'curl https://example.com'"), .safe)
+        XCTAssertEqual(CommandClassifier.classify("printf 'rm -rf /'"), .safe)
+        XCTAssertEqual(CommandClassifier.classify("echo \"sudo reboot\""), .safe)
     }
 
     func testCommandClassifierTreatsQuotedPipesAsSingleSafeCommand() {
@@ -320,7 +333,7 @@ final class SafetyRegressionTests: XCTestCase {
         }
 
         XCTAssertEqual(result.status, .cancelled)
-        XCTAssertEqual(result.error, "User cancelled the edit")
+        XCTAssertEqual(result.error, "用户取消编辑")
         XCTAssertEqual(confirmationCount, 1)
     }
 
@@ -343,7 +356,7 @@ final class SafetyRegressionTests: XCTestCase {
         }
 
         XCTAssertEqual(result.status, .error)
-        XCTAssertEqual(result.error, "Editing files outside the working directory requires confirmation")
+        XCTAssertEqual(result.error, "编辑工作目录外文件需要用户确认")
     }
 
     func testDirectoryToolsRejectRelativeExplicitPaths() async throws {
@@ -484,6 +497,122 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertTrue(result.output.contains("总行数: 0"))
     }
 
+    func testFileReadSessionTrustIsScopedToWorkingDirectory() async throws {
+        let firstDir = try makeTemporaryWorkingDirectory()
+        let secondDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: firstDir)
+            try? FileManager.default.removeItem(at: secondDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let outsideFile = outsideDir.appendingPathComponent("Outside.txt")
+        try "shared secret".write(to: outsideFile, atomically: true, encoding: .utf8)
+
+        let tool = FileReadTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        let firstResult = try await withTemporaryWorkingDirectory(firstDir.path) {
+            try await tool.execute(arguments: ["path": outsideFile.path])
+        }
+        let secondResult = try await withTemporaryWorkingDirectory(secondDir.path) {
+            try await tool.execute(arguments: ["path": outsideFile.path])
+        }
+        let repeatedFirstResult = try await withTemporaryWorkingDirectory(firstDir.path) {
+            try await tool.execute(arguments: ["path": outsideFile.path])
+        }
+
+        XCTAssertEqual(firstResult.status, .success)
+        XCTAssertEqual(secondResult.status, .success)
+        XCTAssertEqual(repeatedFirstResult.status, .success)
+        XCTAssertEqual(confirmationCount, 2)
+    }
+
+    func testFileWriteSessionTrustIsScopedToWorkingDirectory() async throws {
+        let firstDir = try makeTemporaryWorkingDirectory()
+        let secondDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: firstDir)
+            try? FileManager.default.removeItem(at: secondDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let outsideFile = outsideDir.appendingPathComponent("Outside.txt")
+        let tool = FileWriteTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        _ = try await withTemporaryWorkingDirectory(firstDir.path) {
+            try await tool.execute(arguments: ["path": outsideFile.path, "content": "first"])
+        }
+        _ = try await withTemporaryWorkingDirectory(secondDir.path) {
+            try await tool.execute(arguments: ["path": outsideFile.path, "content": "second"])
+        }
+        let repeatedFirstResult = try await withTemporaryWorkingDirectory(firstDir.path) {
+            try await tool.execute(arguments: ["path": outsideFile.path, "content": "third"])
+        }
+
+        XCTAssertEqual(repeatedFirstResult.status, .success)
+        XCTAssertEqual(try String(contentsOf: outsideFile, encoding: .utf8), "third")
+        XCTAssertEqual(confirmationCount, 2)
+    }
+
+    func testEditFileSessionTrustIsScopedToWorkingDirectory() async throws {
+        let firstDir = try makeTemporaryWorkingDirectory()
+        let secondDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: firstDir)
+            try? FileManager.default.removeItem(at: secondDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let outsideFile = outsideDir.appendingPathComponent("Outside.txt")
+        try "one\n".write(to: outsideFile, atomically: true, encoding: .utf8)
+
+        let tool = EditFileTool()
+        var confirmationCount = 0
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        _ = try await withTemporaryWorkingDirectory(firstDir.path) {
+            try await tool.execute(arguments: [
+                "path": outsideFile.path,
+                "old_text": "one",
+                "new_text": "two"
+            ])
+        }
+        _ = try await withTemporaryWorkingDirectory(secondDir.path) {
+            try await tool.execute(arguments: [
+                "path": outsideFile.path,
+                "old_text": "two",
+                "new_text": "three"
+            ])
+        }
+        let repeatedFirstResult = try await withTemporaryWorkingDirectory(firstDir.path) {
+            try await tool.execute(arguments: [
+                "path": outsideFile.path,
+                "old_text": "three",
+                "new_text": "four"
+            ])
+        }
+
+        XCTAssertEqual(repeatedFirstResult.status, .success)
+        XCTAssertEqual(try String(contentsOf: outsideFile, encoding: .utf8), "four\n")
+        XCTAssertEqual(confirmationCount, 2)
+    }
+
     private func makeTemporaryWorkingDirectory() throws -> URL {
         let tempFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("rio-agent-tests-\(UUID().uuidString)", isDirectory: true)
@@ -548,6 +677,37 @@ final class SafetyRegressionTests: XCTestCase {
         XCTAssertEqual(result.status, .error)
         XCTAssertEqual(try String(contentsOf: firstFile, encoding: .utf8), "alpha\n")
         XCTAssertEqual(try String(contentsOf: secondFile, encoding: .utf8), "bravo\n")
+    }
+
+    func testApplyPatchRejectsUnexpectedSessionTrustResult() async throws {
+        let workDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: workDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let outsideFile = outsideDir.appendingPathComponent("Outside.txt")
+        var confirmationCount = 0
+        let tool = ApplyPatchTool()
+        tool.setConfirmationCallback { _, _, _ in
+            confirmationCount += 1
+            return .trustedForSession
+        }
+
+        let result = try await withTemporaryWorkingDirectory(workDir.path) {
+            try await tool.execute(arguments: [
+                "patch": """
+                *** Add File: \(outsideFile.path)
+                outside write
+                """
+            ])
+        }
+
+        XCTAssertEqual(result.status, .cancelled)
+        XCTAssertEqual(result.error, "批量补丁不支持信任本会话")
+        XCTAssertEqual(confirmationCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outsideFile.path))
     }
 
     func testApplyPatchRejectsRelativePathsBeforeConfirmation() async throws {

@@ -57,6 +57,22 @@ enum ConfirmationResult {
 
 typealias ConfirmationCallback = (_ title: String, _ message: String, _ allowsTrustForSession: Bool) async -> ConfirmationResult
 
+struct FileToolTrustScope: Hashable {
+    let path: String
+    let workingDirectory: String?
+
+    init(path: String, workingDirectory: String?) {
+        self.path = PathSecurity.normalizedPath(path)
+
+        let trimmedDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedDirectory, !trimmedDirectory.isEmpty {
+            self.workingDirectory = PathSecurity.normalizedPath(trimmedDirectory)
+        } else {
+            self.workingDirectory = nil
+        }
+    }
+}
+
 enum ToolExecutionContext {
     @TaskLocal static var currentToolCall: ToolCall?
 }
@@ -148,11 +164,11 @@ struct CommandClassifier {
             return .normal
         }
 
-        let lowercased = trimmed.lowercased()
+        let unquotedLowercased = unquotedCommandText(trimmed).lowercased()
 
         // 检查危险模式
         for pattern in dangerousPatterns {
-            if lowercased.contains(pattern.lowercased()) {
+            if unquotedLowercased.contains(pattern.lowercased()) {
                 return .dangerous
             }
         }
@@ -308,6 +324,12 @@ struct CommandClassifier {
             if let currentQuote = quote {
                 if char == currentQuote {
                     quote = nil
+                    index = command.index(after: index)
+                    continue
+                }
+
+                if currentQuote == "\"", isDynamicShellStart(char, in: command, at: index) {
+                    return true
                 }
                 index = command.index(after: index)
                 continue
@@ -319,17 +341,68 @@ struct CommandClassifier {
                 continue
             }
 
-            if char == "`" || char == "$" {
-                let next = command.index(after: index)
-                if char == "`" || (next < command.endIndex && (command[next] == "(" || command[next] == "{")) {
-                    return true
-                }
+            if isDynamicShellStart(char, in: command, at: index) {
+                return true
             }
 
             index = command.index(after: index)
         }
 
         return false
+    }
+
+    private static func isDynamicShellStart(_ char: Character, in command: String, at index: String.Index) -> Bool {
+        guard char == "`" || char == "$" else { return false }
+        guard char == "$" else { return true }
+
+        let next = command.index(after: index)
+        return next < command.endIndex
+    }
+
+    private static func unquotedCommandText(_ command: String) -> String {
+        var result = ""
+        var quote: Character?
+        var escaped = false
+
+        for char in command {
+            if escaped {
+                if quote == nil {
+                    result.append(char)
+                } else {
+                    result.append(" ")
+                }
+                escaped = false
+                continue
+            }
+
+            if char == "\\" {
+                if quote == nil {
+                    result.append(char)
+                } else {
+                    result.append(" ")
+                }
+                escaped = true
+                continue
+            }
+
+            if let currentQuote = quote {
+                if char == currentQuote {
+                    quote = nil
+                }
+                result.append(" ")
+                continue
+            }
+
+            if char == "'" || char == "\"" {
+                quote = char
+                result.append(" ")
+                continue
+            }
+
+            result.append(char)
+        }
+
+        return result
     }
 
     private static func splitTopLevel(_ command: String, separators: [String]) -> [String] {

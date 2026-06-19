@@ -28,6 +28,12 @@ final class ErrorBannerSourceTests: XCTestCase {
             "Secondary error-banner utilities should collapse into compact icon buttons so recovery actions remain primary."
         )
         XCTAssertTrue(
+            source.contains("struct ErrorBannerActions: View")
+                && source.contains("ViewThatFits(in: .horizontal)")
+                && source.contains("VStack(alignment: .leading, spacing: 8)"),
+            "Error banner actions should adapt to narrow widths instead of forcing every utility into one cramped row."
+        )
+        XCTAssertTrue(
             source.contains(".onChange(of: message)"),
             "Changing errors should reset expansion and copied state."
         )
@@ -100,7 +106,7 @@ final class ErrorBannerSourceTests: XCTestCase {
             "ContentView should delegate recovery routing to the shared router instead of embedding keyword rules."
         )
         XCTAssertTrue(
-            source.contains("ErrorBannerUtilityButton(\n                            icon: \"gearshape\""),
+            source.contains("ErrorBannerUtilityButton(\n                icon: \"gearshape\""),
             "Settings recovery should render as a secondary utility so task recovery stays primary."
         )
         XCTAssertTrue(

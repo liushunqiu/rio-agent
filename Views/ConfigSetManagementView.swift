@@ -7,6 +7,7 @@ struct ConfigSetManagementView: View {
     @State private var editingConfigSet: ConfigSet?
     @State private var isAddingNew = false
     @State private var pendingDeleteConfigSet: ConfigSet?
+    @State private var configurationErrorMessage: String?
 
     private var configuredCount: Int {
         manager.configSets.filter { $0.isConfigured }.count
@@ -47,12 +48,12 @@ struct ConfigSetManagementView: View {
         }
         .sheet(isPresented: $isAddingNew) {
             ConfigSetEditorView(configSet: nil) { newSet in
-                manager.addConfigSet(newSet)
+                try manager.addConfigSet(newSet)
             }
         }
         .sheet(item: $editingConfigSet) { configSet in
             ConfigSetEditorView(configSet: configSet) { updated in
-                manager.updateConfigSet(updated)
+                try manager.updateConfigSet(updated)
             }
         }
         .alert("删除模型配置？", isPresented: deleteConfirmationBinding) {
@@ -61,12 +62,21 @@ struct ConfigSetManagementView: View {
             }
             Button("删除", role: .destructive) {
                 if let pendingDeleteConfigSet {
-                    manager.deleteConfigSet(id: pendingDeleteConfigSet.id)
+                    do {
+                        try manager.deleteConfigSet(id: pendingDeleteConfigSet.id)
+                    } catch {
+                        configurationErrorMessage = storageErrorMessage(error)
+                    }
                 }
                 pendingDeleteConfigSet = nil
             }
         } message: {
             Text("删除后会同时移除该配置保存的 API Key，并解除所有引用它的选择。")
+        }
+        .alert("模型配置操作失败", isPresented: configurationErrorBinding) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(configurationErrorMessage ?? "安全存储暂时不可用，请稍后重试。")
         }
     }
 
@@ -74,6 +84,13 @@ struct ConfigSetManagementView: View {
         Binding(
             get: { pendingDeleteConfigSet != nil },
             set: { if !$0 { pendingDeleteConfigSet = nil } }
+        )
+    }
+
+    private var configurationErrorBinding: Binding<Bool> {
+        Binding(
+            get: { configurationErrorMessage != nil },
+            set: { if !$0 { configurationErrorMessage = nil } }
         )
     }
     
@@ -209,6 +226,10 @@ struct ConfigSetManagementView: View {
         }
         return "至少保留一个模型配置，避免设置页失去可选项。"
     }
+
+    private func storageErrorMessage(_ error: Error) -> String {
+        "模型配置无法保存，或 API Key 无法写入/移除安全存储：\(error.localizedDescription)"
+    }
 }
 
 // MARK: - Config Set Editor View
@@ -216,7 +237,7 @@ struct ConfigSetManagementView: View {
 struct ConfigSetEditorView: View {
     @Environment(\.dismiss) var dismiss
     let configSet: ConfigSet?
-    var onSave: (ConfigSet) -> Void
+    var onSave: (ConfigSet) throws -> Void
     
     @State private var name: String
     @State private var provider: AIProvider
@@ -224,6 +245,7 @@ struct ConfigSetEditorView: View {
     @State private var apiKey: String
     @State private var model: String
     @State private var showingDiscardConfirmation = false
+    @State private var saveErrorMessage: String?
 
     private let originalName: String
     private let originalProvider: AIProvider
@@ -231,7 +253,7 @@ struct ConfigSetEditorView: View {
     private let originalAPIKey: String
     private let originalModel: String
     
-    init(configSet: ConfigSet?, onSave: @escaping (ConfigSet) -> Void) {
+    init(configSet: ConfigSet?, onSave: @escaping (ConfigSet) throws -> Void) {
         self.configSet = configSet
         self.onSave = onSave
 
@@ -392,8 +414,9 @@ struct ConfigSetEditorView: View {
                 Spacer()
                 
                 Button("保存") {
-                    save()
-                    dismiss()
+                    if save() {
+                        dismiss()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accentPrimary)
@@ -413,6 +436,11 @@ struct ConfigSetEditorView: View {
             }
         } message: {
             Text("当前模型配置还有未保存更改，关闭后这些修改不会保存。")
+        }
+        .alert("保存模型配置失败", isPresented: saveErrorBinding) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(saveErrorMessage ?? "安全存储暂时不可用，请稍后重试。")
         }
     }
     
@@ -548,8 +576,15 @@ struct ConfigSetEditorView: View {
             content()
         }
     }
+
+    private var saveErrorBinding: Binding<Bool> {
+        Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )
+    }
     
-    private func save() {
+    private func save() -> Bool {
         let id = configSet?.id ?? UUID()
         let newSet = ConfigSet(
             id: id,
@@ -558,8 +593,16 @@ struct ConfigSetEditorView: View {
             baseURL: trimmedBaseURL,
             model: trimmedModel
         )
-        newSet.saveAPIKey(trimmedAPIKey)
-        onSave(newSet)
+
+        do {
+            try newSet.saveAPIKey(trimmedAPIKey)
+            try onSave(newSet)
+        } catch {
+            saveErrorMessage = "模型配置或 API Key 无法保存：\(error.localizedDescription)"
+            return false
+        }
+
+        return true
     }
 
     private func requestDismiss() {

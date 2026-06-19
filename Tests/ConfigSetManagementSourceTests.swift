@@ -178,11 +178,49 @@ final class ConfigSetManagementSourceTests: XCTestCase {
         )
     }
 
+    func testConfigEditorReportsSecretStorageFailuresBeforeClosing() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+        let modelSource = try String(contentsOf: repoRoot.appendingPathComponent("Models/ConfigSet.swift"))
+
+        XCTAssertTrue(
+            modelSource.contains("func saveAPIKey(_ key: String) throws"),
+            "ConfigSet API key persistence should not silently swallow Keychain errors."
+        )
+        XCTAssertTrue(
+            modelSource.contains("let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)")
+                && modelSource.contains("try KeychainManager.delete(forKey: apiKeyKeychainKey)")
+                && modelSource.contains("try KeychainManager.save(trimmedKey, forKey: apiKeyKeychainKey)"),
+            "ConfigSet API key persistence should trim input and surface save/delete failures."
+        )
+        XCTAssertTrue(
+            source.contains("@State private var saveErrorMessage: String?"),
+            "The editor should keep a visible error state when secure storage fails."
+        )
+        XCTAssertTrue(
+            source.contains("if save() {\n                        dismiss()\n                    }"),
+            "The editor should close only after model metadata and API key persistence both succeed."
+        )
+        XCTAssertTrue(
+            source.contains("try newSet.saveAPIKey(trimmedAPIKey)")
+                && source.contains("try onSave(newSet)")
+                && source.contains("saveErrorMessage = \"模型配置或 API Key 无法保存：\\(error.localizedDescription)\""),
+            "API key or model metadata write failures should be shown to the user instead of being deferred to a later chat failure."
+        )
+        XCTAssertTrue(
+            source.contains(".alert(\"保存模型配置失败\", isPresented: saveErrorBinding)"),
+            "Secure-storage failures should produce an explicit save failure alert."
+        )
+    }
+
     func testConfigSetDeletionKeepsAtLeastOneUsableModelConfig() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+        let modelSource = try String(contentsOf: repoRoot.appendingPathComponent("Models/ConfigSet.swift"))
 
         XCTAssertTrue(
             source.contains("if canDeleteConfigSet(configSet)"),
@@ -207,6 +245,58 @@ final class ConfigSetManagementSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains(".help(deleteDisabledReason(for: configSet))"),
             "Locked delete controls should expose the specific reason on hover."
+        )
+        XCTAssertTrue(
+            modelSource.contains("func deleteConfigSet(id: UUID) throws"),
+            "Deleting a config should surface secure-storage cleanup failures instead of silently leaving orphaned API keys."
+        )
+        XCTAssertTrue(
+            source.contains("try manager.deleteConfigSet(id: pendingDeleteConfigSet.id)")
+                && source.contains("configurationErrorMessage = storageErrorMessage(error)"),
+            "The delete flow should keep the row in place and show a storage error when API key cleanup fails."
+        )
+        XCTAssertTrue(
+            source.contains(".alert(\"模型配置操作失败\", isPresented: configurationErrorBinding)"),
+            "Config deletion failures should be visible immediately from the settings UI."
+        )
+    }
+
+    func testConfigSetPersistenceFailuresAreNotSilentlySwallowed() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+        let modelSource = try String(contentsOf: repoRoot.appendingPathComponent("Models/ConfigSet.swift"))
+
+        XCTAssertTrue(
+            modelSource.contains("enum ConfigSetPersistenceError: LocalizedError")
+                && modelSource.contains("case encodeFailed(Error)"),
+            "Config metadata persistence failures should have a user-facing error instead of disappearing behind try?."
+        )
+        XCTAssertTrue(
+            modelSource.contains("func addConfigSet(_ configSet: ConfigSet) throws")
+                && modelSource.contains("func updateConfigSet(_ configSet: ConfigSet) throws")
+                && modelSource.contains("private func saveToUserDefaults() throws"),
+            "Adding or updating a config should surface metadata persistence failures to the caller."
+        )
+        XCTAssertFalse(
+            modelSource.contains("try? JSONEncoder().encode(configSets)"),
+            "Config metadata saves should not silently ignore encoder failures."
+        )
+        XCTAssertTrue(
+            modelSource.contains("let previousConfigSets = configSets")
+                && modelSource.contains("configSets = previousConfigSets"),
+            "Failed config metadata saves should roll back the in-memory list so the UI does not show unsaved state as committed."
+        )
+        XCTAssertTrue(
+            source.contains("try manager.addConfigSet(newSet)")
+                && source.contains("try manager.updateConfigSet(updated)")
+                && source.contains("模型配置或 API Key 无法保存"),
+            "The editor should keep the sheet open and show save failures from both secure storage and metadata persistence."
+        )
+        XCTAssertTrue(
+            source.contains("模型配置无法保存，或 API Key 无法写入/移除安全存储"),
+            "Delete failures should explain that both metadata persistence and secret cleanup can fail."
         )
     }
 }

@@ -73,6 +73,32 @@ final class SettingsConfigPickerSourceTests: XCTestCase {
         )
     }
 
+    func testSettingsReconcilesMultiAgentReferencesWhenConfigSetsChange() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/SettingsView.swift"))
+        let configManagementSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ConfigSetManagementView.swift"))
+
+        XCTAssertTrue(
+            configManagementSource.contains("解除所有引用它的选择"),
+            "The delete confirmation promises that stale model-config references will be cleared."
+        )
+        XCTAssertTrue(
+            source.contains("private func reconcileMultiAgentConfigSets()")
+                && source.contains("multiAgentConfig.reconcileConfigSets(with: readySets)"),
+            "Settings should repair Multi-Agent orchestrator, worker and router bindings after model config changes."
+        )
+        XCTAssertTrue(
+            source.contains(".onAppear {\n            reconcileSelectedConfigSets()\n            reconcileMultiAgentConfigSets()\n            applyConfiguration()\n        }"),
+            "Opening settings should clean up stale Multi-Agent bindings left by prior config deletions."
+        )
+        XCTAssertTrue(
+            source.contains(".onChange(of: configSetManager.revision) {\n            reconcileSelectedConfigSets()\n            reconcileMultiAgentConfigSets()\n            applyConfiguration()\n        }"),
+            "Deleting or editing config sets should reconcile Multi-Agent references immediately, not only when the Multi-Agent tab is opened later."
+        )
+    }
+
     func testProviderSummaryPrefersReadyConfigSets() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

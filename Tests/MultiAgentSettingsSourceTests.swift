@@ -69,6 +69,42 @@ final class MultiAgentSettingsSourceTests: XCTestCase {
         )
     }
 
+    func testAppliedDraftSyncsVisibleMultiAgentStateAfterReconciliation() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/MultiAgentSettingsView.swift"))
+
+        XCTAssertTrue(
+            source.contains("@State private var isSyncingAppliedDraft = false"),
+            "Synchronizing applied Multi-Agent state should guard against re-entrant onChange saves."
+        )
+        XCTAssertTrue(
+            source.contains("let appliedConfig = currentDraft().applied(to: config, availableConfigSets: aiConfig.allConfigSets)")
+                && source.contains("config = appliedConfig")
+                && source.contains("syncLocalState(from: appliedConfig)"),
+            "Applying a draft should also refresh the visible local state from the reconciled saved configuration."
+        )
+        XCTAssertTrue(
+            source.contains("private func syncLocalState(from appliedConfig: MultiAgentConfig)"),
+            "Multi-Agent settings should centralize post-apply state synchronization."
+        )
+        XCTAssertTrue(
+            source.contains("workers = appliedConfig.workers")
+                && source.contains("orchestratorConfigSetId = appliedConfig.orchestrator.configSetId")
+                && source.contains("routerConfigSetId = appliedConfig.router.configSetId"),
+            "Config-set reconciliation should be reflected in visible worker, orchestrator, and router bindings immediately."
+        )
+        XCTAssertTrue(
+            source.contains("guard !isSyncingAppliedDraft else { return }"),
+            "Immediate and debounced apply paths should ignore state updates caused by local synchronization."
+        )
+        XCTAssertTrue(
+            source.contains("Task { @MainActor in\n            isSyncingAppliedDraft = false\n        }"),
+            "The synchronization guard should reset after SwiftUI has observed the local state updates."
+        )
+    }
+
     func testMultiAgentSettingsExposeTruncatedValuesAndDisabledSaveReasons() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

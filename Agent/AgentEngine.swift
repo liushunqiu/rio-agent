@@ -1190,7 +1190,7 @@ class AgentEngine: ObservableObject {
     /// Handle final assistant content when no tool calls are returned
     func handleFinalContent(_ content: String?) async -> Bool {
         guard let content, !content.isEmpty else {
-            return true
+            return false
         }
 
         if shouldVerifySingleAgentCompletion(for: content) {
@@ -1294,13 +1294,19 @@ class AgentEngine: ObservableObject {
             self.messages.append(streamingMessage)
             let streamingIndex = self.messages.count - 1
             let messageId = streamingMessage.id
+            @MainActor
+            func isCurrentStreamingMessage() -> Bool {
+                streamingIndex < self.messages.count && self.messages[streamingIndex].id == messageId
+            }
 
             // Buffer coalesces rapid streaming chunks into fewer UI updates (~12fps)
             let buffer = StreamBuffer(interval: 0.08, maxCharsBeforeFlush: 500)
 
             // Unified flush handler — updates streaming message content & thinking
             let flushHandler: @MainActor @Sendable (String, String) async -> Void = { [weak self] content, thinking in
-                guard let self, streamingIndex < self.messages.count else { return }
+                guard let self,
+                      streamingIndex < self.messages.count,
+                      self.messages[streamingIndex].id == messageId else { return }
                 if !content.isEmpty {
                     self.messages[streamingIndex].content += content
                 }
@@ -1335,7 +1341,7 @@ class AgentEngine: ObservableObject {
                     }
                 )
             } catch {
-                if streamingIndex < self.messages.count {
+                if isCurrentStreamingMessage() {
                     self.messages.remove(at: streamingIndex)
                 }
                 throw error
@@ -1344,7 +1350,7 @@ class AgentEngine: ObservableObject {
             // Flush remaining buffered content
             await buffer.flush(update: flushHandler)
 
-            guard streamingIndex < self.messages.count else {
+            guard isCurrentStreamingMessage() else {
                 // Message was removed (shouldn't happen), return empty to break loop
                 return AIResponse(content: nil, reasoningContent: nil, toolCalls: nil, usage: nil)
             }
@@ -1362,7 +1368,7 @@ class AgentEngine: ObservableObject {
             } else if response.toolCalls == nil {
                 if hasReasoning {
                     self.messages[streamingIndex].isStreaming = false
-                } else if streamingIndex < self.messages.count {
+                } else if isCurrentStreamingMessage() {
                     self.messages.remove(at: streamingIndex)
                 }
             }

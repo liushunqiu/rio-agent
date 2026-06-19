@@ -67,4 +67,27 @@ final class TextToolCallSafetyNetTests: XCTestCase {
         """
         XCTAssertTrue(AgentEngine.containsTextBasedToolCalls(content))
     }
+
+    @MainActor
+    func testRedirectHidesRepeatedTextToolCallAssistantDrafts() {
+        let engine = makeIsolatedAgentEngine(testCase: self)
+        let content = "我先使用 list_directory 工具查看目录结构。"
+
+        engine.appendMessage(.assistant(content))
+
+        XCTAssertTrue(engine.handleTextToolCallRedirect(content))
+        XCTAssertTrue(engine.handleTextToolCallRedirect(content))
+
+        let matchingAssistantMessages = engine.messages.filter {
+            $0.role == .assistant && $0.content == content
+        }
+        let visibleAssistantMessages = matchingAssistantMessages.filter(\.isVisibleInTranscript)
+
+        XCTAssertEqual(matchingAssistantMessages.count, 1)
+        XCTAssertTrue(visibleAssistantMessages.isEmpty)
+        XCTAssertEqual(
+            engine.messages.filter { $0.content.contains("[System Correction]") }.count,
+            2
+        )
+    }
 }

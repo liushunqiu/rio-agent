@@ -115,7 +115,7 @@ class ConversationCompactor {
 
     private func buildConversationText(from messages: [Message]) -> String {
         var text = ""
-        for msg in messages {
+        for msg in messages where msg.isVisibleInTranscript {
             let role: String
             switch msg.role {
             case .user: role = "用户"
@@ -131,6 +131,12 @@ class ConversationCompactor {
             if let toolCalls = msg.toolCalls {
                 for tc in toolCalls {
                     text += "\(role) 调用工具: \(tc.name)\n"
+                }
+            }
+
+            if let toolResults = msg.toolResults {
+                for result in toolResults {
+                    text += "\(role) 工具结果（\(toolResultStatusLabel(result.status))）: \(snippet(result.modelContent, maxLength: 200))\n"
                 }
             }
         }
@@ -181,15 +187,20 @@ class ConversationCompactor {
 
         var summary = "## 对话历史摘要\n\n"
         var userMessages: [String] = []
+        var assistantMessages: [String] = []
         var toolCallsMade: [String] = []
+        var toolResultSummaries: [String] = []
 
-        for msg in oldMessages {
+        for msg in oldMessages where msg.isVisibleInTranscript {
             switch msg.role {
             case .user:
                 if !msg.content.isEmpty {
-                    userMessages.append(String(msg.content.prefix(80)))
+                    userMessages.append(snippet(msg.content, maxLength: 120))
                 }
             case .assistant:
+                if !msg.content.isEmpty {
+                    assistantMessages.append(snippet(msg.content, maxLength: 160))
+                }
                 if let toolCalls = msg.toolCalls {
                     for tc in toolCalls {
                         toolCallsMade.append(tc.name)
@@ -197,6 +208,13 @@ class ConversationCompactor {
                 }
             case .system:
                 break
+            }
+
+            if let toolResults = msg.toolResults {
+                for result in toolResults {
+                    let text = snippet(result.modelContent, maxLength: 160)
+                    toolResultSummaries.append("\(result.toolCallId) · \(toolResultStatusLabel(result.status)): \(text)")
+                }
             }
         }
 
@@ -210,9 +228,29 @@ class ConversationCompactor {
             }
         }
 
+        if !assistantMessages.isEmpty {
+            summary += "\n**助手结论/进展:**\n"
+            for (index, msg) in assistantMessages.prefix(4).enumerated() {
+                summary += "\(index + 1). \(msg)\n"
+            }
+            if assistantMessages.count > 4 {
+                summary += "... 还有 \(assistantMessages.count - 4) 条进展\n"
+            }
+        }
+
         if !toolCallsMade.isEmpty {
-            let uniqueTools = Set(toolCallsMade)
+            let uniqueTools = Set(toolCallsMade).sorted()
             summary += "\n**使用的工具:** \(uniqueTools.joined(separator: ", "))\n"
+        }
+
+        if !toolResultSummaries.isEmpty {
+            summary += "\n**关键工具结果:**\n"
+            for (index, resultSummary) in toolResultSummaries.prefix(5).enumerated() {
+                summary += "\(index + 1). \(resultSummary)\n"
+            }
+            if toolResultSummaries.count > 5 {
+                summary += "... 还有 \(toolResultSummaries.count - 5) 条工具结果\n"
+            }
         }
 
         let summaryMessage = Message.system(summary)
@@ -225,5 +263,24 @@ class ConversationCompactor {
 
         return result
     }
-}
 
+    private func snippet(_ text: String, maxLength: Int) -> String {
+        let cleaned = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        guard !cleaned.isEmpty else { return "无内容" }
+        guard cleaned.count > maxLength else { return cleaned }
+        return String(cleaned.prefix(maxLength)) + "..."
+    }
+
+    private func toolResultStatusLabel(_ status: ToolResultStatus) -> String {
+        switch status {
+        case .success:
+            return "成功"
+        case .error:
+            return "错误"
+        case .cancelled:
+            return "已取消"
+        }
+    }
+}

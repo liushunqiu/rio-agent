@@ -10,18 +10,22 @@ class FileWriteTool: Tool {
     ]
 
     private var confirmationCallback: ConfirmationCallback?
-    private var trustedPaths: Set<String> = []
+    private var trustedPaths: Set<FileToolTrustScope> = []
 
     func setConfirmationCallback(_ callback: @escaping ConfirmationCallback) {
         self.confirmationCallback = callback
     }
 
     func setTrustedPaths(_ paths: Set<String>) {
-        self.trustedPaths = paths
+        trustedPaths = Set(paths.map { trustScope(for: $0) })
     }
 
     func addTrustedPath(_ path: String) {
-        trustedPaths.insert(PathSecurity.normalizedPath(path))
+        trustedPaths.insert(trustScope(for: path))
+    }
+
+    private func trustScope(for path: String) -> FileToolTrustScope {
+        FileToolTrustScope(path: path, workingDirectory: ToolRegistry.shared.workingDirectory)
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
@@ -36,16 +40,30 @@ class FileWriteTool: Tool {
         }
 
         // Check if path is within working directory — auto-allow
-        let normalizedPath = PathSecurity.normalizedPath(path)
         let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
 
         if isWithinWorkDir {
             // 工作目录内写入自动执行，无需确认
-        } else if trustedPaths.contains(normalizedPath) {
+        } else if trustedPaths.contains(trustScope(for: path)) {
             // Already trusted, skip confirmation
         } else if let confirm = confirmationCallback {
             let title = "⚠️ 跨目录写入确认"
-            let message = "即将写入工作目录外的文件:\n\(path)\n\n内容预览:\n\(String(content.prefix(200)))\(content.count > 200 ? "..." : "")\n\n是否继续？"
+            let directoryText = ToolRegistry.shared.workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let visibleDirectory = directoryText?.isEmpty == false ? directoryText! : "未指定"
+            let message = """
+            即将写入工作目录外的文件:
+            \(path)
+
+            当前工作目录:
+            \(visibleDirectory)
+
+            内容预览:
+            \(String(content.prefix(200)))\(content.count > 200 ? "..." : "")
+
+            选择“信任本会话”只会信任该文件在当前工作目录下再次写入。
+
+            是否继续？
+            """
 
             let result = await confirm(title, message, true)
 
@@ -53,7 +71,7 @@ class FileWriteTool: Tool {
             case .approved:
                 break
             case .trustedForSession:
-                addTrustedPath(normalizedPath)
+                addTrustedPath(path)
             case .denied:
                 return ToolResult.cancelled(toolCallId: "write_file", reason: "用户取消写入")
             }

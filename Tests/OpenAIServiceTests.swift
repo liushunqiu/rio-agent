@@ -2,6 +2,22 @@ import XCTest
 @testable import RioAgent
 
 final class OpenAIServiceTests: XCTestCase {
+    func testFactoryPreservesOpenAICompatibleProviderIdentity() {
+        let compatibleService = AIServiceFactory.createService(
+            provider: .openAICompatible,
+            apiKey: "",
+            baseURL: "https://gateway.example.com/v1"
+        )
+        let openAIService = AIServiceFactory.createService(
+            provider: .openAI,
+            apiKey: "sk-test",
+            baseURL: ""
+        )
+
+        XCTAssertEqual(compatibleService.provider, .openAICompatible)
+        XCTAssertEqual(openAIService.provider, .openAI)
+    }
+
     func testBuildRequestBodyIncludesToolResultsBeforeAssistantContent() throws {
         let service = OpenAIService(apiKey: "test")
         let message = Message(
@@ -95,17 +111,79 @@ final class OpenAIServiceTests: XCTestCase {
     func testStreamingStateAccumulatesChunkedToolCallArguments() throws {
         var state = OpenAIStreamingState()
 
-        _ = state.consumeSSEDataLine("""
+        _ = try state.consumeSSEDataLine("""
         {"choices":[{"delta":{"content":"hel","reasoning_content":"why ","tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_","arguments":"{\\"path\\":"}}]}}]}
         """)
-        _ = state.consumeSSEDataLine("""
+        _ = try state.consumeSSEDataLine("""
         {"choices":[{"delta":{"content":"lo","reasoning_content":"now","tool_calls":[{"index":0,"function":{"name":"file","arguments":"\\"README.md\\"}"}}]}}]}
         """)
 
         XCTAssertEqual(state.content, "hello")
         XCTAssertEqual(state.reasoningContent, "why now")
-        XCTAssertEqual(state.toolCalls?.first?.id, "call-1")
-        XCTAssertEqual(state.toolCalls?.first?.name, "read_file")
-        XCTAssertEqual(state.toolCalls?.first?.arguments["path"]?.value as? String, "README.md")
+        let toolCalls = try state.toolCalls
+        XCTAssertEqual(toolCalls?.first?.id, "call-1")
+        XCTAssertEqual(toolCalls?.first?.name, "read_file")
+        XCTAssertEqual(toolCalls?.first?.arguments["path"]?.value as? String, "README.md")
+    }
+
+    func testStreamingStateThrowsProviderErrorEvents() {
+        var state = OpenAIStreamingState()
+
+        XCTAssertThrowsError(try state.consumeSSEDataLine("""
+        {"error":{"message":"quota exceeded for this model","type":"rate_limit"}}
+        """)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("quota exceeded for this model"))
+        }
+    }
+
+    func testAPIErrorDescriptionsIncludeProviderMessageForCommonStatuses() {
+        let error = AIServiceError.apiError(
+            statusCode: 401,
+            message: #"{"error":{"message":"Incorrect API key provided"}}"#
+        )
+
+        XCTAssertTrue(error.localizedDescription.contains("Incorrect API key provided"))
+        XCTAssertTrue(error.localizedDescription.contains("请前往设置检查 API Key"))
+    }
+
+    func testParseResponseThrowsWhenToolCallArgumentsAreInvalid() {
+        let json = """
+        {
+          "choices": [
+            {
+              "message": {
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call-1",
+                    "function": {
+                      "name": "read_file",
+                      "arguments": "{bad json"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+        """
+
+        XCTAssertThrowsError(try OpenAIService(apiKey: "test").parseResponse(Data(json.utf8))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("无法解析的工具参数"))
+            XCTAssertTrue(error.localizedDescription.contains("read_file"))
+        }
+    }
+
+    func testStreamingStateThrowsWhenToolCallArgumentsAreInvalid() throws {
+        var state = OpenAIStreamingState()
+
+        _ = try state.consumeSSEDataLine("""
+        {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{bad json"}}]}}]}
+        """)
+
+        XCTAssertThrowsError(try state.toolCalls) { error in
+            XCTAssertTrue(error.localizedDescription.contains("无法解析的工具参数"))
+            XCTAssertTrue(error.localizedDescription.contains("read_file"))
+        }
     }
 }

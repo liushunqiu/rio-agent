@@ -53,8 +53,10 @@ class AIServiceFactory {
         switch provider {
         case .claude:
             return ClaudeService(apiKey: apiKey, baseURL: resolvedBaseURL)
-        case .openAI, .openAICompatible:
+        case .openAI:
             return OpenAIService(apiKey: apiKey, baseURL: resolvedBaseURL)
+        case .openAICompatible:
+            return OpenAIService(apiKey: apiKey, baseURL: resolvedBaseURL, provider: provider)
         }
     }
 }

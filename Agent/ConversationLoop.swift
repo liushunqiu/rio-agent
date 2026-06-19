@@ -103,6 +103,11 @@ enum ConversationLoop {
                 continue
             }
 
+            guard response.content?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+                RioLogger.agent.warning("⚠️ 第 \(iterationCount) 轮: 模型返回空响应，停止本轮执行")
+                throw AIServiceError.emptyResponse
+            }
+
             // ── Task complete ────────────────────────────────────────
             RioLogger.agent.info("✅ 第 \(iterationCount) 轮: 无工具调用，任务完成")
             let finalized = await engine.handleFinalContent(response.content)

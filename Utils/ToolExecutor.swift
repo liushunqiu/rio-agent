@@ -46,7 +46,7 @@ class ToolExecutor {
             return []
         }
 
-        if toolCalls.allSatisfy({ isReadOnlyTool($0.name) }) {
+        if toolCalls.allSatisfy({ canRunConcurrently($0) }) {
             return await executeReadOnlyToolCallsConcurrently(toolCalls)
         }
 
@@ -177,13 +177,29 @@ class ToolExecutor {
         }
     }
 
-    private func isReadOnlyTool(_ name: String) -> Bool {
-        switch name {
+    private func canRunConcurrently(_ toolCall: ToolCall) -> Bool {
+        switch toolCall.name {
         case "read_file", "search_files", "find_files", "list_directory":
-            return true
+            return canRunReadOnlyToolConcurrently(toolCall)
         default:
             return false
         }
+    }
+
+    private func canRunReadOnlyToolConcurrently(_ toolCall: ToolCall) -> Bool {
+        guard toolCall.name == "read_file" else {
+            return true
+        }
+
+        guard let path = toolCall.arguments["path"]?.value as? String else {
+            return true
+        }
+
+        guard PathSecurity.isAbsolutePath(path) else {
+            return true
+        }
+
+        return PathSecurity.isWithinDirectory(path, workingDirectory: toolRegistry.workingDirectory)
     }
 
     private func appendCancelledResults(

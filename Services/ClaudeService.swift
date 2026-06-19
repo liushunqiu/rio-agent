@@ -121,6 +121,9 @@ class ClaudeService: AIService {
                       let type = json["type"] as? String else { continue }
 
                 switch type {
+                case "error":
+                    throw AIServiceError.streamingError(message: jsonStr)
+
                 case "content_block_start":
                     if let block = json["content_block"] as? [String: Any],
                        let blockType = block["type"] as? String {
@@ -332,6 +335,9 @@ enum AIServiceError: LocalizedError {
     case apiError(statusCode: Int, message: String)
     case decodingError
     case timeout
+    case streamingError(message: String)
+    case emptyResponse
+    case invalidToolCallArguments(toolName: String)
 
     var errorDescription: String? {
         switch self {
@@ -340,24 +346,30 @@ enum AIServiceError: LocalizedError {
         case .invalidBaseURL(let url):
             return "API 端点地址无效: \(url)"
         case .apiError(let statusCode, let message):
+            let shortMessage = extractShortError(message)
+            let providerDetail = shortMessage.isEmpty ? "" : "：\(shortMessage)"
             switch statusCode {
             case 401:
-                return "API Key 无效或已过期 (401)。请前往设置检查 API Key。"
+                return "API Key 无效或已过期 (401)\(providerDetail)。请前往设置检查 API Key。"
             case 403:
-                return "API 访问被拒绝 (403)。请检查 API Key 权限或账户状态。"
+                return "API 访问被拒绝 (403)\(providerDetail)。请检查 API Key 权限或账户状态。"
             case 429:
-                return "API 请求频率超限 (429)。请稍后重试，或降低请求频率。"
+                return "API 请求频率超限 (429)\(providerDetail)。请稍后重试，或降低请求频率。"
             case 500, 502, 503:
-                return "API 服务暂时不可用 (\(statusCode))。请稍后重试。"
+                return "API 服务暂时不可用 (\(statusCode))\(providerDetail)。请稍后重试。"
             default:
-                // 提取简洁的错误信息, 避免输出超长的 JSON
-                let shortMessage = extractShortError(message)
                 return "API 错误 (\(statusCode)): \(shortMessage)"
             }
         case .decodingError:
             return "API 响应解析失败。可能是模型返回了非预期的格式，请重试。"
         case .timeout:
             return "请求超时 (120s)。请检查网络连接，或确认端点地址是否可达。"
+        case .streamingError(let message):
+            return "流式响应错误：\(extractShortError(message))"
+        case .emptyResponse:
+            return "模型返回了空响应：没有文本内容，也没有工具调用。请重试，或切换模型/检查服务端响应格式。"
+        case .invalidToolCallArguments(let toolName):
+            return "模型返回了无法解析的工具参数：\(toolName)。请重试，或切换模型/检查服务端响应格式。"
         }
     }
     

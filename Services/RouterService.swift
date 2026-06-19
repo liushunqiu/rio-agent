@@ -147,7 +147,14 @@ enum RouterService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            let reason = "Qwen 路由请求构建失败：\(error.localizedDescription)"
+            RioLogger.service.error("\(reason, privacy: .public)")
+            return (nil, reason)
+        }
         
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -221,15 +228,8 @@ enum RouterService {
         """
     }
     
-    private static func parseQwenRoutingResponse(_ text: String) -> RoutingDecision? {
-        let cleaned = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard let data = cleaned.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    static func parseQwenRoutingResponse(_ text: String) -> RoutingDecision? {
+        guard let json = routingJSONDictionary(from: text),
               let targetNode = json["target_node"] as? String else {
             return nil
         }
@@ -254,15 +254,8 @@ enum RouterService {
 
     // MARK: - 原有路由逻辑
     
-    private static func parseRoutingResponse(_ text: String) -> RoutingDecision? {
-        let cleaned = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard let data = cleaned.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    static func parseRoutingResponse(_ text: String) -> RoutingDecision? {
+        guard let json = routingJSONDictionary(from: text),
               let mode = json["mode"] as? String else {
             return nil
         }
@@ -281,5 +274,105 @@ enum RouterService {
                 reasoning: reasoning
             )
         }
+    }
+
+    private static func routingJSONDictionary(from text: String) -> [String: Any]? {
+        for candidate in routingJSONObjectCandidates(in: text) {
+            guard let data = candidate.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            return json
+        }
+
+        return nil
+    }
+
+    private static func routingJSONObjectCandidates(in text: String) -> [String] {
+        var candidates: [String] = []
+        var seen: Set<String> = []
+
+        func appendCandidate(_ candidate: String) {
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { return }
+            seen.insert(trimmed)
+            candidates.append(trimmed)
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        appendCandidate(trimmed)
+        appendCandidate(
+            trimmed
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```JSON", with: "")
+                .replacingOccurrences(of: "```", with: "")
+        )
+
+        for candidate in balancedJSONObjectCandidates(in: text) {
+            appendCandidate(candidate)
+        }
+
+        return candidates
+    }
+
+    private static func balancedJSONObjectCandidates(in text: String) -> [String] {
+        var candidates: [String] = []
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            if text[index] == "{", let candidate = balancedJSONObject(in: text, from: index) {
+                candidates.append(candidate)
+            }
+            index = text.index(after: index)
+        }
+
+        return candidates
+    }
+
+    private static func balancedJSONObject(in text: String, from start: String.Index) -> String? {
+        var depth = 0
+        var quote: Character?
+        var escaped = false
+        var index = start
+
+        while index < text.endIndex {
+            let char = text[index]
+
+            if escaped {
+                escaped = false
+                index = text.index(after: index)
+                continue
+            }
+
+            if char == "\\" {
+                escaped = true
+                index = text.index(after: index)
+                continue
+            }
+
+            if let currentQuote = quote {
+                if char == currentQuote {
+                    quote = nil
+                }
+                index = text.index(after: index)
+                continue
+            }
+
+            if char == "\"" {
+                quote = char
+            } else if char == "{" {
+                depth += 1
+            } else if char == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let end = text.index(after: index)
+                    return String(text[start..<end])
+                }
+            }
+
+            index = text.index(after: index)
+        }
+
+        return nil
     }
 }

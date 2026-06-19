@@ -139,16 +139,20 @@ extension AgentEngine {
 
         textToolCallRedirectCount += 1
 
-        // In the streaming path the assistant message (with the text-based tool
-        // call content) is already the last message in `messages`. Avoid adding a
-        // duplicate — only append when the last message doesn't already carry the
-        // same content.
-        let lastIsSameAssistant = messages.last.map {
-            $0.role == .assistant && !$0.content.isEmpty && content.hasPrefix(String($0.content.prefix(64)))
-        } ?? false
-
-        if !lastIsSameAssistant {
-            messages.append(Message.assistant(content))
+        // In the streaming path the invalid assistant text may already be in
+        // `messages`. Keep it for model context but hide it from the transcript
+        // so users do not see a fake tool-use progress message.
+        if let matchingAssistantIndex = messages.indices.reversed().first(where: { index in
+            let message = messages[index]
+            return message.role == .assistant
+                && (message.toolCalls?.isEmpty ?? true)
+                && !message.content.isEmpty
+                && content.hasPrefix(String(message.content.prefix(64)))
+        }) {
+            messages[matchingAssistantIndex].isStreaming = false
+            messages[matchingAssistantIndex].presentation = .internalOnly
+        } else {
+            messages.append(Message.assistant(content, presentation: .internalOnly))
         }
 
         // Inject a corrective message

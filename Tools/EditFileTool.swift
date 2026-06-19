@@ -11,14 +11,18 @@ class EditFileTool: Tool {
     ]
 
     private var confirmationCallback: ConfirmationCallback?
-    private var trustedPaths: Set<String> = []
+    private var trustedPaths: Set<FileToolTrustScope> = []
 
     func setConfirmationCallback(_ callback: @escaping ConfirmationCallback) {
         self.confirmationCallback = callback
     }
 
     func addTrustedPath(_ path: String) {
-        trustedPaths.insert(PathSecurity.normalizedPath(path))
+        trustedPaths.insert(trustScope(for: path))
+    }
+
+    private func trustScope(for path: String) -> FileToolTrustScope {
+        FileToolTrustScope(path: path, workingDirectory: ToolRegistry.shared.workingDirectory)
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
@@ -36,18 +40,31 @@ class EditFileTool: Tool {
         }
 
         // Confirmation check for cross-directory writes
-        let normalizedPath = PathSecurity.normalizedPath(path)
         let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
 
         if isWithinWorkDir {
             // Auto-approve
-        } else if trustedPaths.contains(normalizedPath) {
+        } else if trustedPaths.contains(trustScope(for: path)) {
             // Already trusted
         } else if let confirm = confirmationCallback {
-            let preview = "OLD:\n\(String(oldText.prefix(200)))\(oldText.count > 200 ? "..." : "")\n\nNEW:\n\(String(newText.prefix(200)))\(newText.count > 200 ? "..." : "")"
+            let directoryText = ToolRegistry.shared.workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let visibleDirectory = directoryText?.isEmpty == false ? directoryText! : "未指定"
+            let preview = "原文本:\n\(String(oldText.prefix(200)))\(oldText.count > 200 ? "..." : "")\n\n替换为:\n\(String(newText.prefix(200)))\(newText.count > 200 ? "..." : "")"
             let result = await confirm(
-                "Edit File Confirmation",
-                "About to edit file outside working directory:\n\(path)\n\n\(preview)\n\nContinue?",
+                "跨目录编辑确认",
+                """
+                即将编辑工作目录外的文件:
+                \(path)
+
+                当前工作目录:
+                \(visibleDirectory)
+
+                \(preview)
+
+                选择“信任本会话”只会信任该文件在当前工作目录下再次编辑。
+
+                是否继续？
+                """,
                 true
             )
 
@@ -55,12 +72,12 @@ class EditFileTool: Tool {
             case .approved:
                 break
             case .trustedForSession:
-                addTrustedPath(normalizedPath)
+                addTrustedPath(path)
             case .denied:
-                return ToolResult.cancelled(toolCallId: name, reason: "User cancelled the edit")
+                return ToolResult.cancelled(toolCallId: name, reason: "用户取消编辑")
             }
         } else {
-            return ToolResult.error(toolCallId: name, error: "Editing files outside the working directory requires confirmation")
+            return ToolResult.error(toolCallId: name, error: "编辑工作目录外文件需要用户确认")
         }
 
         // Check if file exists after any required cross-directory confirmation.

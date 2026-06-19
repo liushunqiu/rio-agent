@@ -28,16 +28,23 @@ class SearchFilesTool: Tool {
             do {
                 let regex = try NSRegularExpression(pattern: pattern)
                 let root = URL(fileURLWithPath: searchPath)
-                let files = try FileSystemToolSupport.recursiveFiles(
+                let scan = try FileSystemToolSupport.recursiveFileScan(
                     under: root,
                     matching: filePattern
                 )
+                let files = scan.files
+                let warning = FileSystemToolSupport.partialScanWarning(for: scan)
 
                 var matches: [String] = []
+                var unreadableFiles: [String] = []
                 let maxLines = 200
 
                 for file in files {
-                    guard let content = try? String(contentsOf: file, encoding: .utf8) else {
+                    let content: String
+                    do {
+                        content = try String(contentsOf: file, encoding: .utf8)
+                    } catch {
+                        unreadableFiles.append("\(file.path): \(error.localizedDescription)")
                         continue
                     }
 
@@ -57,14 +64,26 @@ class SearchFilesTool: Tool {
                     }
                 }
 
+                var diagnostics = warning
+                if !unreadableFiles.isEmpty {
+                    diagnostics += "\n\n⚠️ 部分文件无法读取，搜索结果可能不完整："
+                    for error in unreadableFiles.prefix(5) {
+                        diagnostics += "\n- \(error)"
+                    }
+                    if unreadableFiles.count > 5 {
+                        diagnostics += "\n... 还有 \(unreadableFiles.count - 5) 个文件读取失败"
+                    }
+                }
+
                 if matches.isEmpty {
-                    return ToolResult.success(toolCallId: "search_files", output: "No matches found for pattern: \(pattern)")
+                    return ToolResult.success(toolCallId: "search_files", output: "No matches found for pattern: \(pattern)\(diagnostics)")
                 }
 
                 var output = matches.joined(separator: "\n")
                 if matches.count == maxLines {
                     output += "\n\n... (matches truncated at \(maxLines) lines)"
                 }
+                output += diagnostics
                 return ToolResult.success(toolCallId: "search_files", output: output)
             } catch let error as NSError where error.domain == NSCocoaErrorDomain {
                 return ToolResult.error(toolCallId: "search_files", error: "Invalid regex pattern: \(pattern)")

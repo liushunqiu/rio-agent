@@ -125,6 +125,29 @@ final class ConversationManagerTests: XCTestCase {
         XCTAssertEqual(manager.currentConversation?.pendingDecision, .chooseExecutionModeForTask("新任务"))
     }
 
+    func testSelectConversationIgnoresSnapshotsOutsideManagedList() {
+        let manager = makeIsolatedManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "Current",
+            messages: [.user("current")]
+        )
+        let deletedSnapshot = Conversation(
+            title: "Deleted",
+            messages: [.user("stale")]
+        )
+
+        manager.conversations = [current]
+        manager.currentConversation = current
+
+        let selected = manager.selectConversation(deletedSnapshot)
+
+        XCTAssertNil(selected)
+        XCTAssertEqual(manager.currentConversation?.id, current.id)
+        XCTAssertEqual(manager.conversations.map(\.id), [current.id])
+    }
+
     func testUpdateCurrentConversationSkipsRedundantUpdates() {
         let manager = makeIsolatedManager()
         manager.conversations = []

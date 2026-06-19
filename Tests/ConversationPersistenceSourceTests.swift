@@ -122,14 +122,28 @@ final class ConversationPersistenceSourceTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let managerSource = try String(contentsOf: repoRoot.appendingPathComponent("Agent/ConversationManager.swift"))
 
         XCTAssertTrue(
-            contentSource.contains("conversationManager.selectConversation(conversation)\n                    let selectedConversation = conversationManager.currentConversation ?? conversation\n                    agentEngine.loadConversation(selectedConversation)"),
-            "Conversation switches should load the manager-resolved snapshot so stale sidebar values do not overwrite newer messages, drafts, workspace, or pending decisions."
+            managerSource.contains("func selectConversation(_ conversation: Conversation) -> Conversation?"),
+            "ConversationManager should return the stored snapshot that was actually selected."
+        )
+        XCTAssertTrue(
+            managerSource.contains("guard let storedConversation = conversations.first(where: { $0.id == conversation.id }) else {\n            return nil\n        }"),
+            "Selecting a stale sidebar snapshot should not resurrect a deleted or unmanaged conversation."
+        )
+
+        XCTAssertTrue(
+            contentSource.contains("guard let selectedConversation = conversationManager.selectConversation(conversation) else {\n                        return\n                    }\n                    agentEngine.loadConversation(selectedConversation)"),
+            "Conversation switches should load only the manager-confirmed snapshot so stale sidebar values do not overwrite newer messages, drafts, workspace, or pending decisions."
         )
         XCTAssertFalse(
             contentSource.contains("conversationManager.selectConversation(conversation)\n                    agentEngine.loadConversation(conversation)"),
             "ContentView should not bypass ConversationManager's stored snapshot when selecting a conversation."
+        )
+        XCTAssertFalse(
+            contentSource.contains("conversationManager.currentConversation ?? conversation"),
+            "ContentView should not fall back to a stale external conversation snapshot after selection fails."
         )
     }
 }

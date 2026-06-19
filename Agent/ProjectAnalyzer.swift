@@ -2,6 +2,9 @@ import Foundation
 
 /// 项目理解增强系统 - 自动分析项目架构、识别依赖关系、生成项目文档
 class ProjectAnalyzer {
+    private static let skippedDirectoryNames = FileSystemToolSupport.skippedDirectoryNames.union([
+        "vendor"
+    ])
     
     // MARK: - 项目结构类型
     
@@ -155,7 +158,8 @@ class ProjectAnalyzer {
             if lowerContents.contains(where: { $0.hasSuffix(".xcodeproj") }) {
                 return .macosApp
             }
-            if lowerContents.contains("sources") && lowerContents.contains("main.swift") {
+            if lowerContents.contains("sources"),
+               containsFileNamed("main.swift", under: (path as NSString).appendingPathComponent("Sources")) {
                 return .cliTool
             }
             return .library
@@ -247,8 +251,7 @@ class ProjectAnalyzer {
                 
                 if isDir.boolValue {
                     // 跳过特殊目录
-                    let skipDirs = [".git", "node_modules", ".build", "vendor", "__pycache__", ".venv"]
-                    if !skipDirs.contains(item) {
+                    if !shouldSkipDirectory(item) {
                         scanDirectory(fullPath)
                     }
                 } else {
@@ -369,8 +372,39 @@ class ProjectAnalyzer {
     }
     
     private static func parseNpmDependencies(from content: String) -> [Dependency] {
+        if let dependencies = parseNpmDependenciesFromJSON(content), !dependencies.isEmpty {
+            return dependencies
+        }
+
+        return parseNpmDependenciesLineBased(from: content)
+    }
+
+    private static func parseNpmDependenciesFromJSON(_ content: String) -> [Dependency]? {
+        guard let data = content.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
         var dependencies: [Dependency] = []
-        
+
+        func appendSection(_ name: String, type: Dependency.DependencyType) {
+            guard let section = json[name] as? [String: Any] else { return }
+            for packageName in section.keys.sorted() {
+                let versionValue = section[packageName]
+                let version = versionValue as? String
+                dependencies.append(Dependency(name: packageName, version: version, type: type))
+            }
+        }
+
+        appendSection("dependencies", type: .direct)
+        appendSection("devDependencies", type: .dev)
+        appendSection("peerDependencies", type: .peer)
+        return dependencies
+    }
+
+    private static func parseNpmDependenciesLineBased(from content: String) -> [Dependency] {
+        var dependencies: [Dependency] = []
+
         // 简化解析：查找依赖名称
         let lines = content.components(separatedBy: .newlines)
         var inDependencies = false
@@ -412,7 +446,7 @@ class ProjectAnalyzer {
                 }
             }
         }
-        
+
         return dependencies
     }
     
@@ -603,8 +637,7 @@ class ProjectAnalyzer {
                 FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir)
                 
                 if isDir.boolValue {
-                    let skipDirs = [".git", "node_modules", ".build", "vendor"]
-                    if !skipDirs.contains(item) {
+                    if !shouldSkipDirectory(item) {
                         scanForTests(fullPath, relativePath: relPath)
                     }
                 } else {
@@ -747,5 +780,21 @@ class ProjectAnalyzer {
     private static func readFile(at path: String) -> String? {
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    private static func shouldSkipDirectory(_ name: String) -> Bool {
+        skippedDirectoryNames.contains(name)
+    }
+
+    private static func containsFileNamed(_ fileName: String, under path: String) -> Bool {
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        guard let scan = try? FileSystemToolSupport.recursiveFileScan(
+            under: root,
+            matching: fileName,
+            limit: 1
+        ) else {
+            return false
+        }
+        return !scan.files.isEmpty
     }
 }

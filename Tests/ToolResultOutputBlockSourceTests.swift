@@ -46,6 +46,27 @@ final class ToolResultOutputBlockSourceTests: XCTestCase {
         )
     }
 
+    func testCancelledToolResultsUseWarningVisualTone() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/EnhancedToolCallCard.swift"))
+
+        XCTAssertTrue(
+            source.contains("private var outputBackgroundColor: Color"),
+            "Tool result blocks should centralize output background color by result status."
+        )
+        XCTAssertTrue(
+            source.contains("case .cancelled:\n            return Theme.statusWarning")
+                && source.contains("case .cancelled:\n            return Theme.statusWarning.opacity(0.08)"),
+            "Cancelled tool results should use warning semantics instead of looking like ordinary successful output."
+        )
+        XCTAssertTrue(
+            source.contains(".background(outputBackgroundColor)"),
+            "The shared output block should apply the status-specific background color."
+        )
+    }
+
     func testToolArgumentsUseSharedExpandableCopyableRows() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

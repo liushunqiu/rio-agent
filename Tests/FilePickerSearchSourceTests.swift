@@ -153,6 +153,13 @@ final class FilePickerSearchSourceTests: XCTestCase {
             "Empty workspace-scoped history should fall back to legacy global recents for migration."
         )
         XCTAssertTrue(
+            source.contains("private func migrateLegacyRecentFilesIfNeeded()")
+                && source.contains("PathSecurity.isWithinDirectory(normalizedPath, workingDirectory: workingDirectory)")
+                && source.contains("UserDefaults.standard.set(migratedFiles, forKey: recentFilesKey)")
+                && source.contains("migrateLegacyRecentFilesIfNeeded()"),
+            "Opening a workspace should migrate valid legacy recents into the workspace-scoped key instead of relying on global fallback forever."
+        )
+        XCTAssertTrue(
             source.contains("var saved = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []"),
             "Recording a recent file should write into the workspace-scoped key."
         )

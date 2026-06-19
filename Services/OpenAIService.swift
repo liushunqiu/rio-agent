@@ -14,24 +14,29 @@ struct OpenAIStreamingState {
     }
 
     var toolCalls: [ToolCall]? {
-        let calls = toolCallAccumulators
+        get throws {
+            let calls = try toolCallAccumulators
             .sorted(by: { $0.key < $1.key })
             .compactMap { _, acc -> ToolCall? in
                 guard !acc.id.isEmpty, !acc.name.isEmpty else { return nil }
-                var arguments: [String: AnyCodable] = [:]
-                if let argsData = acc.args.data(using: .utf8),
-                   let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
-                    arguments = argsDict.mapValues { AnyCodable($0) }
-                }
+                let arguments = try OpenAIService.parseToolCallArguments(acc.args, toolName: acc.name)
                 return ToolCall(id: acc.id, name: acc.name, arguments: arguments)
             }
-        return calls.isEmpty ? nil : calls
+            return calls.isEmpty ? nil : calls
+        }
     }
 
-    mutating func consumeSSEDataLine(_ jsonStr: String) -> (content: String?, reasoning: String?) {
+    mutating func consumeSSEDataLine(_ jsonStr: String) throws -> (content: String?, reasoning: String?) {
         guard let data = jsonStr.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (nil, nil)
+        }
+
+        if json["error"] != nil {
+            throw AIServiceError.streamingError(message: jsonStr)
+        }
+
+        guard let choices = json["choices"] as? [[String: Any]],
               let firstChoice = choices.first,
               let delta = firstChoice["delta"] as? [String: Any] else {
             return (nil, nil)
@@ -151,7 +156,7 @@ class OpenAIService: AIService {
         guard let url = URL(string: "\(baseURL)/v1/chat/completions") else {
             throw AIServiceError.invalidBaseURL(baseURL)
         }
-        RioLogger.service.apiRequest(provider: "OpenAI", model: model, messageCount: messages.count)
+        RioLogger.service.apiRequest(provider: provider.displayName, model: model, messageCount: messages.count)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -195,7 +200,7 @@ class OpenAIService: AIService {
             let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
             guard !jsonStr.isEmpty, jsonStr != "[DONE]" else { continue }
 
-            let chunks = streamState.consumeSSEDataLine(jsonStr)
+            let chunks = try streamState.consumeSSEDataLine(jsonStr)
             if let content = chunks.content {
                 await onChunk(content)
             }
@@ -204,12 +209,13 @@ class OpenAIService: AIService {
             }
         }
 
-        RioLogger.service.apiResponse(provider: "OpenAI", contentLength: streamState.fullContent.count, toolCallCount: streamState.toolCalls?.count ?? 0)
+        let parsedToolCalls = try streamState.toolCalls
+        RioLogger.service.apiResponse(provider: provider.displayName, contentLength: streamState.fullContent.count, toolCallCount: parsedToolCalls?.count ?? 0)
 
         return AIResponse(
             content: streamState.content,
             reasoningContent: streamState.reasoningContent,
-            toolCalls: streamState.toolCalls,
+            toolCalls: parsedToolCalls,
             usage: nil
         )
     }
@@ -288,7 +294,7 @@ class OpenAIService: AIService {
 
         var toolCalls: [ToolCall]?
         if let calls = message["tool_calls"] as? [[String: Any]] {
-            toolCalls = calls.compactMap { call in
+            toolCalls = try calls.compactMap { call in
                 guard let id = call["id"] as? String,
                       let function = call["function"] as? [String: Any],
                       let name = function["name"] as? String,
@@ -296,12 +302,7 @@ class OpenAIService: AIService {
                     return nil
                 }
 
-                guard let argumentsData = argumentsString.data(using: .utf8),
-                      let arguments = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any] else {
-                    return nil
-                }
-
-                let codableArguments = arguments.mapValues { AnyCodable($0) }
+                let codableArguments = try OpenAIService.parseToolCallArguments(argumentsString, toolName: name)
                 return ToolCall(id: id, name: name, arguments: codableArguments)
             }
         }
@@ -316,5 +317,16 @@ class OpenAIService: AIService {
         }
 
         return AIResponse(content: content, reasoningContent: reasoningContent, toolCalls: toolCalls, usage: usage)
+    }
+
+    static func parseToolCallArguments(_ argumentsString: String, toolName: String) throws -> [String: AnyCodable] {
+        let trimmed = argumentsString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [:] }
+        guard let argumentsData = trimmed.data(using: .utf8),
+              let arguments = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any] else {
+            throw AIServiceError.invalidToolCallArguments(toolName: toolName)
+        }
+
+        return arguments.mapValues { AnyCodable($0) }
     }
 }

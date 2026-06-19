@@ -25,11 +25,13 @@ class FindFilesTool: Tool {
         return await Task.detached(priority: .userInitiated) {
             do {
                 let root = URL(fileURLWithPath: searchPath)
-                let files = try FileSystemToolSupport.recursiveFiles(under: root)
+                let scan = try FileSystemToolSupport.recursiveFileScan(under: root)
+                let files = scan.files
                     .filter { FileSystemToolSupport.matchesPathGlob($0, root: root, pattern: pattern) }
+                let warning = FileSystemToolSupport.partialScanWarning(for: scan)
 
                 if files.isEmpty {
-                    return ToolResult.success(toolCallId: "find_files", output: "No files found matching pattern: \(pattern)")
+                    return ToolResult.success(toolCallId: "find_files", output: "No files found matching pattern: \(pattern)\(warning)")
                 }
 
                 let limitedFiles = Array(files.prefix(500))
@@ -38,6 +40,7 @@ class FindFilesTool: Tool {
                 if files.count > limitedFiles.count {
                     result += "\n\n... (\(files.count - limitedFiles.count) more files truncated)"
                 }
+                result += warning
                 return ToolResult.success(toolCallId: "find_files", output: result)
             } catch {
                 return ToolResult.error(toolCallId: "find_files", error: "Failed to find files: \(error.localizedDescription)")

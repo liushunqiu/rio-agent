@@ -82,7 +82,7 @@ final class ConfigSetTests: XCTestCase {
         )
     }
 
-    func testHostedProviderConfigCanBeReadyWithoutCustomBaseURL() {
+    func testHostedProviderConfigCanBeReadyWithoutCustomBaseURL() throws {
         let configSet = ConfigSet(
             id: UUID(),
             name: "Claude",
@@ -90,11 +90,29 @@ final class ConfigSetTests: XCTestCase {
             baseURL: "   ",
             model: "claude-sonnet-4-20250514"
         )
-        defer { configSet.saveAPIKey("") }
-        configSet.saveAPIKey("secret")
+        defer { try? configSet.saveAPIKey("") }
+        try configSet.saveAPIKey("secret")
 
         XCTAssertTrue(configSet.isConfigured)
         XCTAssertNil(configSet.readinessIssue)
+    }
+
+    func testSaveAPIKeyTrimsValuesAndDeletesWhitespaceOnlyValues() throws {
+        let configSet = ConfigSet(
+            id: UUID(),
+            name: "OpenAI",
+            provider: .openAI,
+            baseURL: "https://api.openai.com",
+            model: "gpt-4o"
+        )
+        defer { try? configSet.saveAPIKey("") }
+
+        try configSet.saveAPIKey("  secret  \n")
+        XCTAssertEqual(configSet.loadAPIKey(), "secret")
+
+        try configSet.saveAPIKey("   \n")
+        XCTAssertEqual(configSet.loadAPIKey(), "")
+        XCTAssertNil(KeychainManager.load(forKey: "config_set_\(configSet.id.uuidString)_api_key"))
     }
 
     func testAIServiceFactoryUsesProviderResolvedBaseURL() throws {
@@ -124,17 +142,17 @@ final class ConfigSetTests: XCTestCase {
         )
         let manager = makeIsolatedManager()
         manager.configSets = [configSet]
-        configSet.saveAPIKey("secret")
+        try configSet.saveAPIKey("secret")
 
         XCTAssertEqual(configSet.loadAPIKey(), "secret")
 
-        manager.deleteConfigSet(id: configSet.id)
+        try manager.deleteConfigSet(id: configSet.id)
 
         XCTAssertNil(KeychainManager.load(forKey: "config_set_\(configSet.id.uuidString)_api_key"))
         XCTAssertTrue(manager.configSets.isEmpty)
     }
 
-    func testRevisionChangesWhenExistingConfigSetIsUpdated() {
+    func testRevisionChangesWhenExistingConfigSetIsUpdated() throws {
         let manager = makeIsolatedManager()
         let configSet = ConfigSet(
             id: UUID(),
@@ -148,7 +166,7 @@ final class ConfigSetTests: XCTestCase {
 
         var updated = configSet
         updated.model = "new-model"
-        manager.updateConfigSet(updated)
+        try manager.updateConfigSet(updated)
 
         XCTAssertGreaterThan(manager.revision, revisionAfterAdd)
         XCTAssertEqual(manager.configSet(for: configSet.id)?.model, "new-model")

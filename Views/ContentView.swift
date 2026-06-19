@@ -23,8 +23,9 @@ struct ContentView: View {
                 isSettingsLocked: isRuntimeConfigurationLocked,
                 onSelect: { conversation in
                     prepareForConversationContextChange()
-                    conversationManager.selectConversation(conversation)
-                    let selectedConversation = conversationManager.currentConversation ?? conversation
+                    guard let selectedConversation = conversationManager.selectConversation(conversation) else {
+                        return
+                    }
                     agentEngine.loadConversation(selectedConversation)
                 },
                 onDelete: { conversation in
@@ -33,11 +34,11 @@ struct ContentView: View {
                         prepareForConversationContextChange()
                     }
 
-                    conversationManager.deleteConversation(conversation)
+                    let nextConversation = conversationManager.deleteConversation(conversation)
 
                     guard deletesCurrentConversation else { return }
 
-                    if let current = conversationManager.currentConversation {
+                    if let current = nextConversation {
                         agentEngine.loadConversation(current)
                     } else {
                         agentEngine.clearConversation()
@@ -518,6 +519,10 @@ struct SidebarView: View {
                 pendingDeleteConversation = nil
             }
             Button("删除", role: .destructive) {
+                guard !isNavigationLocked else {
+                    pendingDeleteConversation = nil
+                    return
+                }
                 if let pendingDeleteConversation {
                     onDelete(pendingDeleteConversation)
                 }
@@ -2163,63 +2168,23 @@ struct ErrorBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
 
-                HStack(spacing: 8) {
-                    if shouldShowExpandButton {
-                        ErrorBannerUtilityButton(
-                            icon: isExpanded ? "chevron.up" : "chevron.down",
-                            tone: Theme.textSecondary,
-                            helpText: isExpanded ? "收起错误详情" : "展开完整错误详情"
-                        ) {
-                            withAnimation(.easeInOut(duration: 0.16)) {
-                                isExpanded.toggle()
-                            }
+                ErrorBannerActions(
+                    shouldShowExpandButton: shouldShowExpandButton,
+                    isExpanded: isExpanded,
+                    didCopy: didCopy,
+                    canResumeTask: canResumeTask,
+                    onResumeTask: onResumeTask,
+                    onOpenSettings: onOpenSettings,
+                    settingsButtonTitle: settingsButtonTitle,
+                    settingsHelpText: settingsHelpText,
+                    onDismiss: onDismiss,
+                    onToggleExpanded: {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            isExpanded.toggle()
                         }
-                    }
-
-                    ErrorBannerUtilityButton(
-                        icon: didCopy ? "checkmark" : "doc.on.doc",
-                        tone: didCopy ? Theme.statusSuccess : Theme.textSecondary,
-                        helpText: "复制完整错误信息",
-                        action: copyErrorMessage
-                    )
-
-                    if canResumeTask, let onResumeTask {
-                        Button(action: onResumeTask) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "arrow.uturn.backward")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text("恢复任务")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundColor(Theme.textPrimary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 6)
-                            .background(Theme.bgElevated.opacity(0.95))
-                            .cornerRadius(Theme.radiusSM)
-                        }
-                        .buttonStyle(.plain)
-                        .help("优先恢复当前草稿；如果没有草稿，则恢复最近一条真实任务")
-                    }
-
-                    if let onOpenSettings {
-                        ErrorBannerUtilityButton(
-                            icon: "gearshape",
-                            tone: Theme.textSecondary,
-                            helpText: settingsButtonTitle ?? settingsHelpText ?? "打开设置修复当前配置问题",
-                            action: onOpenSettings
-                        )
-                        .help(settingsHelpText ?? "打开设置修复当前配置问题")
-                    }
-
-                    if let onDismiss {
-                        ErrorBannerUtilityButton(
-                            icon: "xmark",
-                            tone: Theme.textTertiary,
-                            helpText: "收起错误提示",
-                            action: onDismiss
-                        )
-                    }
-                }
+                    },
+                    onCopy: copyErrorMessage
+                )
             }
 
             Spacer(minLength: 0)
@@ -2286,6 +2251,89 @@ struct ErrorBanner: View {
             guard copyResetID == resetID else { return }
             didCopy = false
             copyResetID = nil
+        }
+    }
+}
+
+private struct ErrorBannerActions: View {
+    let shouldShowExpandButton: Bool
+    let isExpanded: Bool
+    let didCopy: Bool
+    let canResumeTask: Bool
+    let onResumeTask: (() -> Void)?
+    let onOpenSettings: (() -> Void)?
+    let settingsButtonTitle: String?
+    let settingsHelpText: String?
+    let onDismiss: (() -> Void)?
+    let onToggleExpanded: () -> Void
+    let onCopy: () -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                actionButtons
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                actionButtons
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if shouldShowExpandButton {
+            ErrorBannerUtilityButton(
+                icon: isExpanded ? "chevron.up" : "chevron.down",
+                tone: Theme.textSecondary,
+                helpText: isExpanded ? "收起错误详情" : "展开完整错误详情",
+                action: onToggleExpanded
+            )
+        }
+
+        ErrorBannerUtilityButton(
+            icon: didCopy ? "checkmark" : "doc.on.doc",
+            tone: didCopy ? Theme.statusSuccess : Theme.textSecondary,
+            helpText: "复制完整错误信息",
+            action: onCopy
+        )
+
+        if canResumeTask, let onResumeTask {
+            Button(action: onResumeTask) {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("恢复任务")
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                }
+                .foregroundColor(Theme.textPrimary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Theme.bgElevated.opacity(0.95))
+                .cornerRadius(Theme.radiusSM)
+            }
+            .buttonStyle(.plain)
+            .help("优先恢复当前草稿；如果没有草稿，则恢复最近一条真实任务")
+        }
+
+        if let onOpenSettings {
+            ErrorBannerUtilityButton(
+                icon: "gearshape",
+                tone: Theme.textSecondary,
+                helpText: settingsButtonTitle ?? settingsHelpText ?? "打开设置修复当前配置问题",
+                action: onOpenSettings
+            )
+            .help(settingsHelpText ?? "打开设置修复当前配置问题")
+        }
+
+        if let onDismiss {
+            ErrorBannerUtilityButton(
+                icon: "xmark",
+                tone: Theme.textTertiary,
+                helpText: "收起错误提示",
+                action: onDismiss
+            )
         }
     }
 }

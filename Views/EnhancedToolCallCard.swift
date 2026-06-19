@@ -91,7 +91,7 @@ struct ToolResultOutputBlock: View {
                 .lineLimit(lineLimit)
                 .padding(contentPadding)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(result.status == .error ? Theme.statusError.opacity(0.10) : Theme.codeBackground)
+                .background(outputBackgroundColor)
                 .cornerRadius(Theme.radiusSM)
         }
         .onChange(of: displayText) { _, _ in
@@ -109,11 +109,36 @@ struct ToolResultOutputBlock: View {
     }
 
     private var labelColor: Color {
-        result.status == .error ? Theme.statusError : Theme.textSecondary
+        switch result.status {
+        case .success:
+            return Theme.textSecondary
+        case .error:
+            return Theme.statusError
+        case .cancelled:
+            return Theme.statusWarning
+        }
     }
 
     private var textColor: Color {
-        result.status == .error ? Theme.statusError : Theme.textSecondary
+        switch result.status {
+        case .success:
+            return Theme.textSecondary
+        case .error:
+            return Theme.statusError
+        case .cancelled:
+            return Theme.statusWarning
+        }
+    }
+
+    private var outputBackgroundColor: Color {
+        switch result.status {
+        case .success:
+            return Theme.codeBackground
+        case .error:
+            return Theme.statusError.opacity(0.10)
+        case .cancelled:
+            return Theme.statusWarning.opacity(0.08)
+        }
     }
 
     private func copyDisplayText() {

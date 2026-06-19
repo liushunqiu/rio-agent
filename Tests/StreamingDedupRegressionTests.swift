@@ -41,6 +41,7 @@ final class StreamingDedupRegressionTests: XCTestCase {
         var invocationCount = 0
 
         await MainActor.run {
+            ToolRegistry.shared.register(CancelledLoopTestTool())
             engine.appendMessage(.user("检查项目结构"))
         }
 
@@ -68,7 +69,9 @@ final class StreamingDedupRegressionTests: XCTestCase {
                 return AIResponse(
                     content: nil,
                     reasoningContent: nil,
-                    toolCalls: nil,
+                    toolCalls: [
+                        ToolCall(id: "cancelled-command", name: "cancel_test_tool")
+                    ],
                     usage: nil
                 )
             }
@@ -76,6 +79,7 @@ final class StreamingDedupRegressionTests: XCTestCase {
 
         let allMessages = await MainActor.run { engine.messages }
         let assistantMessages = allMessages.filter { $0.role == .assistant }
+        let visibleAssistantMessages = assistantMessages.filter(\.isVisibleInTranscript)
         let correctionMessages = allMessages.filter {
             $0.role == .system
                 && $0.presentation == .internalOnly
@@ -84,7 +88,35 @@ final class StreamingDedupRegressionTests: XCTestCase {
 
         XCTAssertEqual(assistantMessages.count, 1)
         XCTAssertEqual(assistantMessages.first?.content, "我先使用 list_directory 工具查看目录结构。")
+        XCTAssertTrue(visibleAssistantMessages.isEmpty)
         XCTAssertEqual(correctionMessages.count, 1)
+    }
+
+    func testConversationLoopRejectsEmptyFinalResponse() async throws {
+        let engine = await MainActor.run { makeIsolatedAgentEngine(testCase: self) }
+
+        await MainActor.run {
+            engine.appendMessage(.user("请分析当前项目"))
+        }
+
+        do {
+            try await ConversationLoop.run(engine: await MainActor.run { engine }) { _ in
+                AIResponse(
+                    content: "  \n",
+                    reasoningContent: nil,
+                    toolCalls: nil,
+                    usage: nil
+                )
+            }
+            XCTFail("Expected empty final response to be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("模型返回了空响应"))
+        }
+
+        let assistantMessages = await MainActor.run {
+            engine.messages.filter { $0.role == .assistant }
+        }
+        XCTAssertTrue(assistantMessages.isEmpty)
     }
 
     func testConversationLoopStopsAfterCancelledToolResult() async throws {
@@ -129,6 +161,23 @@ private struct CancelledLoopTestTool: Tool {
 }
 
 final class ConversationLoopSourceTests: XCTestCase {
+    func testStreamingPlaceholderMutationsAreGuardedByMessageId() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("Agent/AgentEngine.swift"))
+
+        XCTAssertTrue(
+            source.contains("let messageId = streamingMessage.id")
+                && source.contains("self.messages[streamingIndex].id == messageId"),
+            "Streaming updates should verify the placeholder id instead of trusting a stale array index after conversation switches."
+        )
+        XCTAssertTrue(
+            source.contains("if isCurrentStreamingMessage() {\n                    self.messages.remove(at: streamingIndex)\n                }\n                throw error"),
+            "Streaming error cleanup should not remove a message from a newly loaded conversation at the same index."
+        )
+    }
+
     func testCancelledToolResultsDoNotAdvancePlanSteps() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -146,6 +195,10 @@ final class ConversationLoopSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("if hasCancelled {\n                    break\n                }\n                continue"),
             "Cancelled tool results should stop the loop after preserving the result message."
+        )
+        XCTAssertTrue(
+            source.contains("throw AIServiceError.emptyResponse"),
+            "Empty model responses should stop with a visible error instead of being treated as task completion."
         )
 
         let cancelledBranch = try XCTUnwrap(source.range(of: "} else if hasCancelled {"))

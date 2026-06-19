@@ -16,14 +16,18 @@ class FileReadTool: Tool {
     /// Default maximum lines to return
     private static let defaultMaxLines = 500
     private var confirmationCallback: ConfirmationCallback?
-    private var trustedPaths: Set<String> = []
+    private var trustedPaths: Set<FileToolTrustScope> = []
 
     func setConfirmationCallback(_ callback: @escaping ConfirmationCallback) {
         self.confirmationCallback = callback
     }
 
     func addTrustedPath(_ path: String) {
-        trustedPaths.insert(PathSecurity.normalizedPath(path))
+        trustedPaths.insert(trustScope(for: path))
+    }
+
+    private func trustScope(for path: String) -> FileToolTrustScope {
+        FileToolTrustScope(path: path, workingDirectory: ToolRegistry.shared.workingDirectory)
     }
 
     func execute(arguments: [String: Any]) async throws -> ToolResult {
@@ -46,17 +50,28 @@ class FileReadTool: Tool {
         guard offset >= 0 else {
             return ToolResult.error(toolCallId: "read_file", error: "offset must be greater than or equal to 0")
         }
-        let normalizedPath = PathSecurity.normalizedPath(path)
         let isWithinWorkDir = PathSecurity.isWithinDirectory(path, workingDirectory: ToolRegistry.shared.workingDirectory)
 
         if isWithinWorkDir {
             // 工作目录内读取自动执行
-        } else if trustedPaths.contains(normalizedPath) {
+        } else if trustedPaths.contains(trustScope(for: path)) {
             // 已信任路径跳过确认
         } else if let confirm = confirmationCallback {
+            let directoryText = ToolRegistry.shared.workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let visibleDirectory = directoryText?.isEmpty == false ? directoryText! : "未指定"
             let result = await confirm(
                 "读取文件确认",
-                "即将读取工作目录外的文件:\n\(path)\n\n是否继续？",
+                """
+                即将读取工作目录外的文件:
+                \(path)
+
+                当前工作目录:
+                \(visibleDirectory)
+
+                选择“信任本会话”只会信任该文件在当前工作目录下再次读取。
+
+                是否继续？
+                """,
                 true
             )
 

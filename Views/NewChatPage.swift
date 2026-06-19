@@ -1138,6 +1138,32 @@ struct FilePickerView: View {
         return UserDefaults.standard.stringArray(forKey: legacyRecentFilesKey) ?? []
     }
 
+    private func migrateLegacyRecentFilesIfNeeded() {
+        guard recentFilesKey != legacyRecentFilesKey else { return }
+        let scopedFiles = UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
+        guard scopedFiles.isEmpty else { return }
+
+        let legacyFiles = UserDefaults.standard.stringArray(forKey: legacyRecentFilesKey) ?? []
+        var migratedFiles: [String] = []
+        for path in legacyFiles {
+            let normalizedPath = PathSecurity.normalizedPath(path)
+            guard PathSecurity.isWithinDirectory(normalizedPath, workingDirectory: workingDirectory),
+                  FileManager.default.fileExists(atPath: normalizedPath),
+                  !migratedFiles.contains(normalizedPath) else {
+                continue
+            }
+
+            migratedFiles.append(normalizedPath)
+            if migratedFiles.count >= maxRecentFiles {
+                break
+            }
+        }
+
+        if !migratedFiles.isEmpty {
+            UserDefaults.standard.set(migratedFiles, forKey: recentFilesKey)
+        }
+    }
+
     private var hasWorkingDirectory: Bool {
         workingDirectory != nil
     }
@@ -1230,6 +1256,8 @@ struct FilePickerView: View {
     }
     
     private func loadFiles() {
+        migrateLegacyRecentFilesIfNeeded()
+
         let requestID = UUID()
         activeLoadRequestID = requestID
         selectedFileIndex = nil

@@ -7,6 +7,15 @@ enum FileSystemToolSupport {
         case failure(ToolResult)
     }
 
+    struct RecursiveFileScan {
+        let files: [URL]
+        let skippedErrors: [String]
+
+        var isPartial: Bool {
+            !skippedErrors.isEmpty
+        }
+    }
+
     static let skippedDirectoryNames: Set<String> = [
         ".next",
         ".build",
@@ -67,6 +76,14 @@ enum FileSystemToolSupport {
         matching filePattern: String? = nil,
         limit: Int? = nil
     ) throws -> [URL] {
+        try recursiveFileScan(under: root, matching: filePattern, limit: limit).files
+    }
+
+    static func recursiveFileScan(
+        under root: URL,
+        matching filePattern: String? = nil,
+        limit: Int? = nil
+    ) throws -> RecursiveFileScan {
         let rootPath = root.path
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: rootPath, isDirectory: &isDirectory) else {
@@ -75,20 +92,20 @@ enum FileSystemToolSupport {
 
         if !isDirectory.boolValue {
             guard filePattern == nil || matchesGlob(root.lastPathComponent, pattern: filePattern!) else {
-                return []
+                return RecursiveFileScan(files: [], skippedErrors: [])
             }
-            return [root]
+            return RecursiveFileScan(files: [root], skippedErrors: [])
         }
 
-        var enumerationFailure: Error?
+        var skippedErrors: [String] = []
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
             options: [.skipsPackageDescendants],
             errorHandler: { url, error in
-                enumerationFailure = error
+                skippedErrors.append("\(url.path): \(error.localizedDescription)")
                 RioLogger.tool.warning("⚠️ 文件枚举失败: \(url.path, privacy: .public) - \(error.localizedDescription, privacy: .public)")
-                return false
+                return true
             }
         ) else {
             throw ToolError.executionFailed("Unable to enumerate path: \(rootPath)")
@@ -116,11 +133,23 @@ enum FileSystemToolSupport {
             }
         }
 
-        if let enumerationFailure {
-            throw ToolError.executionFailed("Unable to fully enumerate path: \(rootPath). \(enumerationFailure.localizedDescription)")
-        }
+        return RecursiveFileScan(
+            files: files.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending },
+            skippedErrors: skippedErrors
+        )
+    }
 
-        return files.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    static func partialScanWarning(for scan: RecursiveFileScan) -> String {
+        guard scan.isPartial else { return "" }
+
+        var warning = "\n\n⚠️ 部分目录无法读取，结果可能不完整："
+        for error in scan.skippedErrors.prefix(5) {
+            warning += "\n- \(error)"
+        }
+        if scan.skippedErrors.count > 5 {
+            warning += "\n... 还有 \(scan.skippedErrors.count - 5) 个路径读取失败"
+        }
+        return warning
     }
 
     static func matchesGlob(_ value: String, pattern: String) -> Bool {

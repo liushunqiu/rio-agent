@@ -71,7 +71,7 @@ class ApplyPatchTool: Tool {
             case .approved:
                 break
             case .trustedForSession:
-                break
+                return ToolResult.cancelled(toolCallId: name, reason: "批量补丁不支持信任本会话")
             case .denied:
                 return ToolResult.cancelled(toolCallId: name, reason: "User cancelled the patch")
             }

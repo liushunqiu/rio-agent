@@ -287,10 +287,18 @@ struct MultiAgentConfig: Codable {
             workers[index].applyConfigSet(fallbackWorkerConfig)
         }
 
+        let previousRouterConfigSetId = router.configSetId
+        let previousRouterModel = router.model.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedRouterConfig = resolveRouterConfigSet(from: configSets)
         router.configSetId = resolvedRouterConfig?.id
-        if let resolvedRouterConfig, router.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            router.model = resolvedRouterConfig.model
+        if let resolvedRouterConfig {
+            let modelMatchesAvailableConfig = configSets.contains {
+                $0.model.trimmingCharacters(in: .whitespacesAndNewlines) == previousRouterModel
+            }
+            if previousRouterModel.isEmpty
+                || (previousRouterConfigSetId != resolvedRouterConfig.id && !modelMatchesAvailableConfig) {
+                router.model = resolvedRouterConfig.model
+            }
         }
     }
 

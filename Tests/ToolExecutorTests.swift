@@ -46,6 +46,45 @@ final class ToolExecutorTests: XCTestCase {
     }
 
     @MainActor
+    func testCrossDirectoryReadFileCallsRunSequentiallyToAvoidStackedConfirmations() async throws {
+        let workDir = try makeTemporaryWorkingDirectory()
+        let outsideDir = try makeTemporaryWorkingDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: workDir)
+            try? FileManager.default.removeItem(at: outsideDir)
+        }
+
+        let registry = ToolRegistry(tools: [
+            DelayedReadOnlyTool(name: "read_file", delayNanoseconds: 40_000_000)
+        ])
+        registry.workingDirectory = workDir.path
+        let executor = ToolExecutor(toolRegistry: registry, memory: makeIsolatedAgentMemory(testCase: self))
+        var events: [String] = []
+
+        executor.onExecutionStateChanged = { state in
+            switch state {
+            case .executing(let toolCall):
+                events.append("executing:\(toolCall.id)")
+            case .completed(let toolCall, _):
+                events.append("completed:\(toolCall.id)")
+            default:
+                break
+            }
+        }
+
+        let outsidePath = outsideDir.appendingPathComponent("Outside.swift").path
+        let results = await executor.executeToolCalls([
+            ToolCall(id: "first", name: "read_file", arguments: ["path": AnyCodable(outsidePath)]),
+            ToolCall(id: "second", name: "read_file", arguments: ["path": AnyCodable(outsidePath)])
+        ])
+
+        let firstCompletedIndex = try XCTUnwrap(events.firstIndex(of: "completed:first"))
+        let secondExecutingIndex = try XCTUnwrap(events.firstIndex(of: "executing:second"))
+        XCTAssertEqual(results.map(\.toolCallId), ["first", "second"])
+        XCTAssertLessThan(firstCompletedIndex, secondExecutingIndex)
+    }
+
+    @MainActor
     func testCancellationErrorReturnsCancelledToolResult() async throws {
         let registry = ToolRegistry(tools: [
             CancellingTool(name: "execute_command")
@@ -101,6 +140,13 @@ final class ToolExecutorTests: XCTestCase {
         XCTAssertEqual(results[1].error, "任务已取消，后续工具未执行")
         XCTAssertEqual(followUpTool.executionCount, 0)
         XCTAssertEqual(completedToolIds, ["cancelled-command", "skipped-write"])
+    }
+
+    private func makeTemporaryWorkingDirectory() throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rio-agent-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        return tempDir
     }
 }
 

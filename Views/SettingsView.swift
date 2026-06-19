@@ -271,10 +271,12 @@ struct SettingsView: View {
         }
         .onAppear {
             reconcileSelectedConfigSets()
+            reconcileMultiAgentConfigSets()
             applyConfiguration()
         }
         .onChange(of: configSetManager.revision) {
             reconcileSelectedConfigSets()
+            reconcileMultiAgentConfigSets()
             applyConfiguration()
         }
         .onChange(of: planningConfigSetId) { _, _ in applyConfiguration() }
@@ -321,6 +323,11 @@ struct SettingsView: View {
                 readySets.contains(where: { $0.id == id }) ? id : nil
             } ?? fallbackId
         }
+    }
+
+    private func reconcileMultiAgentConfigSets() {
+        let readySets = configSetManager.configSets.filter(\.isConfigured)
+        multiAgentConfig.reconcileConfigSets(with: readySets)
     }
 
     private var currentAIConfigInfo: AIConfigInfo {
@@ -598,18 +605,25 @@ struct SettingsView: View {
                         .cornerRadius(Theme.radiusMD)
 
                     HStack(spacing: 10) {
-                        Button("刷新") {
+                        Button {
                             memory.refreshPersistedNotes()
                             memoryFilePath = memory.memoryMarkdownPath()
+                        } label: {
+                            Label("刷新", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.bordered)
                         .tint(Theme.accentSecondary)
+                        .help("重新读取 MEMORY.md")
 
-                        Button("清空 MEMORY.md", role: .destructive) {
+                        Button(role: .destructive) {
                             showingClearMemoryConfirmation = true
+                        } label: {
+                            Label("清空 MEMORY.md", systemImage: "trash")
                         }
                         .buttonStyle(.bordered)
                         .tint(Theme.statusError)
+                        .disabled(!canClearMemoryMarkdown)
+                        .help(clearMemoryMarkdownHelpText)
                     }
                 }
             }
@@ -677,6 +691,14 @@ struct SettingsView: View {
                 .padding(.horizontal, 20)
         }
     }
+
+    private var canClearMemoryMarkdown: Bool {
+        !memory.persistedNotes.isEmpty
+    }
+
+    private var clearMemoryMarkdownHelpText: String {
+        canClearMemoryMarkdown ? "清空所有持久化记忆条目" : "当前没有可清空的持久化记忆"
+    }
 }
 
 struct MemoryNoteCard: View {
@@ -699,6 +721,7 @@ struct MemoryNoteCard: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(Theme.statusError)
+                .help("删除记忆条目")
             }
 
             ForEach(note.body, id: \.self) { line in
