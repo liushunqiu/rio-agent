@@ -132,6 +132,10 @@ final class ContextPanelSourceTests: XCTestCase {
             "Pending confirmation should take priority over the current-stage row in the context panel."
         )
         XCTAssertTrue(
+            source.contains("} else if let exceptionalStage {\n                RuntimeFocusRow("),
+            "Failed or cancelled runtime states should surface as the primary focus row instead of duplicating a stale current-stage row above them."
+        )
+        XCTAssertTrue(
             source.contains("value: \"流程已暂停\""),
             "The runtime card should describe pending confirmation as a paused process instead of repeating the detailed decision title."
         )
@@ -150,6 +154,10 @@ final class ContextPanelSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("} else if pipeline?.overallStatus == .completed {\n                RuntimeFocusRow("),
             "Completed runs without a verifier state should still surface a dedicated delivery-review focus row in the context panel."
+        )
+        XCTAssertFalse(
+            source.contains("}\n\n            if let exceptionalStage {\n                RuntimeFocusRow("),
+            "Exceptional runtime states should not render as a second stacked focus row after another primary runtime summary."
         )
         XCTAssertTrue(
             source.contains("return \"回复“是”继续多 Agent；回复其他内容会改走单 Agent，也可以直接输入新任务，避免无谓等待。\""),

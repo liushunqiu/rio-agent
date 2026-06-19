@@ -142,12 +142,20 @@ final class ContentViewSourceTests: XCTestCase {
             "Completed healthy Multi-Agent runs should drop the extra top-bar summary instead of continuing to look busy after delivery."
         )
         XCTAssertTrue(
+            source.contains("if pipeline?.overallStatus == .completed {\n            return nil\n        }\n\n        if let pipeline,\n           let currentStage = pipeline.currentStage"),
+            "Completed pipeline runs should drop stale stage summaries instead of keeping synthesis or verification labels alive after delivery."
+        )
+        XCTAssertTrue(
             source.contains("if focusSummary == currentStage.type.title {\n                return nil\n            }"),
             "Top-bar execution summaries should not repeat the same current-stage label that already appears in the focus badge."
         )
         XCTAssertTrue(
             source.contains("if pipeline?.overallStatus == .running {\n                return nil\n            }"),
             "While a pipeline is actively running, the focus badge should disappear if it would only repeat the current stage."
+        )
+        XCTAssertTrue(
+            source.contains("if pipeline?.overallStatus == .completed {\n            return nil\n        }\n\n        if let currentStage = pipeline?.currentStage"),
+            "Completed pipeline runs should also drop the top-bar focus badge instead of showing a stale final stage title after the result is already delivered."
         )
         XCTAssertTrue(
             source.contains("if pendingUserDecision != nil {\n            return Theme.statusWarning\n        }\n        if let singleAgentVerification"),

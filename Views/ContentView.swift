@@ -1206,6 +1206,10 @@ struct TopBar: View {
             return "\(completed)/\(singleAgentPlan.steps.count) 步"
         }
 
+        if pipeline?.overallStatus == .completed {
+            return nil
+        }
+
         if let pipeline,
            let currentStage = pipeline.currentStage {
             if focusSummary == currentStage.type.title {
@@ -1313,6 +1317,10 @@ struct TopBar: View {
 
         if let cancelledStage = pipeline?.stages.last(where: { $0.status == .cancelled }) {
             return cancelledStage.type.title
+        }
+
+        if pipeline?.overallStatus == .completed {
+            return nil
         }
 
         if let currentStage = pipeline?.currentStage {

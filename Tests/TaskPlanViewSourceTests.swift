@@ -164,12 +164,16 @@ final class TaskPlanViewSourceTests: XCTestCase {
             "Collapsed task-plan mode should still keep a small sample of stable sub-tasks visible for context."
         )
         XCTAssertTrue(
-            source.contains("Text(showAllSubTasks ? \"已展开全部子任务\" : \"已折叠稳定项\")"),
+            source.contains("Text(showAllSubTasks ? \"全部子任务已展开\" : \"稳定项已收起\")"),
             "Task-plan cards should explain when some stable sub-tasks are intentionally collapsed."
         )
         XCTAssertTrue(
             source.contains("Button(collapseToggleTitle)"),
             "Users should be able to expand all sub-tasks on demand instead of being locked into the condensed view."
+        )
+        XCTAssertTrue(
+            source.contains("showAllSubTasks ? \"收起稳定项\" : \"展开全部\""),
+            "Collapsed task-plan mode should keep the expand action terse so the control reads like a utility action, not a sentence."
         )
         XCTAssertTrue(
             source.contains("showAllSubTasks = false"),
@@ -190,6 +194,18 @@ final class TaskPlanViewSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("Text(\"计划已收束\")"),
             "Completed transcript plans should expose an explicit closeout summary instead of leaving the full task grid open by default."
+        )
+        XCTAssertTrue(
+            source.contains("return \"当前还有 \\(needsAttentionCount) 个子任务待处理。计划明细已收起，展开后继续处理即可。\""),
+            "Completed plans with attention-needed work should summarize the remaining action directly instead of explaining the transcript layout at length."
+        )
+        XCTAssertTrue(
+            source.contains("return \"当前还有 \\(unverifiedCount) 个子任务待补证。计划明细已收起，展开后继续补证即可。\""),
+            "Completed plans with missing evidence should summarize the remaining verification work directly."
+        )
+        XCTAssertTrue(
+            source.contains("return \"任务已完成。主阅读流优先展示最终答复，复盘时再展开计划即可。\""),
+            "Healthy completed plans should keep the summary concise and review-oriented instead of reading like UI documentation."
         )
         XCTAssertTrue(
             source.contains("Button(\"展开计划\")"),

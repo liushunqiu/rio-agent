@@ -119,13 +119,13 @@ struct TaskPlanView: View {
 
     private var collapsedSubTaskSummary: String {
         if highlightedSubTasks.isEmpty {
-            return "其余 \(hiddenSubTaskCount) 项已折叠，展开后可查看全部执行明细。"
+            return "其余 \(hiddenSubTaskCount) 项已收起，按需展开查看完整明细。"
         }
-        return "其余 \(hiddenSubTaskCount) 项已折叠，当前优先展示执行中、需关注和待验证子任务。"
+        return "其余 \(hiddenSubTaskCount) 项已收起，当前优先保留执行中、需关注和待验证子任务。"
     }
 
     private var collapseToggleTitle: String {
-        showAllSubTasks ? "收起稳定项" : "展开全部子任务"
+        showAllSubTasks ? "收起稳定项" : "展开全部"
     }
 
     private var shouldOfferCompletedSummary: Bool {
@@ -138,12 +138,12 @@ struct TaskPlanView: View {
 
     private var completedSummaryText: String {
         if needsAttentionCount > 0 {
-            return "任务已完成汇总，但仍有 \(needsAttentionCount) 个子任务需要继续复核。主阅读流已折叠计划明细，按需展开即可继续处理。"
+            return "当前还有 \(needsAttentionCount) 个子任务待处理。计划明细已收起，展开后继续处理即可。"
         }
         if unverifiedCount > 0 {
-            return "任务已完成汇总，但仍有 \(unverifiedCount) 个子任务缺少验证证据。主阅读流已折叠计划明细，按需展开即可继续补证。"
+            return "当前还有 \(unverifiedCount) 个子任务待补证。计划明细已收起，展开后继续补证即可。"
         }
-        return "任务已完成，主阅读流优先展示最终答复。完整计划已折叠，需要复盘时再展开。"
+        return "任务已完成。主阅读流优先展示最终答复，复盘时再展开计划即可。"
     }
 
     private var shouldShowRunningMetric: Bool {
@@ -350,7 +350,7 @@ struct TaskPlanView: View {
                         if hiddenSubTaskCount > 0 {
                             HStack(alignment: .top, spacing: 10) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(showAllSubTasks ? "已展开全部子任务" : "已折叠稳定项")
+                                    Text(showAllSubTasks ? "全部子任务已展开" : "稳定项已收起")
                                         .font(.system(size: 10, weight: .semibold))
                                         .foregroundColor(Theme.textPrimary)
 

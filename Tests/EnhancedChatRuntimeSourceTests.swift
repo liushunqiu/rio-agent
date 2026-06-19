@@ -80,16 +80,16 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
             "The transcript runtime card should provide a concrete follow-up when the answer is still unverified."
         )
         XCTAssertTrue(
-            source.contains("return \"先复核关键结论、工具输出和文件变更；确认无误后，直接开始下一项任务。\""),
-            "Verified transcript guidance should stay action-oriented and avoid repeating the verified state in full sentences."
+            source.contains("return \"复核完成后，直接开始下一项任务。\""),
+            "Verified transcript next actions should describe the closeout move and leave the concrete review checklist to the focus summary row."
         )
         XCTAssertTrue(
-            source.contains("return \"执行已经结束，先核对结果、文件改动和验证状态。\""),
-            "Completed transcript focus text should summarize what to review before moving on."
+            source.contains("return \"优先核对结果、文件改动和验证状态。\""),
+            "Completed transcript focus text should summarize what to review without repeating the closeout action."
         )
         XCTAssertTrue(
-            source.contains("return \"确认本次结果无误后，直接开始下一项任务。\""),
-            "Completed transcript next actions should stop repeating the same review checklist and instead describe the closeout action."
+            source.contains("return \"复核无误后，直接开始下一项任务。\""),
+            "Completed transcript next actions should remain a concise closeout action once the review target already appears in the focus row."
         )
         XCTAssertTrue(
             source.contains("回复“是”继续多 Agent；回复其他内容改走单 Agent，也可以直接输入新任务"),

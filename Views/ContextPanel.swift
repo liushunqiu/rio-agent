@@ -721,6 +721,14 @@ struct RuntimeFocusCard: View {
                     detail: pendingRuntimeDetail(for: pendingUserDecision),
                     tone: Theme.statusWarning
                 )
+            } else if let exceptionalStage {
+                RuntimeFocusRow(
+                    icon: exceptionalStage.status == .failed ? "exclamationmark.triangle.fill" : "slash.circle.fill",
+                    title: exceptionalStage.status == .failed ? "异常阶段" : "已停止阶段",
+                    value: exceptionalStage.type.title,
+                    detail: stageSummary(for: exceptionalStage),
+                    tone: stageTone(for: exceptionalStage.status)
+                )
             } else if let singleAgentVerification {
                 RuntimeFocusRow(
                     icon: verificationIcon(for: singleAgentVerification.status),
@@ -744,16 +752,6 @@ struct RuntimeFocusCard: View {
                     value: currentStage.type.title,
                     detail: stageSummary(for: currentStage),
                     tone: stageTone(for: currentStage.status)
-                )
-            }
-
-            if let exceptionalStage {
-                RuntimeFocusRow(
-                    icon: exceptionalStage.status == .failed ? "exclamationmark.triangle.fill" : "slash.circle.fill",
-                    title: exceptionalStage.status == .failed ? "异常阶段" : "已停止阶段",
-                    value: exceptionalStage.type.title,
-                    detail: stageSummary(for: exceptionalStage),
-                    tone: stageTone(for: exceptionalStage.status)
                 )
             }
 

@@ -681,7 +681,7 @@ private struct TranscriptRuntimeCard: View {
             return stageSummary(for: currentStage)
         }
         if pipeline?.overallStatus == .completed {
-            return "执行已经结束，先核对结果、文件改动和验证状态。"
+            return "优先核对结果、文件改动和验证状态。"
         }
         return nil
     }
@@ -702,7 +702,7 @@ private struct TranscriptRuntimeCard: View {
             case .unverified:
                 return "当前缺少足够的完成证据，优先补充读回、测试或命令验证。"
             case .verified:
-                return "先复核关键结论、工具输出和文件变更；确认无误后，直接开始下一项任务。"
+                return "复核完成后，直接开始下一项任务。"
             }
         }
         if let exceptionalStage {
@@ -724,7 +724,7 @@ private struct TranscriptRuntimeCard: View {
         }
 
         if pipeline?.overallStatus == .completed {
-            return "确认本次结果无误后，直接开始下一项任务。"
+            return "复核无误后，直接开始下一项任务。"
         }
 
         return "当前没有活动流程，提交新任务即可开始。"
