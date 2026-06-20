@@ -24,7 +24,7 @@ final class PendingInputHintSourceTests: XCTestCase {
             "Inline pending-decision hints should disappear once confirmation mode is active and the dedicated placeholder/confirmation block already explains the response options."
         )
         XCTAssertTrue(
-            source.contains("提交回复或新任务 (Cmd+Return)"),
+            source.contains("提交回复或新任务 (回车)"),
             "Send button help should clarify pending-confirmation submissions."
         )
     }

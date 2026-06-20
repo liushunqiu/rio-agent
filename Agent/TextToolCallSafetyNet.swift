@@ -18,6 +18,20 @@ extension AgentEngine {
         "list_directory", "search_files", "find_files", "apply_patch"
     ]
 
+    /// Override Router's skip decision when the model attempts to use tools.
+    /// This is called by TextToolCallSafetyNet when it detects tool call intent.
+    func overrideRouterSkipIfNeeded() {
+        if case .skip = currentRouterDecision {
+            RioLogger.agent.warning("⚠️ 检测到工具调用意图，覆盖 Router 的 skip 决策，启用工具")
+            currentRouterDecision = .routeToTarget(
+                target: "process",
+                params: [:],
+                confidence: 0.7,
+                reasoning: "模型尝试调用工具，覆盖原 skip 决策"
+            )
+        }
+    }
+
     /// Detect if the model output tool calls as text instead of using
     /// the structured function-calling API.
     ///
@@ -138,6 +152,12 @@ extension AgentEngine {
         }
 
         textToolCallRedirectCount += 1
+
+        // CRITICAL FIX: If the model is attempting to use tools but they were disabled
+        // (e.g., due to Router skip decision), override that decision now.
+        // The fact that the model is trying to call tools proves that Router was wrong
+        // and tools ARE needed for this task.
+        overrideRouterSkipIfNeeded()
 
         // In the streaming path the invalid assistant text may already be in
         // `messages`. Keep it for model context but hide it from the transcript

@@ -310,7 +310,7 @@ struct EnhancedToolCallCard: View {
                         Image(systemName: completedIcon)
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(completedColor)
-                            .transition(.scale.combined(with: .opacity))
+                            .id("\(toolCall.id)-\(completedIcon)") // 稳定 ID，避免重复动画
                     }
                     
                     // Expand indicator

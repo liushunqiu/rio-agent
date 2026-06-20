@@ -104,7 +104,7 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "The landing-page file-picker help should avoid implying that workspace selection is a mandatory first step."
         )
         XCTAssertTrue(
-            newChatSource.contains("提交回复或新任务 (Cmd+Return)"),
+            newChatSource.contains("提交回复或新任务 (回车)"),
             "The send button help should clarify pending-confirmation submissions."
         )
         XCTAssertTrue(
@@ -204,7 +204,7 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             "Pending confirmation should only keep the workspace summary visible when it carries real context instead of repeating an empty waiting state."
         )
         XCTAssertTrue(
-            newChatSource.contains("private var sendHint: String? {\n        guard pendingUserDecision == nil else { return nil }\n        if !canAcceptInput { return \"当前任务处理中\" }\n        return canSend ? \"Cmd+Return 发送\" : \"先写清楚任务\"\n    }"),
+            newChatSource.contains("private var sendHint: String? {\n        guard pendingUserDecision == nil else { return nil }\n        if !canAcceptInput { return \"当前任务处理中\" }\n        return canSend ? \"回车发送\" : \"先写清楚任务\"\n    }"),
             "Pending confirmation should drop the footer send hint once the page already has a dedicated confirmation title, explanation and primary action."
         )
         XCTAssertTrue(

@@ -117,7 +117,7 @@ class AgentEngine: ObservableObject {
     private var multiAgentVerificationSubsteps: [UUID: UUID] = [:]
 
     /// 当前 Router 决策（用于决定是否启用工具调用）
-    private var currentRouterDecision: RoutingDecision?
+    internal var currentRouterDecision: RoutingDecision?
     @Published var workingDirectory: String? {
         didSet {
             ToolRegistry.shared.workingDirectory = workingDirectory
@@ -1333,20 +1333,22 @@ class AgentEngine: ObservableObject {
         var thinkingStartTime: Date?
         var hasThinkingContent = false
 
-        // 根据 Router 决策决定是否启用工具
-        let enableTools: Bool
-        if case .skip = currentRouterDecision {
-            enableTools = false
-            RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
-        } else {
-            enableTools = true
-            RioLogger.service.info("🔀 Router 决策为 process（或无 Router），启用工具调用")
-        }
-
         RioLogger.service.debug("📝 系统提示词长度: \(self.composedSingleAgentSystemPrompt.count) 字符，前200字: \(String(self.composedSingleAgentSystemPrompt.prefix(200)), privacy: .public)")
         RioLogger.service.debug("🔧 可用工具数: \(self.toolRegistry.getToolDefinitions().count)")
 
         try await ConversationLoop.run(engine: self) { contextMessages in
+            // 根据 Router 决策决定是否启用工具
+            // IMPORTANT: This is evaluated on EACH iteration, not just once at the start,
+            // so if TextToolCallSafetyNet overrides the Router decision mid-loop, tools will be enabled.
+            let enableTools: Bool
+            if case .skip = self.currentRouterDecision {
+                enableTools = false
+                RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
+            } else {
+                enableTools = true
+                RioLogger.service.info("🔀 Router 决策为 process（或无 Router），启用工具调用")
+            }
+
             // Pre-call setup: add streaming placeholder message
             let streamingMessage = Message.streamingAssistant(source: self.executionMessageSource)
             self.messages.append(streamingMessage)
@@ -1465,21 +1467,23 @@ class AgentEngine: ObservableObject {
     private func processConversationLoop(aiService: AIService) async throws {
         let model = configuration.executionModel
 
-        // 根据 Router 决策决定是否启用工具
-        let enableTools: Bool
-        if case .skip = currentRouterDecision {
-            enableTools = false
-            RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
-        } else {
-            enableTools = true
-            RioLogger.service.info("🔀 Router 决策为 process（或无 Router），启用工具调用")
-        }
-
         RioLogger.service.debug("📝 系统提示词长度: \(self.composedSingleAgentSystemPrompt.count) 字符，前200字: \(String(self.composedSingleAgentSystemPrompt.prefix(200)), privacy: .public)")
         RioLogger.service.debug("🔧 可用工具数: \(self.toolRegistry.getToolDefinitions().count)")
 
         try await ConversationLoop.run(engine: self) { contextMessages in
-            try await aiService.sendMessage(
+            // 根据 Router 决策决定是否启用工具
+            // IMPORTANT: This is evaluated on EACH iteration, not just once at the start,
+            // so if TextToolCallSafetyNet overrides the Router decision mid-loop, tools will be enabled.
+            let enableTools: Bool
+            if case .skip = self.currentRouterDecision {
+                enableTools = false
+                RioLogger.service.info("🔀 Router 决策为 skip，禁用工具调用")
+            } else {
+                enableTools = true
+                RioLogger.service.info("🔀 Router 决策为 process（或无 Router），启用工具调用")
+            }
+
+            return try await aiService.sendMessage(
                 contextMessages,
                 tools: enableTools ? self.toolRegistry.getToolDefinitions() : [],
                 model: model,
@@ -2721,46 +2725,98 @@ extension Notification.Name {
 // MARK: - Stream Buffer (coalesces rapid streaming chunks into fewer UI updates)
 
 @MainActor
+/// 流式输出缓冲器 - 优化 SwiftUI 渲染性能
+///
+/// 核心优化：
+/// 1. 主动定时器 - 不再被动检查，而是主动定时刷新（60fps = 16ms）
+/// 2. 智能批量 - 按时间（16ms）或字符数（50-100字符）批量刷新
+/// 3. 减少 UI 重绘 - 从每个字符触发重绘降低到 60fps 批量更新
 class StreamBuffer {
     private var contentAccumulator = ""
     private var thinkingAccumulator = ""
     private var lastFlush = Date()
     private let interval: TimeInterval
     private let maxCharsBeforeFlush: Int
+    private var timerTask: Task<Void, Never>?
+    private var updateHandler: (@MainActor @Sendable (String, String) async -> Void)?
+    private var isStopped = false
 
-    init(interval: TimeInterval = 0.08, maxCharsBeforeFlush: Int = 500) {
+    init(interval: TimeInterval = 0.016, maxCharsBeforeFlush: Int = 100) {
+        // 默认 16ms（60fps）而不是 80ms（12.5fps），更丝滑
         self.interval = interval
         self.maxCharsBeforeFlush = maxCharsBeforeFlush
     }
 
-    func appendContent(_ chunk: String) { contentAccumulator += chunk }
-    func appendThinking(_ chunk: String) { thinkingAccumulator += chunk }
+    deinit {
+        timerTask?.cancel()
+    }
+
+    func appendContent(_ chunk: String) {
+        guard !isStopped else { return }
+        contentAccumulator += chunk
+        ensureTimerRunning()
+    }
+
+    func appendThinking(_ chunk: String) {
+        guard !isStopped else { return }
+        thinkingAccumulator += chunk
+        ensureTimerRunning()
+    }
 
     private var shouldFlushNow: Bool {
-        let now = Date()
-        let elapsed = now.timeIntervalSince(lastFlush)
-
-        // 达到最大字符数限制时立即刷新，不管时间间隔
+        // 达到最大字符数限制时立即刷新
         if contentAccumulator.count >= maxCharsBeforeFlush { return true }
         if thinkingAccumulator.count >= maxCharsBeforeFlush { return true }
 
         // 达到时间间隔后刷新
+        let elapsed = Date().timeIntervalSince(lastFlush)
         return elapsed >= interval
     }
 
-    func flushIfNeeded(update: @MainActor @Sendable (_ content: String, _ thinking: String) async -> Void) async {
+    private func ensureTimerRunning() {
+        guard timerTask == nil || timerTask?.isCancelled == true else { return }
+        guard let handler = updateHandler else { return }
+
+        timerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, !self.isStopped else { break }
+
+                // 等待刷新间隔
+                try? await Task.sleep(nanoseconds: UInt64(self.interval * 1_000_000_000))
+                guard !Task.isCancelled else { break }
+
+                // 检查是否有内容需要刷新
+                if self.shouldFlushNow {
+                    await self.flushNow(update: handler)
+                }
+            }
+        }
+    }
+
+    func flushIfNeeded(update: @escaping @MainActor @Sendable (_ content: String, _ thinking: String) async -> Void) async {
+        // 保存 handler 供定时器使用
+        if updateHandler == nil {
+            updateHandler = update
+        }
+
+        // 立即刷新（达到最大字符数限制时）
         guard shouldFlushNow,
               !contentAccumulator.isEmpty || !thinkingAccumulator.isEmpty else { return }
+        await flushNow(update: update)
+    }
+
+    private func flushNow(update: @escaping @MainActor @Sendable (_ content: String, _ thinking: String) async -> Void) async {
+        guard !contentAccumulator.isEmpty || !thinkingAccumulator.isEmpty else { return }
         let c = contentAccumulator; contentAccumulator = ""
         let t = thinkingAccumulator; thinkingAccumulator = ""
         lastFlush = Date()
         await update(c, t)
     }
 
-    func flush(update: @MainActor @Sendable (_ content: String, _ thinking: String) async -> Void) async {
-        guard !contentAccumulator.isEmpty || !thinkingAccumulator.isEmpty else { return }
-        let c = contentAccumulator; contentAccumulator = ""
-        let t = thinkingAccumulator; thinkingAccumulator = ""
-        await update(c, t)
+    func flush(update: @escaping @MainActor @Sendable (_ content: String, _ thinking: String) async -> Void) async {
+        isStopped = true
+        timerTask?.cancel()
+        timerTask = nil
+        await flushNow(update: update)
     }
 }

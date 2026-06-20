@@ -163,6 +163,14 @@ struct NewChatPage: View {
                         .font(.system(size: 14))
                         .lineLimit(3...6)
                         .focused($isInputFocused)
+                        .onKeyPress(.return, phases: .down) { keyPress in
+                            // 回车发送；Shift+回车保留为换行
+                            if keyPress.modifiers.contains(.shift) {
+                                return .ignored
+                            }
+                            submitIfPossible()
+                            return .handled
+                        }
                         .foregroundColor(Theme.textPrimary)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 16)
@@ -575,7 +583,7 @@ struct NewChatPage: View {
     private var sendHint: String? {
         guard pendingUserDecision == nil else { return nil }
         if !canAcceptInput { return "当前任务处理中" }
-        return canSend ? "Cmd+Return 发送" : "先写清楚任务"
+        return canSend ? "回车发送" : "先写清楚任务"
     }
 
     private var inputSummaryValue: String {
@@ -652,12 +660,12 @@ struct NewChatPage: View {
 
     private var sendButtonHelp: String {
         guard pendingUserDecision == nil else {
-            return "提交回复或新任务 (Cmd+Return)"
+            return "提交回复或新任务 (回车)"
         }
         if !canAcceptInput {
             return "当前任务执行中，完成或停止后可继续发送"
         }
-        return "发送 (Cmd+Return)"
+        return "发送 (回车，Shift+回车换行)"
     }
 
     private var filePickerHelpText: String {

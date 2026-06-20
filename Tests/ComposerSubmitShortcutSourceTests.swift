@@ -1,7 +1,7 @@
 import XCTest
 
 final class ComposerSubmitShortcutSourceTests: XCTestCase {
-    func testMultilineComposersOnlySubmitThroughExplicitCommandReturnShortcut() throws {
+    func testMultilineComposersSubmitOnReturnAndReserveShiftReturnForNewline() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -23,22 +23,33 @@ final class ComposerSubmitShortcutSourceTests: XCTestCase {
                 }
         )
 
+        // Plain Return submits through an explicit onKeyPress handler. We deliberately avoid
+        // .onSubmit so the handler can let Shift+Return fall through (.ignored) as a newline,
+        // matching the mainstream chat convention (Return sends, Shift+Return composes).
+        XCTAssertTrue(
+            inputAreaSource.contains(".onKeyPress(.return"),
+            "The main composer should submit on plain Return through an explicit onKeyPress handler."
+        )
         XCTAssertFalse(
             inputAreaSource.contains(".onSubmit"),
-            "The main multiline composer should not submit on plain Return; the UI advertises Cmd+Return so plain Return must remain available for composing longer tasks."
+            "The main composer should not rely on .onSubmit; Return is handled via onKeyPress so Shift+Return can stay a newline."
         )
         XCTAssertTrue(
-            inputAreaSource.contains(".keyboardShortcut(.return, modifiers: .command)"),
-            "The main composer should keep the explicit Cmd+Return submit shortcut on the send button."
+            inputAreaSource.contains(".shift"),
+            "The main composer must reserve Shift+Return for inserting a newline."
         )
 
+        XCTAssertTrue(
+            newChatInputCardSource.contains(".onKeyPress(.return"),
+            "The landing-page composer should submit on plain Return through an explicit onKeyPress handler."
+        )
         XCTAssertFalse(
             newChatInputCardSource.contains(".onSubmit"),
-            "The landing-page multiline composer should follow the same explicit Cmd+Return submit behavior."
+            "The landing-page composer should not rely on .onSubmit; Return is handled via onKeyPress."
         )
         XCTAssertTrue(
-            newChatSource.contains(".keyboardShortcut(.return, modifiers: .command)"),
-            "The landing-page send button should keep Cmd+Return as the explicit keyboard submit path."
+            newChatInputCardSource.contains(".shift"),
+            "The landing-page composer must reserve Shift+Return for inserting a newline."
         )
     }
 }

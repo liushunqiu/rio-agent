@@ -122,6 +122,57 @@ struct EnhancedMessageBubble: View, Equatable {
             || lower.contains("create") || lower.contains("patch")
             || lower.contains("delete")
     }
+
+    // MARK: - Equatable
+
+    /// 优化性能：只有消息内容真正变化时才重绘，避免工具执行状态变化导致整个消息气泡重绘
+    static func == (lhs: EnhancedMessageBubble, rhs: EnhancedMessageBubble) -> Bool {
+        // 1. 消息 ID 必须相同（最重要）
+        guard lhs.message.id == rhs.message.id else { return false }
+
+        // 2. 消息内容必须相同
+        guard lhs.message.content == rhs.message.content else { return false }
+        guard lhs.message.thinkingContent == rhs.message.thinkingContent else { return false }
+
+        // 3. 工具调用必须相同
+        guard lhs.message.toolCalls == rhs.message.toolCalls else { return false }
+
+        // 4. 工具结果必须相同（只比较相关的工具结果）
+        let lhsRelevantResults = lhs.relevantToolResults()
+        let rhsRelevantResults = rhs.relevantToolResults()
+        guard lhsRelevantResults == rhsRelevantResults else { return false }
+
+        // 5. 当前执行的工具必须相同
+        let lhsCurrentTool = lhs.currentExecutingTool()
+        let rhsCurrentTool = rhs.currentExecutingTool()
+        guard lhsCurrentTool == rhsCurrentTool else { return false }
+
+        // 其他属性（isStreaming、timestamp等）不影响核心内容，可以忽略以减少重绘
+        return true
+    }
+
+    /// 获取当前消息相关的工具结果
+    private func relevantToolResults() -> [String: ToolResult] {
+        guard let toolCalls = message.toolCalls else { return [:] }
+        var results: [String: ToolResult] = [:]
+        for toolCall in toolCalls {
+            if let result = toolResultsById[toolCall.id] {
+                results[toolCall.id] = result
+            }
+        }
+        return results
+    }
+
+    /// 获取当前正在执行的工具 ID
+    private func currentExecutingTool() -> String? {
+        guard isToolExecuting,
+              let currentToolCallId,
+              let toolCalls = message.toolCalls,
+              toolCalls.contains(where: { $0.id == currentToolCallId }) else {
+            return nil
+        }
+        return currentToolCallId
+    }
 }
 
 struct MessageSourceHeader: View {
