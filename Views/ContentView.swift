@@ -707,6 +707,52 @@ struct SidebarView: View {
 
 // MARK: - Main Content
 
+private struct LazyNewChatPageWrapper: View {
+    @Binding var inputText: String
+    let onSubmit: (String) -> Bool
+    @Binding var workingDirectory: String?
+    let modelName: String
+    let providerName: String
+    let canAcceptInput: Bool
+    let pendingUserDecision: AgentEngine.PendingUserDecision?
+
+    @State private var isLoaded = false
+
+    var body: some View {
+        Group {
+            if isLoaded {
+                NewChatPage(
+                    inputText: $inputText,
+                    onSubmit: onSubmit,
+                    workingDirectory: $workingDirectory,
+                    modelName: modelName,
+                    providerName: providerName,
+                    canAcceptInput: canAcceptInput,
+                    pendingUserDecision: pendingUserDecision
+                )
+            } else {
+                // 占位符，显示加载中
+                VStack {
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("正在加载...")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                        .padding(.top, 12)
+                    Spacer()
+                }
+            }
+        }
+        .onAppear {
+            // 延迟 100ms 加载，让侧边栏先渲染
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isLoaded = true
+            }
+        }
+    }
+}
+
 private struct MainContentView: View {
     let agentEngine: AgentEngine
     @ObservedObject var runtimeState: MainContentRuntimeState
@@ -803,7 +849,7 @@ private struct MainContentView: View {
                 )
                 .transition(.opacity)
             } else {
-                NewChatPage(
+                LazyNewChatPageWrapper(
                     inputText: $inputText,
                     onSubmit: { text in
                         onNewChatSubmit?(text) ?? false
@@ -814,10 +860,6 @@ private struct MainContentView: View {
                     canAcceptInput: snapshot.canAcceptInput,
                     pendingUserDecision: snapshot.pendingUserDecision
                 )
-                .id("newchat-\(snapshot.primaryModelName)-\(snapshot.canAcceptInput)")
-                .transaction { transaction in
-                    transaction.animation = nil
-                }
                 .transition(.opacity)
             }
 
