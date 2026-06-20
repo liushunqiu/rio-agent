@@ -599,9 +599,11 @@ struct SidebarView: View {
                             pendingDeleteItem = item
                         }
                     )
+                    .clipped()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
 
             // Footer
             VStack(spacing: 0) {
@@ -812,6 +814,10 @@ private struct MainContentView: View {
                     canAcceptInput: snapshot.canAcceptInput,
                     pendingUserDecision: snapshot.pendingUserDecision
                 )
+                .id("newchat-\(snapshot.primaryModelName)-\(snapshot.canAcceptInput)")
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
                 .transition(.opacity)
             }
 

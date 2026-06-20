@@ -111,13 +111,35 @@ struct SidebarConversationListView: NSViewRepresentable {
 
             let incomingIDs = parent.items.map(\.id)
             let idsChanged = itemIDs != incomingIDs
+
+            // 优化：如果正在滚动，延迟更新
             if isLiveScrolling {
                 deferredParent = parent
                 self.parent = parent
                 return
             }
 
+            // 优化：检查是否有实质性变化
+            let selectedChanged = selectedID != parent.selectedID
+            let lockStateChanged = isNavigationLocked != parent.isNavigationLocked
+
+            // 如果没有变化，直接返回
+            guard idsChanged || selectedChanged || lockStateChanged || itemsDidChange(parent.items) else {
+                self.parent = parent
+                return
+            }
+
             apply(parent: parent, incomingIDs: incomingIDs, idsChanged: idsChanged)
+        }
+
+        private func itemsDidChange(_ newItems: [ConversationSidebarItem]) -> Bool {
+            guard items.count == newItems.count else { return true }
+            for (index, item) in items.enumerated() {
+                if newItems[index] != item {
+                    return true
+                }
+            }
+            return false
         }
 
         private func apply(parent: SidebarConversationListView, incomingIDs: [UUID], idsChanged: Bool) {
