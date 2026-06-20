@@ -1,8 +1,9 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Enhanced Message Bubble
 
-struct EnhancedMessageBubble: View {
+struct EnhancedMessageBubble: View, Equatable {
     let message: Message
     let isToolExecuting: Bool
     let currentToolCallId: String?
@@ -225,45 +226,13 @@ struct EnhancedChatView: View {
     let currentTaskPlan: TaskPlan?
     let pendingUserDecision: AgentEngine.PendingUserDecision?
 
-    /// 自动滚动跟随开关
-    @State private var autoScrollEnabled = true
-
-    /// 距离底部的偏移（越小越接近底部）
-    @State private var bottomOffset: CGFloat = 0
-    @State private var visibleViewportHeight: CGFloat = 0
-
-    /// 工具结果索引
-    private var toolResultsById: [String: ToolResult] {
-        var index: [String: ToolResult] = [:]
-        for result in messages.flatMap({ $0.toolResults ?? [] }) {
-            index[result.toolCallId] = result
-        }
-        return index
-    }
-
-    private var visibleMessages: [Message] {
-        messages.filter(\.isVisibleInTranscript)
-    }
-
-    private var transcriptEntries: [TranscriptEntry] {
-        TranscriptEntry.make(from: visibleMessages)
-    }
-
-    /// 流式内容变化信号
-    private var streamingSignal: Int {
-        (visibleMessages.last?.content.count ?? 0) + (visibleMessages.last?.thinkingContent?.count ?? 0)
-    }
-
-    private var hasVisibleFinalAnswer: Bool {
-        visibleMessages.contains(where: \.isFinalAnswer)
-    }
-
-    /// 是否接近底部（距离底部 < 120pt 视为接近）
-    private var isNearBottom: Bool {
-        bottomOffset < 120
-    }
+    // 滚动状态独立到 @Observable 模型：每帧滚动的 bottomOffset 更新只会让浮动按钮重绘，
+    // 不会让整个消息列表 body 失效，避免 60fps 下重复计算 transcriptEntries/toolResultsById。
+    @State private var scrollModel = ChatScrollModel()
 
     var body: some View {
+        let snapshot = ChatTranscriptSnapshot(messages: messages)
+
         ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
@@ -279,34 +248,18 @@ struct EnhancedChatView: View {
                             .padding(.bottom, 10)
                         }
 
-                        ForEach(transcriptEntries) { entry in
-                            switch entry {
-                            case .message(let message):
-                                EnhancedMessageBubble(
-                                    message: message,
-                                    isToolExecuting: isProcessing && currentToolCallId != nil,
-                                    currentToolCallId: currentToolCallId,
-                                    toolResultsById: toolResultsById
-                                )
-                                .id(message.id)
-
-                            case .activity(let messages, let isSupportingDetail):
-                                AgentActivityGroupView(
-                                    messages: messages,
-                                    isProcessing: isProcessing,
-                                    currentToolCallId: currentToolCallId,
-                                    toolResultsById: toolResultsById,
-                                    isSupportingDetail: isSupportingDetail
-                                )
-                                .id(messages.first?.id)
-                            }
-                        }
+                        TranscriptEntriesView(
+                            entries: snapshot.entries,
+                            isProcessing: isProcessing,
+                            currentToolCallId: currentToolCallId,
+                            toolResultsById: snapshot.toolResultsById
+                        )
 
                         // TaskPlan 面板（Multi-Agent 模式）
                         if let taskPlan = currentTaskPlan {
                             TaskPlanView(
                                 plan: taskPlan,
-                                prefersCondensedCompletedState: hasVisibleFinalAnswer
+                                prefersCondensedCompletedState: snapshot.hasVisibleFinalAnswer
                             )
                                 .padding(.horizontal, 28)
                                 .padding(.vertical, 8)
@@ -319,52 +272,29 @@ struct EnhancedChatView: View {
                     }
                     .padding(.top, 20)
                     .padding(.bottom, 28)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: BottomOffsetPreferenceKey.self,
-                                value: geo.frame(in: .named("scroll")).maxY
-                            )
-                        }
-                    )
                 }
-                .coordinateSpace(name: "scroll")
                 .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: ScrollViewportHeightPreferenceKey.self,
-                            value: geo.size.height
-                        )
-                    }
-                )
-                .onPreferenceChange(BottomOffsetPreferenceKey.self) { contentBottom in
-                    let newOffset = Self.distanceFromBottom(
-                        contentBottom: contentBottom,
-                        viewportHeight: visibleViewportHeight
+                    ChatScrollObservationView(
+                        model: scrollModel,
+                        isProcessing: isProcessing,
+                        onMetricsChanged: updateScrollMetrics
                     )
-                    bottomOffset = newOffset
-                    if autoScrollEnabled && newOffset > 140 && !isProcessing {
-                        autoScrollEnabled = false
-                    }
-                }
-                .onPreferenceChange(ScrollViewportHeightPreferenceKey.self) { height in
-                    visibleViewportHeight = height
-                }
+                )
                 // 新消息到达时滚动
                 .onChange(of: messages.count) { oldCount, newCount in
-                    if newCount > oldCount && autoScrollEnabled {
+                    if newCount > oldCount && scrollModel.autoScrollEnabled {
                         scrollToBottom(proxy: proxy, animated: true)
                     }
                 }
                 // 流式内容更新时滚动
-                .onChange(of: streamingSignal) { _, _ in
-                    if autoScrollEnabled && (visibleMessages.last?.isStreaming == true || isProcessing) {
+                .onChange(of: snapshot.streamingSignal) { _, _ in
+                    if scrollModel.autoScrollEnabled && (snapshot.lastVisibleMessage?.isStreaming == true || isProcessing) {
                         scrollToBottom(proxy: proxy, animated: false)
                     }
                 }
                 // 工具调用变化时滚动
                 .onChange(of: currentToolCallId) { _, _ in
-                    if autoScrollEnabled && isProcessing {
+                    if scrollModel.autoScrollEnabled && isProcessing {
                         scrollToBottom(proxy: proxy, animated: true)
                     }
                 }
@@ -375,27 +305,15 @@ struct EnhancedChatView: View {
                     }
                 }
                 
-                // 浮动控制按钮
-                if !visibleMessages.isEmpty {
-                    VStack(spacing: 10) {
-                        // 自动跟随开关
-                        FloatingButton(
-                            icon: autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle",
-                            label: autoScrollEnabled ? "自动跟随" : (isNearBottom ? "恢复跟随" : "回到底部"),
-                            isActive: autoScrollEnabled,
-                            badge: !isNearBottom ? true : nil
-                        ) {
-                            if autoScrollEnabled {
-                                autoScrollEnabled = false
-                            } else {
-                                autoScrollEnabled = true
-                                scrollToBottom(proxy: proxy, animated: true)
-                            }
-                        }
+                // 浮动控制按钮：独立子视图，读取 scrollModel 的每帧状态，
+                // 因此滚动时只有这个轻量子视图会重绘，消息列表保持稳定。
+                ChatFloatingControls(
+                    model: scrollModel,
+                    hasMessages: snapshot.hasVisibleMessages,
+                    scrollToBottom: { animated in
+                        scrollToBottom(proxy: proxy, animated: animated)
                     }
-                    .padding(.trailing, 24)
-                    .padding(.bottom, 24)
-                }
+                )
             }
         }
     }
@@ -418,6 +336,165 @@ struct EnhancedChatView: View {
 
     static func distanceFromBottom(contentBottom: CGFloat, viewportHeight: CGFloat) -> CGFloat {
         max(0, contentBottom - viewportHeight)
+    }
+
+    private func updateScrollMetrics(contentBottom: CGFloat, viewportHeight: CGFloat) {
+        scrollModel.viewportHeight = viewportHeight
+        let newOffset = Self.distanceFromBottom(
+                        contentBottom: contentBottom,
+                        viewportHeight: scrollModel.viewportHeight
+                    )
+        scrollModel.bottomOffset = newOffset
+        if scrollModel.autoScrollEnabled && newOffset > 140 && !isProcessing {
+            scrollModel.autoScrollEnabled = false
+        }
+    }
+}
+
+private struct ChatTranscriptSnapshot {
+    let visibleMessages: [Message]
+    let entries: [TranscriptEntry]
+    let toolResultsById: [String: ToolResult]
+    let streamingSignal: Int
+    let hasVisibleFinalAnswer: Bool
+
+    var hasVisibleMessages: Bool {
+        !visibleMessages.isEmpty
+    }
+
+    var lastVisibleMessage: Message? {
+        visibleMessages.last
+    }
+
+    init(messages: [Message]) {
+        var visibleMessages: [Message] = []
+        visibleMessages.reserveCapacity(messages.count)
+
+        var toolResultsById: [String: ToolResult] = [:]
+        var hasVisibleFinalAnswer = false
+
+        for message in messages {
+            if message.isVisibleInTranscript {
+                visibleMessages.append(message)
+                if message.isFinalAnswer {
+                    hasVisibleFinalAnswer = true
+                }
+            }
+
+            if let toolResults = message.toolResults {
+                for result in toolResults {
+                    toolResultsById[result.toolCallId] = result
+                }
+            }
+        }
+
+        self.visibleMessages = visibleMessages
+        self.entries = TranscriptEntry.make(from: visibleMessages)
+        self.toolResultsById = toolResultsById
+        self.streamingSignal = (visibleMessages.last?.content.count ?? 0)
+            + (visibleMessages.last?.thinkingContent?.count ?? 0)
+        self.hasVisibleFinalAnswer = hasVisibleFinalAnswer
+    }
+}
+
+private struct TranscriptEntriesView: View {
+    let entries: [TranscriptEntry]
+    let isProcessing: Bool
+    let currentToolCallId: String?
+    let toolResultsById: [String: ToolResult]
+
+    var body: some View {
+        ForEach(entries.indices, id: \.self) { index in
+            entryView(entries[index])
+        }
+    }
+
+    @ViewBuilder
+    private func entryView(_ entry: TranscriptEntry) -> some View {
+        switch entry {
+        case .message(let message):
+            EnhancedMessageBubble(
+                message: message,
+                isToolExecuting: isProcessing && Self.activeToolCallId(currentToolCallId, in: message.toolCalls) != nil,
+                currentToolCallId: Self.activeToolCallId(currentToolCallId, in: message.toolCalls),
+                toolResultsById: toolResultsById
+            )
+            .equatable()
+            .id(message.id)
+
+        case .activity(let messages, let isSupportingDetail):
+            AgentActivityGroupView(
+                messages: messages,
+                isProcessing: isProcessing,
+                currentToolCallId: Self.activeToolCallId(currentToolCallId, in: messages),
+                toolResultsById: toolResultsById,
+                isSupportingDetail: isSupportingDetail
+            )
+            .equatable()
+            .id(messages.first?.id)
+        }
+    }
+
+    private static func activeToolCallId(_ currentToolCallId: String?, in toolCalls: [ToolCall]?) -> String? {
+        guard let currentToolCallId,
+              toolCalls?.contains(where: { $0.id == currentToolCallId }) == true else {
+            return nil
+        }
+        return currentToolCallId
+    }
+
+    private static func activeToolCallId(_ currentToolCallId: String?, in messages: [Message]) -> String? {
+        guard let currentToolCallId else { return nil }
+        for message in messages {
+            if message.toolCalls?.contains(where: { $0.id == currentToolCallId }) == true {
+                return currentToolCallId
+            }
+        }
+        return nil
+    }
+}
+
+@MainActor
+@Observable
+final class ChatScrollModel {
+    /// 自动滚动跟随开关
+    var autoScrollEnabled = true
+    /// 距离底部的偏移（越小越接近底部）
+    var bottomOffset: CGFloat = 0
+    /// 可视区域高度，用于计算距底偏移
+    var viewportHeight: CGFloat = 0
+}
+
+private struct ChatFloatingControls: View {
+    let model: ChatScrollModel
+    let hasMessages: Bool
+    let scrollToBottom: (Bool) -> Void
+
+    /// 是否接近底部（距离底部 < 120pt 视为接近）
+    private var isNearBottom: Bool {
+        model.bottomOffset < 120
+    }
+
+    var body: some View {
+        if hasMessages {
+            VStack(spacing: 10) {
+                FloatingButton(
+                    icon: model.autoScrollEnabled ? "arrow.down.circle.fill" : "arrow.down.circle",
+                    label: model.autoScrollEnabled ? "自动跟随" : (isNearBottom ? "恢复跟随" : "回到底部"),
+                    isActive: model.autoScrollEnabled,
+                    badge: !isNearBottom ? true : nil
+                ) {
+                    if model.autoScrollEnabled {
+                        model.autoScrollEnabled = false
+                    } else {
+                        model.autoScrollEnabled = true
+                        scrollToBottom(true)
+                    }
+                }
+            }
+            .padding(.trailing, 24)
+            .padding(.bottom, 24)
+        }
     }
 }
 
@@ -1014,7 +1091,7 @@ private extension Message {
     }
 }
 
-private struct AgentActivityGroupView: View {
+private struct AgentActivityGroupView: View, Equatable {
     let messages: [Message]
     let isProcessing: Bool
     let currentToolCallId: String?
@@ -1023,6 +1100,14 @@ private struct AgentActivityGroupView: View {
 
     @State private var isExpanded = false
     @State private var hasManualExpansionOverride = false
+
+    static func == (lhs: AgentActivityGroupView, rhs: AgentActivityGroupView) -> Bool {
+        lhs.messages == rhs.messages
+            && lhs.isProcessing == rhs.isProcessing
+            && lhs.currentToolCallId == rhs.currentToolCallId
+            && lhs.toolResultsById == rhs.toolResultsById
+            && lhs.isSupportingDetail == rhs.isSupportingDetail
+    }
 
     private var toolCalls: [ToolCall] {
         messages.flatMap { $0.toolCalls ?? [] }
@@ -1614,19 +1699,113 @@ private struct ActivityToolRow: View {
     }
 }
 
-// MARK: - Scroll Offset Preference Key
+// MARK: - Scroll Observation
 
-private struct BottomOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+private struct ChatScrollObservationView: NSViewRepresentable {
+    let model: ChatScrollModel
+    let isProcessing: Bool
+    let onMetricsChanged: (CGFloat, CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ChatScrollObservationNSView {
+        let view = ChatScrollObservationNSView()
+        view.onMetricsChanged = onMetricsChanged
+        view.isProcessing = isProcessing
+        return view
+    }
+
+    func updateNSView(_ nsView: ChatScrollObservationNSView, context: Context) {
+        nsView.onMetricsChanged = onMetricsChanged
+        nsView.isProcessing = isProcessing
+        nsView.attachIfNeeded()
+        nsView.reportMetricsIfNeeded()
     }
 }
 
-private struct ScrollViewportHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+private final class ChatScrollObservationNSView: NSView {
+    var onMetricsChanged: ((CGFloat, CGFloat) -> Void)?
+    var isProcessing = false
+
+    private weak var observedScrollView: NSScrollView?
+    private weak var observedClipView: NSClipView?
+    private weak var observedDocumentView: NSView?
+    private var boundsObserver: NSObjectProtocol?
+    private var frameObserver: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachIfNeeded()
+        reportMetricsIfNeeded()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        attachIfNeeded()
+        reportMetricsIfNeeded()
+    }
+
+    deinit {
+        detachObservers()
+    }
+
+    func attachIfNeeded() {
+        guard let scrollView = enclosingScrollView else {
+            DispatchQueue.main.async { [weak self] in
+                self?.attachIfNeeded()
+                self?.reportMetricsIfNeeded()
+            }
+            return
+        }
+
+        if observedScrollView !== scrollView {
+            detachObservers()
+            observedScrollView = scrollView
+
+            let clipView = scrollView.contentView
+            clipView.postsBoundsChangedNotifications = true
+            observedClipView = clipView
+            boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: clipView,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reportMetricsIfNeeded()
+            }
+
+            if let documentView = scrollView.documentView {
+                documentView.postsFrameChangedNotifications = true
+                observedDocumentView = documentView
+                frameObserver = NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification,
+                    object: documentView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reportMetricsIfNeeded()
+                }
+            }
+        }
+    }
+
+    func reportMetricsIfNeeded() {
+        guard let scrollView = observedScrollView ?? enclosingScrollView else { return }
+        let visibleRect = scrollView.contentView.documentVisibleRect
+        let viewportHeight = visibleRect.height
+        let documentHeight = scrollView.documentView?.bounds.height ?? 0
+        let contentBottom = max(0, documentHeight - visibleRect.minY)
+        onMetricsChanged?(contentBottom, viewportHeight)
+    }
+
+    private func detachObservers() {
+        if let boundsObserver {
+            NotificationCenter.default.removeObserver(boundsObserver)
+            self.boundsObserver = nil
+        }
+        if let frameObserver {
+            NotificationCenter.default.removeObserver(frameObserver)
+            self.frameObserver = nil
+        }
+        observedClipView = nil
+        observedDocumentView = nil
+        observedScrollView = nil
     }
 }
 

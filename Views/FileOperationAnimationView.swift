@@ -323,18 +323,18 @@ struct EnhancedToolExecutionView: View {
                 }
 
                 if let progress = progress, status == .executing {
-                    GeometryReader { geometry in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(Theme.bgTertiary)
-                                .frame(height: 3)
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Theme.bgTertiary)
+                            .frame(height: 3)
 
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(status.color)
-                                .frame(width: geometry.size.width * clampedProgress(progress), height: 3)
-                        }
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(status.color)
+                            .frame(maxWidth: .infinity)
+                            .scaleEffect(x: clampedProgress(progress), y: 1, anchor: .leading)
                     }
                     .frame(height: 3)
+                    .clipped()
                 }
             }
 

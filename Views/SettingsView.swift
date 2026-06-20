@@ -146,6 +146,7 @@ struct SettingsView: View {
     @State private var showingPromptResetConfirmation = false
     @State private var showingClearMemoryConfirmation = false
     @State private var pendingDeleteMemoryNote: AgentMemory.MemoryNote?
+    @State private var memoryOperationErrorMessage: String?
     @State private var promptApplyTask: Task<Void, Never>?
     private let launchContext: SettingsLaunchContext?
 
@@ -251,7 +252,11 @@ struct SettingsView: View {
         .alert("清空 MEMORY.md？", isPresented: $showingClearMemoryConfirmation) {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) {
-                memory.clearMemoryMarkdown()
+                do {
+                    try memory.clearMemoryMarkdown()
+                } catch {
+                    memoryOperationErrorMessage = memoryOperationErrorMessage(for: error)
+                }
             }
         } message: {
             Text("这会删除所有已持久化的长期记忆条目。")
@@ -262,12 +267,21 @@ struct SettingsView: View {
             }
             Button("删除", role: .destructive) {
                 if let pendingDeleteMemoryNote {
-                    memory.deleteMemoryNote(id: pendingDeleteMemoryNote.id)
+                    do {
+                        try memory.deleteMemoryNote(id: pendingDeleteMemoryNote.id)
+                    } catch {
+                        memoryOperationErrorMessage = memoryOperationErrorMessage(for: error)
+                    }
                 }
                 pendingDeleteMemoryNote = nil
             }
         } message: {
             Text(deleteMemoryNoteConfirmationMessage)
+        }
+        .alert("MEMORY.md 操作失败", isPresented: memoryOperationErrorBinding) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(memoryOperationErrorMessage ?? "无法写入 MEMORY.md，请检查文件权限后重试。")
         }
         .onAppear {
             reconcileSelectedConfigSets()
@@ -306,6 +320,17 @@ struct SettingsView: View {
             return "这个操作无法撤销。"
         }
         return "将删除这条长期记忆：\n\(pendingDeleteMemoryNote.summary)\n\n这个操作无法撤销。"
+    }
+
+    private var memoryOperationErrorBinding: Binding<Bool> {
+        Binding(
+            get: { memoryOperationErrorMessage != nil },
+            set: { if !$0 { memoryOperationErrorMessage = nil } }
+        )
+    }
+
+    private func memoryOperationErrorMessage(for error: Error) -> String {
+        "无法写入 MEMORY.md：\(error.localizedDescription)"
     }
 
     private func reconcileSelectedConfigSets() {

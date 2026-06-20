@@ -5,10 +5,12 @@ final class SidebarDeleteConfirmationSourceTests: XCTestCase {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let sidebarItemSource = try String(contentsOf: repoRoot.appendingPathComponent("Models/ConversationSidebarItem.swift"))
+        let source = contentSource + "\n" + sidebarItemSource
 
         XCTAssertTrue(
-            source.contains("@State private var pendingDeleteConversation: Conversation?"),
+            source.contains("@State private var pendingDeleteItem: ConversationSidebarItem?"),
             "Sidebar should stage a conversation for deletion instead of deleting immediately from the context menu."
         )
         XCTAssertTrue(
@@ -19,9 +21,10 @@ final class SidebarDeleteConfirmationSourceTests: XCTestCase {
             source.contains("deleteConfirmationMessage"),
             "The delete confirmation should explain what will be deleted."
         )
-        XCTAssertTrue(
-            source.contains("conversation.visibleMessageCount"),
-            "The confirmation should include the visible message count so users understand the impact."
+        XCTAssertFalse(
+            source.contains("let messageCount = item.visibleMessageCount")
+                || source.contains("条可见消息"),
+            "The delete confirmation should not read per-conversation message counts from the sidebar hot path."
         )
         XCTAssertTrue(
             source.contains("这个操作无法撤销"),
@@ -29,55 +32,163 @@ final class SidebarDeleteConfirmationSourceTests: XCTestCase {
         )
     }
 
-    func testConversationRowsExposeTruncatedContextOnHover() throws {
+    func testConversationRowsStayMinimalAndFast() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let sidebarItemSource = try String(contentsOf: repoRoot.appendingPathComponent("Models/ConversationSidebarItem.swift"))
+        let sidebarListSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/SidebarConversationListView.swift"))
+        let source = contentSource + "\n" + sidebarItemSource + "\n" + sidebarListSource
+
+        XCTAssertTrue(
+            sidebarListSource.contains("toolTip = [item.title, item.workingDirectoryLabel].joined(separator: \"\\n\")"),
+            "Minimal rows should expose the full title and workspace path on hover."
+        )
+        XCTAssertTrue(
+            sidebarListSource.contains("titleField.stringValue = item.title")
+                && sidebarListSource.contains("directoryField.stringValue = item.workingDirectoryLabel"),
+            "Rows should render only title and concrete working directory."
+        )
+        XCTAssertFalse(
+            sidebarListSource.contains("countField")
+                || sidebarListSource.contains("messageMetaLabel"),
+            "Rows should not keep a per-conversation message count field in the scrolling path."
+        )
+        XCTAssertTrue(
+            sidebarItemSource.contains("let workingDirectoryLabel: String")
+                && sidebarItemSource.contains("\"未设置工作目录\""),
+            "Sidebar snapshots should carry a concrete workspace label without deriving folder pills during rendering."
+        )
+        XCTAssertTrue(
+            contentSource.contains("SidebarConversationListView("),
+            "Sidebar should render conversations through the AppKit-backed list instead of SwiftUI row views."
+        )
+        XCTAssertTrue(
+            source.contains("struct ConversationSidebarItem: Identifiable, Equatable")
+                && source.contains("let workingDirectoryLabel: String"),
+            "Conversation rows should come from a lightweight sidebar snapshot so scrolling does not repeatedly scan full conversation history."
+        )
+        XCTAssertFalse(
+            sidebarItemSource.contains("visibleMessageCount")
+                || sidebarItemSource.contains("messageMetaLabel")
+                || sidebarItemSource.contains("conversation.messages")
+                || sidebarItemSource.contains("incrementalVisibleMessageCount"),
+            "Sidebar snapshots should not compute per-chat message counts."
+        )
+        XCTAssertTrue(
+            contentSource.contains("@ObservedObject var sidebarState: SidebarState")
+                && contentSource.contains("let sidebarItems = sidebarState.items")
+                && contentSource.contains("let selectedConversationID = sidebarState.selectedConversationID"),
+            "SidebarView should observe only the isolated sidebar state instead of the full conversation manager."
+        )
+        XCTAssertFalse(
+            contentSource.contains("@ObservedObject var conversationManager: ConversationManager"),
+            "SidebarView should not observe ConversationManager because streaming conversation mutations would invalidate the whole sidebar."
+        )
+        XCTAssertFalse(
+            contentSource.contains("conversationManager.conversations.map(ConversationSidebarItem.init)"),
+            "SidebarView body should not map conversations into snapshots while the user scrolls."
+        )
+        XCTAssertFalse(
+            contentSource.contains("List(sidebarItems)"),
+            "Sidebar should not use SwiftUI List for the hot scrolling path."
+        )
+        XCTAssertTrue(
+            sidebarListSource.contains("struct SidebarConversationListView: NSViewRepresentable")
+                && sidebarListSource.contains("SidebarConversationCellView")
+                && sidebarListSource.contains("NSTableViewDataSource")
+                && sidebarListSource.contains("NSScrollView"),
+            "The hot scrolling path should use AppKit table cells instead of SwiftUI row views."
+        )
+        XCTAssertTrue(
+            sidebarListSource.contains("static let rowHeight: CGFloat = 66")
+                && sidebarListSource.contains("reloadData(\n                forRowIndexes: rowsToReload")
+                && sidebarListSource.contains("visibleRowIndexes(in: tableView)"),
+            "Conversation rows should use fixed-height AppKit cells and refresh only visible rows for non-structural updates."
+        )
+        XCTAssertTrue(
+            sidebarListSource.contains("if isLiveScrolling")
+                && sidebarListSource.contains("deferredParent = parent")
+                && sidebarListSource.contains("NSScrollView.willStartLiveScrollNotification"),
+            "Streaming/sidebar content changes should be deferred while the user is actively scrolling, including structural list changes."
+        )
+        XCTAssertTrue(
+            sidebarListSource.contains("SidebarConversationScrollView")
+                && sidebarListSource.contains("window.makeFirstResponder(sidebarTableView)")
+                && sidebarListSource.contains("override func scrollWheel(with event: NSEvent)"),
+            "Sidebar scrolling should claim first responder on wheel input so an already-focused composer does not keep the list on the slower unfocused scroll path."
+        )
+        XCTAssertTrue(
+            sidebarListSource.contains("override func layout()")
+                && sidebarListSource.contains("cardView.frame = bounds.insetBy")
+                && sidebarListSource.contains("titleField.frame = NSRect")
+                && sidebarListSource.contains("directoryField.frame = NSRect"),
+            "Fixed-height sidebar cells should use manual frames instead of Auto Layout in the scrolling path."
+        )
+        XCTAssertFalse(
+            sidebarListSource.contains("NSLayoutConstraint.activate"),
+            "Sidebar row cells should avoid constraint solving while scrolling."
+        )
+        XCTAssertFalse(
+            sidebarListSource.contains("previewField")
+                || sidebarListSource.contains("timeField")
+                || sidebarListSource.contains("SidebarPillView")
+                || sidebarListSource.contains("NSImageView"),
+            "Rows should not keep preview, time, pill, or icon controls in the hot scrolling path."
+        )
+        XCTAssertFalse(
+            sidebarItemSource.contains("previewText")
+                || sidebarItemSource.contains("RelativeDateTimeFormatter")
+                || sidebarItemSource.contains("pendingDecisionLabel")
+                || sidebarItemSource.contains("folderName"),
+            "Sidebar snapshots should not compute preview text, relative dates, pending labels, or folder pills."
+        )
+        XCTAssertFalse(
+            source.contains("@State private var hoveredConversation"),
+            "Hover state should stay inside each row so scrolling across rows does not invalidate the whole sidebar."
+        )
+        XCTAssertFalse(
+            source.contains("struct ConversationRow: View"),
+            "The sidebar should not keep the old SwiftUI row view in the hot scrolling implementation."
+        )
+    }
+
+    func testSidebarIsIsolatedFromStreamingRuntimeInvalidations() throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let managerSource = try String(contentsOf: repoRoot.appendingPathComponent("Agent/ConversationManager.swift"))
 
         XCTAssertTrue(
-            source.contains(".help(conversation.title)"),
-            "Long conversation titles should expose the full title on hover."
+            source.contains("@StateObject private var dependencies = ContentViewDependencies()"),
+            "ContentView should own a stable dependency container instead of directly observing high-frequency runtime objects."
+        )
+        XCTAssertFalse(
+            source.contains("@StateObject private var agentEngine = AgentEngine()"),
+            "Root ContentView should not observe AgentEngine directly because streaming updates would invalidate the sidebar."
         )
         XCTAssertTrue(
-            source.contains(".help(previewText)"),
-            "Truncated conversation previews should expose the full preview text."
+            source.contains("private struct RuntimeStateBridge: View")
+                && source.contains("private struct ContextPanelHost: View"),
+            "High-frequency runtime observation should be isolated to tiny bridge/context host views, not the root layout."
         )
         XCTAssertTrue(
-            source.contains("helpText: conversation.workingDirectory"),
-            "Folder pills should expose the full workspace path, not only the last folder name."
+            source.contains("final class SidebarRuntimeState: ObservableObject")
+                && source.contains("guard isNavigationLocked != isLocked || isSettingsLocked != isLocked else { return }"),
+            "Sidebar runtime state should publish only when lock booleans actually change."
         )
         XCTAssertTrue(
-            source.contains("var helpText: String?"),
-            "MetaPill should support contextual help text for compact labels."
+            source.contains("sidebarState: conversationManager.sidebarState")
+                && source.contains("@ObservedObject var sidebarState: SidebarState")
+                && managerSource.contains("final class SidebarState: ObservableObject"),
+            "Sidebar conversation data should be bridged through an isolated state object."
         )
         XCTAssertTrue(
-            source.contains(".help(helpText ?? text)"),
-            "MetaPill should always provide a hover fallback for compact content."
-        )
-        XCTAssertTrue(
-            source.contains("if let pendingDecisionLabel {\n                    MetaPill("),
-            "Conversation rows should surface pending confirmation state directly instead of making paused sessions look like normal chats."
-        )
-        XCTAssertTrue(
-            source.contains("private var previewText: String? {\n        conversation.latestPreviewContent\n    }"),
-            "Conversation row previews should reuse the centralized preview model so pills can own state labels while preview text carries the concrete task context."
-        )
-        XCTAssertTrue(
-            source.contains("return \"等待覆盖确认\""),
-            "Sidebar should give overwrite confirmations a concrete, scan-friendly label."
-        )
-        XCTAssertTrue(
-            source.contains("return \"等待模式确认\""),
-            "Sidebar should give execution-mode confirmations a concrete, scan-friendly label."
-        )
-        XCTAssertTrue(
-            source.contains("if let messageMetaLabel {\n                    MetaPill("),
-            "Conversation rows should only render the generic message-count pill when it adds new information."
-        )
-        XCTAssertTrue(
-            source.contains("private var messageMetaLabel: String? {\n        if visibleMessageCount > 0 {\n            return \"\\(visibleMessageCount) 条消息\"\n        }\n        if pendingDecisionLabel != nil || hasDraft {\n            return nil\n        }\n        return \"未开始\"\n    }"),
-            "Draft-only or pending-confirmation sessions should not repeat a generic 'not started' pill once a more specific state is already visible."
+            managerSource.contains("if self.items != items {\n            self.items = items\n        }")
+                && managerSource.contains("guard self.selectedConversationID != selectedConversationID else { return }"),
+            "SidebarState should avoid publishing while streaming updates leave sidebar rows and selection unchanged."
         )
     }
 }

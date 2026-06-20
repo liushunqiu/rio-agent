@@ -1311,18 +1311,18 @@ struct ContextBar: View {
     let usedPercent: Int
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Theme.bgTertiary)
-                    .frame(height: 4)
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Theme.bgTertiary)
+                .frame(height: 4)
 
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(barColor)
-                    .frame(width: geometry.size.width * CGFloat(clampedPercent) / 100, height: 4)
-            }
+            RoundedRectangle(cornerRadius: 2)
+                .fill(barColor)
+                .frame(maxWidth: .infinity)
+                .scaleEffect(x: CGFloat(clampedPercent) / 100, y: 1, anchor: .leading)
         }
         .frame(height: 4)
+        .clipped()
     }
 
     private var clampedPercent: Int {

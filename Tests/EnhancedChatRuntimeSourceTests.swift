@@ -8,16 +8,41 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
         let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/EnhancedMessageBubble.swift"))
 
         XCTAssertTrue(
-            source.contains("Self.distanceFromBottom(\n                        contentBottom: contentBottom,\n                        viewportHeight: visibleViewportHeight\n                    )"),
+            source.contains("Self.distanceFromBottom(\n                        contentBottom: contentBottom,\n                        viewportHeight: scrollModel.viewportHeight\n                    )"),
             "The chat view should measure distance from bottom as content bottom minus viewport height so scrolling up is detected."
         )
         XCTAssertTrue(
-            source.contains("if newCount > oldCount && autoScrollEnabled"),
+            source.contains("if newCount > oldCount && scrollModel.autoScrollEnabled"),
             "New messages should respect the user's auto-follow toggle instead of forcing scroll during processing."
         )
         XCTAssertFalse(
             source.contains("autoScrollEnabled || isProcessing"),
             "Processing state should not override a manual pause of auto-follow."
+        )
+        XCTAssertTrue(
+            source.contains("class ChatScrollModel"),
+            "Scroll position state should live in an @Observable model so per-frame scroll tracking does not invalidate the message list body."
+        )
+        XCTAssertFalse(
+            source.contains("@State private var autoScrollEnabled"),
+            "Auto-follow state must not be a @State on EnhancedChatView, otherwise every scroll frame re-evaluates the whole transcript."
+        )
+        XCTAssertTrue(
+            source.contains("ChatFloatingControls("),
+            "The floating follow button should be an isolated subview so only it re-renders on per-frame scroll offset changes."
+        )
+        XCTAssertTrue(
+            source.contains("ChatScrollObservationView(")
+                && source.contains("private struct ChatScrollObservationView: NSViewRepresentable")
+                && source.contains("private final class ChatScrollObservationNSView: NSView"),
+            "Scroll metrics should be observed through a tiny AppKit bridge instead of forcing SwiftUI layout passes on every scroll frame."
+        )
+        XCTAssertFalse(
+            source.contains("BottomOffsetPreferenceKey")
+                || source.contains("ScrollViewportHeightPreferenceKey")
+                || source.contains(".coordinateSpace(name: \"scroll\")")
+                || source.contains("GeometryReader { geo in"),
+            "The transcript hot scrolling path should not use GeometryReader or PreferenceKey-based scroll measurement."
         )
     }
 
@@ -198,7 +223,7 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
         )
         XCTAssertLessThan(
             try XCTUnwrap(source.range(of: "TranscriptRuntimeCard(")?.lowerBound),
-            try XCTUnwrap(source.range(of: "ForEach(transcriptEntries)")?.lowerBound),
+            try XCTUnwrap(source.range(of: "TranscriptEntriesView(")?.lowerBound),
             "Runtime guidance should appear before the transcript entries so the session opens with clear context."
         )
         XCTAssertLessThan(
@@ -215,12 +240,32 @@ final class EnhancedChatRuntimeSourceTests: XCTestCase {
             "Transcript entries should track when an activity group becomes supporting detail after a final answer."
         )
         XCTAssertTrue(
-            source.contains("private var hasVisibleFinalAnswer: Bool"),
-            "The transcript should detect when a delivered final answer is already visible before deciding how much Multi-Agent plan detail to keep open."
+            source.contains("private struct ChatTranscriptSnapshot"),
+            "The transcript should build a single render snapshot instead of repeatedly scanning messages while the UI refreshes."
         )
         XCTAssertTrue(
-            source.contains("prefersCondensedCompletedState: hasVisibleFinalAnswer"),
+            source.contains("let hasVisibleFinalAnswer: Bool")
+                && source.contains("prefersCondensedCompletedState: snapshot.hasVisibleFinalAnswer"),
             "Completed task plans in the transcript should collapse only once a final answer is already present in the main reading flow."
+        )
+        XCTAssertTrue(
+            source.contains("let snapshot = ChatTranscriptSnapshot(messages: messages)")
+                && source.contains("toolResultsById: snapshot.toolResultsById")
+                && source.contains(".onChange(of: snapshot.streamingSignal)"),
+            "EnhancedChatView should reuse a single transcript snapshot for entries, tool results, and streaming scroll signals."
+        )
+        XCTAssertTrue(
+            source.contains("struct EnhancedMessageBubble: View, Equatable")
+                && source.contains("private struct AgentActivityGroupView: View, Equatable")
+                && source.contains("private struct TranscriptEntriesView: View")
+                && source.contains(".equatable()"),
+            "Transcript rows should be equatable so unchanged historical rows are skipped during streaming updates."
+        )
+        XCTAssertTrue(
+            source.contains("currentToolCallId: Self.activeToolCallId(currentToolCallId, in: message.toolCalls)")
+                && source.contains("currentToolCallId: Self.activeToolCallId(currentToolCallId, in: messages)")
+                && source.contains("private static func activeToolCallId"),
+            "Tool-call progress should be scoped to the row that owns the active tool instead of invalidating every transcript row."
         )
     }
 

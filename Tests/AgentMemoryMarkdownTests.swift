@@ -40,14 +40,14 @@ final class AgentMemoryMarkdownTests: XCTestCase {
         XCTAssertFalse(context.contains("Why important"))
     }
 
-    func testDeleteMemoryNoteRemovesOnlyTargetEntry() {
+    func testDeleteMemoryNoteRemovesOnlyTargetEntry() throws {
         let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         memory.recordSuccessfulPattern(taskType: "search", tool: "read_file")
         memory.recordSuccessfulPattern(taskType: "edit", tool: "apply_patch")
 
-        memory.deleteMemoryNote(summary: "【摘要】任务类型 search 优先使用 read_file")
+        try memory.deleteMemoryNote(summary: "【摘要】任务类型 search 优先使用 read_file")
 
         let notes = memory.loadMemoryNotes()
         XCTAssertFalse(notes.contains { $0.summary == "【摘要】任务类型 search 优先使用 read_file" })
@@ -79,21 +79,21 @@ final class AgentMemoryMarkdownTests: XCTestCase {
         XCTAssertEqual(duplicateNotes.count, 2)
         XCTAssertEqual(Set(duplicateNotes.map(\.id)).count, 2)
 
-        memory.deleteMemoryNote(id: duplicateNotes[0].id)
+        try memory.deleteMemoryNote(id: duplicateNotes[0].id)
 
         let remainingDuplicates = memory.persistedNotes.filter { $0.summary == "【摘要】重复经验" }
         XCTAssertEqual(remainingDuplicates.count, 1)
         XCTAssertNotEqual(remainingDuplicates.first?.id, duplicateNotes[0].id)
     }
 
-    func testClearMemoryMarkdownRemovesPersistedNotes() {
+    func testClearMemoryMarkdownRemovesPersistedNotes() throws {
         let memory = makeIsolatedAgentMemory(testCase: self)
 
         memory.clearAllMemory()
         memory.recordSuccessfulPattern(taskType: "code_fix", tool: "apply_patch")
         XCTAssertFalse(memory.loadMemoryNotes().isEmpty)
 
-        memory.clearMemoryMarkdown()
+        try memory.clearMemoryMarkdown()
 
         XCTAssertTrue(memory.loadMemoryNotes().isEmpty)
         XCTAssertTrue(memory.persistedNotes.isEmpty)

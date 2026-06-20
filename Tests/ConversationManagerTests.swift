@@ -377,6 +377,46 @@ final class ConversationManagerTests: XCTestCase {
         XCTAssertEqual(manager.currentConversation?.updatedAt, current.updatedAt)
     }
 
+    func testSidebarItemsStayCachedAndTrackConversationMutations() {
+        let manager = makeIsolatedManager()
+        manager.conversations = []
+
+        let current = Conversation(
+            title: "Sidebar Cache",
+            messages: [
+                .user("旧任务"),
+                .assistant("旧回复")
+            ],
+            draftInput: "",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        manager.conversations = [current]
+        manager.currentConversation = current
+
+        XCTAssertEqual(manager.sidebarItems.count, 1)
+        XCTAssertEqual(manager.sidebarItems.first?.workingDirectoryLabel, "未设置工作目录")
+        XCTAssertFalse(manager.sidebarItems.first?.hasDraft ?? true)
+        XCTAssertEqual(manager.sidebarState.items, manager.sidebarItems)
+        XCTAssertEqual(manager.sidebarState.selectedConversationID, current.id)
+
+        manager.updateDraftInput("继续优化侧栏\n滚动性能")
+
+        XCTAssertEqual(manager.sidebarItems.first?.id, current.id)
+        XCTAssertTrue(manager.sidebarItems.first?.hasDraft ?? false)
+
+        manager.updateDraftInput("")
+        let sidebarItemsBeforeMessageOnlyUpdate = manager.sidebarState.items
+        manager.updateCurrentConversation(messages: [
+            .user("新任务"),
+            .assistant("新的执行摘要")
+        ])
+
+        XCTAssertEqual(manager.sidebarState.items, sidebarItemsBeforeMessageOnlyUpdate)
+        XCTAssertEqual(manager.sidebarItems.first?.title, "Sidebar Cache")
+        XCTAssertEqual(manager.sidebarItems.first?.workingDirectoryLabel, "未设置工作目录")
+    }
+
     func testConversationPreviewPrefersUserOrAssistantContentOverTrailingSystemPrompt() {
         let conversation = Conversation(
             title: "Preview",

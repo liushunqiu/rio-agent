@@ -14,7 +14,6 @@ struct NewChatPage: View {
     let pendingUserDecision: AgentEngine.PendingUserDecision?
 
     @FocusState private var isInputFocused: Bool
-    @State private var appears = false
 
     private let maxCardWidth: CGFloat = 700
     private let quickPrompts: [QuickPrompt] = [
@@ -60,46 +59,39 @@ struct NewChatPage: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
+        VStack(spacing: 0) {
+            Spacer(minLength: 28)
+
             VStack(spacing: 0) {
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        Spacer().frame(height: max(20, geometry.size.height * 0.08))
+                headerArea
 
-                        headerArea
+                Spacer().frame(height: 18)
 
-                        Spacer().frame(height: 18)
+                inputCard
 
-                        inputCard
+                if shouldShowWorkspaceSummary {
+                    Spacer().frame(height: 16)
 
-                        if shouldShowWorkspaceSummary {
-                            Spacer().frame(height: 16)
+                    workspaceSummary
 
-                            workspaceSummary
-
-                            Spacer().frame(height: 18)
-                        } else {
-                            Spacer().frame(height: 10)
-                        }
-
-                        quickPromptSection
-                    }
-                    .frame(minHeight: geometry.size.height * 0.7)
-                    .frame(maxWidth: .infinity)
+                    Spacer().frame(height: 18)
+                } else {
+                    Spacer().frame(height: 10)
                 }
 
-                Spacer()
+                quickPromptSection
             }
+            .frame(maxWidth: .infinity)
+
+            Spacer(minLength: 0)
         }
         .background(Color.clear)
-        .opacity(appears ? 1 : 0)
         .onAppear {
-            withAnimation(.easeOut(duration: 0.4)) {
-                appears = true
-            }
             composer.updateText(inputText)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                isInputFocused = true
+            if shouldAutofocusComposer {
+                DispatchQueue.main.async {
+                    isInputFocused = true
+                }
             }
         }
         .onChange(of: inputText) { _, newValue in
@@ -438,11 +430,7 @@ struct NewChatPage: View {
                         .stroke(Theme.statusInfo.opacity(0.16), lineWidth: 1)
                 )
             } else if shouldShowQuickPromptGrid {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 160), spacing: 10, alignment: .top)],
-                    alignment: .leading,
-                    spacing: 10
-                ) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(quickPrompts) { item in
                         QuickPromptButton(item: item) {
                             composer.updateText(item.prompt)
@@ -700,6 +688,11 @@ struct NewChatPage: View {
             return "当前任务正在执行，完成或停止后再调整工作目录"
         }
         return "当前状态下无法调整工作目录"
+    }
+
+    private var shouldAutofocusComposer: Bool {
+        if pendingUserDecision != nil { return true }
+        return !trimmedComposerText.isEmpty
     }
 
     private var trimmedComposerText: String {

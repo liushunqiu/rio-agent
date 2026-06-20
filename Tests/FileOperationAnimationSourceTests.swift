@@ -52,7 +52,8 @@ final class FileOperationAnimationSourceTests: XCTestCase {
             "Progress values should stay within the 0...1 drawing range."
         )
         XCTAssertTrue(
-            source.contains("geometry.size.width * clampedProgress(progress)"),
+            source.contains("scaleEffect(x: clampedProgress(progress), y: 1, anchor: .leading)")
+                || source.contains("geometry.size.width * clampedProgress(progress)"),
             "The progress bar should draw from the clamped value."
         )
     }

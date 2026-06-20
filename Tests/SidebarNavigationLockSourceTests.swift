@@ -5,19 +5,22 @@ final class SidebarNavigationLockSourceTests: XCTestCase {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let source = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let sidebarListSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/SidebarConversationListView.swift"))
+        let source = contentSource + "\n" + sidebarListSource
 
         XCTAssertTrue(
-            source.contains("isNavigationLocked: isConversationNavigationLocked"),
-            "The sidebar should only lock navigation while execution is actively running, not while paused for a user confirmation."
+            source.contains("runtimeState: sidebarRuntimeState"),
+            "The sidebar should receive isolated runtime lock state instead of observing every AgentEngine update."
         )
         XCTAssertTrue(
             source.contains("private var isConversationNavigationLocked: Bool {\n        agentEngine.isProcessing && agentEngine.pendingUserDecision == nil\n    }"),
             "ContentView should centralize the active-processing navigation lock so sidebar and menu entry points share the same condition."
         )
         XCTAssertTrue(
-            source.contains("let isNavigationLocked: Bool"),
-            "SidebarView should receive the runtime navigation lock explicitly."
+            source.contains("@ObservedObject var runtimeState: SidebarRuntimeState")
+                && source.contains("private var isNavigationLocked: Bool {\n        runtimeState.isNavigationLocked\n    }"),
+            "SidebarView should derive navigation lock state from the lightweight sidebar runtime state."
         )
         XCTAssertTrue(
             source.contains("private func requestNewConversation()")
@@ -38,15 +41,18 @@ final class SidebarNavigationLockSourceTests: XCTestCase {
             "Locked sidebar actions should expose both disabled state and hover explanation."
         )
         XCTAssertTrue(
-            source.contains("guard !isNavigationLocked else { return }\n                                onSelect(conversation)"),
+            sidebarListSource.contains("guard !isNavigationLocked,")
+                && sidebarListSource.contains("parent.onSelect(items[row])"),
             "Conversation row selection should no-op while active execution is running."
         )
         XCTAssertTrue(
-            source.contains("guard !isNavigationLocked else { return }\n                                    pendingDeleteConversation = conversation"),
+            sidebarListSource.contains("deleteItem.isEnabled = !isNavigationLocked")
+                && sidebarListSource.contains("@objc private func deleteConversation")
+                && sidebarListSource.contains("guard !isNavigationLocked,"),
             "Conversation deletion should not be staged while active execution is running."
         )
         XCTAssertTrue(
-            source.contains("Button(\"删除\", role: .destructive) {\n                guard !isNavigationLocked else {\n                    pendingDeleteConversation = nil\n                    return\n                }"),
+            source.contains("Button(\"删除\", role: .destructive) {\n                guard !isNavigationLocked else {\n                    pendingDeleteItem = nil\n                    return\n                }"),
             "The deletion confirmation should re-check the navigation lock in case active execution starts while the alert is already open."
         )
         XCTAssertTrue(
@@ -54,9 +60,9 @@ final class SidebarNavigationLockSourceTests: XCTestCase {
             "The sidebar should make the temporary navigation lock visible instead of silently ignoring clicks."
         )
         XCTAssertTrue(
-            source.contains("isDisabled: isNavigationLocked")
-                && source.contains(".opacity(isDisabled && !isSelected ? 0.58 : 1)")
-                && source.contains("private var rowHelpText: String"),
+            contentSource.contains("isNavigationLocked: isNavigationLocked")
+                && sidebarListSource.contains("alphaValue = isDisabled && !isSelected ? 0.58 : 1")
+                && sidebarListSource.contains("isDisabled && !isSelected ? 0.58 : 1"),
             "Conversation rows should look and read as disabled while navigation is locked."
         )
     }

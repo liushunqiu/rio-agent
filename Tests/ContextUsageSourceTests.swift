@@ -22,6 +22,32 @@ final class ContextUsageSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("} else if clampedPercent < 80"))
     }
 
+    func testStreamingUiUsesSnapshotsAndCachedTokenEstimates() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let contentSource = try String(contentsOf: repoRoot.appendingPathComponent("Views/ContentView.swift"))
+        let agentSource = try String(contentsOf: repoRoot.appendingPathComponent("Agent/AgentEngine.swift"))
+
+        XCTAssertTrue(contentSource.contains("private struct ContextPanelSnapshot"))
+        XCTAssertTrue(contentSource.contains("let snapshot = ContextPanelSnapshot(agentEngine: agentEngine)"))
+        XCTAssertTrue(contentSource.contains("private struct MainContentRuntimeSnapshot"))
+        XCTAssertTrue(contentSource.contains("let snapshot = MainContentRuntimeSnapshot(agentEngine: agentEngine)"))
+        XCTAssertFalse(
+            contentSource.contains("messageCount: agentEngine.messages.filter(\\.isVisibleInTranscript).count"),
+            "Streaming message updates should not repeatedly filter messages for every chrome subview."
+        )
+
+        XCTAssertTrue(agentSource.contains("private var estimatedMessageTokensCache"))
+        XCTAssertTrue(agentSource.contains("let builder = contextBuilder"))
+        XCTAssertTrue(agentSource.contains("builder.estimateMessageTokens(message)"))
+        XCTAssertTrue(agentSource.contains("estimatedMessageTokensCache.removeAll()"))
+        XCTAssertFalse(
+            agentSource.contains("return messages.reduce(0) { $0 + estimateMessageTokens($1) }"),
+            "Context usage should not rebuild ContextBuilder for every message on every UI refresh."
+        )
+    }
+
     private func contextPanelSource() throws -> String {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

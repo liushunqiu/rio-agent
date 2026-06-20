@@ -140,6 +140,64 @@ class AgentEngine: ObservableObject {
 
     /// 优化的 Token 追踪器（准确度提升 30%，性能提升 3-5x）
     private let tokenTracker = TokenTracker()
+    private var estimatedMessageTokensCache: [UUID: EstimatedMessageTokensCacheEntry] = [:]
+
+    private struct EstimatedMessageTokensCacheEntry {
+        let signature: EstimatedMessageTokensSignature
+        let tokens: Int
+    }
+
+    private struct EstimatedMessageTokensSignature: Equatable {
+        let role: MessageRole
+        let content: TextTokenSignature
+        let thinkingContent: TextTokenSignature?
+        let toolCalls: [ToolCallTokenSignature]
+        let toolResults: [ToolResultTokenSignature]
+
+        init(message: Message) {
+            role = message.role
+            content = TextTokenSignature(message.content)
+            thinkingContent = message.thinkingContent.map(TextTokenSignature.init)
+            toolCalls = (message.toolCalls ?? []).map(ToolCallTokenSignature.init)
+            toolResults = (message.toolResults ?? []).map(ToolResultTokenSignature.init)
+        }
+    }
+
+    private struct ToolCallTokenSignature: Equatable {
+        let id: String
+        let name: TextTokenSignature
+        let argumentCount: Int
+
+        init(toolCall: ToolCall) {
+            id = toolCall.id
+            name = TextTokenSignature(toolCall.name)
+            argumentCount = toolCall.arguments.count
+        }
+    }
+
+    private struct ToolResultTokenSignature: Equatable {
+        let toolCallId: String
+        let status: ToolResultStatus
+        let modelContent: TextTokenSignature
+
+        init(result: ToolResult) {
+            toolCallId = result.toolCallId
+            status = result.status
+            modelContent = TextTokenSignature(result.modelContent)
+        }
+    }
+
+    private struct TextTokenSignature: Equatable {
+        let utf8Count: Int
+        let firstScalar: UInt32?
+        let lastScalar: UInt32?
+
+        init(_ text: String) {
+            utf8Count = text.utf8.count
+            firstScalar = text.unicodeScalars.first?.value
+            lastScalar = text.unicodeScalars.last?.value
+        }
+    }
 
     /// 对话压缩器（始终跟随最新规划模型配置）
     private var conversationCompactor: ConversationCompactor {
@@ -1433,11 +1491,12 @@ class AgentEngine: ObservableObject {
     // MARK: - Token Tracking
 
     /// Estimated total cost for current session (USD)
-    @Published var sessionCost: Double = 0.0
+    var sessionCost: Double = 0.0
 
     /// Reset tracking for a new conversation
     private func resetUsageTracking() {
         tokenTracker.reset()
+        estimatedMessageTokensCache.removeAll()
         sessionCost = 0.0
     }
 
@@ -1472,8 +1531,32 @@ class AgentEngine: ObservableObject {
         // If we have actual usage data, prefer it
         let actualTotal = tokenTracker.accumulatedUsage.promptTokens + tokenTracker.accumulatedUsage.completionTokens
         if actualTotal > 0 { return actualTotal }
-        // Otherwise estimate from messages
-        return messages.reduce(0) { $0 + estimateMessageTokens($1) }
+        let builder = contextBuilder
+        var activeMessageIDs = Set<UUID>()
+        activeMessageIDs.reserveCapacity(messages.count)
+        var total = 0
+
+        for message in messages {
+            let messageID = message.id
+            activeMessageIDs.insert(messageID)
+
+            let signature = EstimatedMessageTokensSignature(message: message)
+            if let cached = estimatedMessageTokensCache[messageID],
+               cached.signature == signature {
+                total += cached.tokens
+                continue
+            }
+
+            let tokens = builder.estimateMessageTokens(message)
+            estimatedMessageTokensCache[messageID] = EstimatedMessageTokensCacheEntry(
+                signature: signature,
+                tokens: tokens
+            )
+            total += tokens
+        }
+
+        estimatedMessageTokensCache = estimatedMessageTokensCache.filter { activeMessageIDs.contains($0.key) }
+        return total
     }
 
     private func getContextMessages() -> [Message] {

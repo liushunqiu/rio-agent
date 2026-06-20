@@ -3,8 +3,7 @@ import AppKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var agentEngine = AgentEngine()
-    @StateObject private var conversationManager = ConversationManager()
+    @StateObject private var dependencies = ContentViewDependencies()
     @State private var showingSettings = false
     @State private var settingsInitialTab: SettingsTab = .ai
     @State private var settingsLaunchContext: SettingsLaunchContext?
@@ -18,17 +17,22 @@ struct ContentView: View {
         HStack(spacing: 0) {
             // Sidebar
             SidebarView(
-                conversationManager: conversationManager,
-                isNavigationLocked: isConversationNavigationLocked,
-                isSettingsLocked: isRuntimeConfigurationLocked,
-                onSelect: { conversation in
+                sidebarState: conversationManager.sidebarState,
+                runtimeState: sidebarRuntimeState,
+                onSelect: { item in
+                    guard let conversation = conversationManager.conversation(withID: item.id) else {
+                        return
+                    }
                     prepareForConversationContextChange()
                     guard let selectedConversation = conversationManager.selectConversation(conversation) else {
                         return
                     }
                     agentEngine.loadConversation(selectedConversation)
                 },
-                onDelete: { conversation in
+                onDelete: { item in
+                    guard let conversation = conversationManager.conversation(withID: item.id) else {
+                        return
+                    }
                     let deletesCurrentConversation = conversationManager.currentConversation?.id == conversation.id
                     if deletesCurrentConversation {
                         prepareForConversationContextChange()
@@ -59,7 +63,12 @@ struct ContentView: View {
             // Main content
             MainContentView(
                 agentEngine: agentEngine,
+                runtimeState: mainContentRuntimeState,
                 inputText: conversationDraftBinding,
+                workingDirectory: Binding(
+                    get: { agentEngine.workingDirectory },
+                    set: { agentEngine.workingDirectory = $0 }
+                ),
                 showingSettings: $showingSettings,
                 settingsInitialTab: $settingsInitialTab,
                 settingsLaunchContext: $settingsLaunchContext,
@@ -105,21 +114,22 @@ struct ContentView: View {
                 .frame(width: 1)
 
             // Context panel (right sidebar)
-            ContextPanel(
-                singleAgentPlan: agentEngine.currentSingleAgentPlan,
-                taskPlan: agentEngine.currentTaskPlan,
-                pipeline: agentEngine.currentPipeline,
-                singleAgentVerification: agentEngine.singleAgentVerificationSummary,
-                pendingUserDecision: agentEngine.pendingUserDecision,
-                runtimeRoles: agentEngine.runtimeModelRoles,
-                messageCount: agentEngine.messages.filter(\.isVisibleInTranscript).count,
-                workingDirectory: agentEngine.workingDirectory,
-                estimatedTokens: agentEngine.getTotalTokensUsed(),
-                contextWindow: AIProvider.contextWindow(for: agentEngine.primaryDisplayModelName),
-                recentFiles: agentEngine.memory.session.recentFiles
-            )
+            ContextPanelHost(agentEngine: agentEngine)
             .frame(width: 260)
         }
+        .background(
+            RuntimeStateBridge(
+                agentEngine: agentEngine,
+                conversationManager: conversationManager,
+                sidebarRuntimeState: sidebarRuntimeState
+            )
+        )
+        .background(
+            MainContentRuntimeBridge(
+                agentEngine: agentEngine,
+                runtimeState: mainContentRuntimeState
+            )
+        )
         .background(AppBackgroundView())
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showingSettings, onDismiss: {
@@ -173,9 +183,13 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            // 启动时加载已保存的当前对话，避免新消息覆盖旧对话
-            if let current = conversationManager.currentConversation {
-                agentEngine.loadConversation(current)
+            // 启动时加载已保存的当前对话，避免新消息覆盖旧对话。
+            // 对话已改为后台异步加载，确保数据就绪后再灌入引擎，避免首屏空跑与二次重绘卡顿。
+            conversationManager.performAfterInitialLoad { [weak agentEngine, weak conversationManager] in
+                guard let agentEngine, let conversationManager else { return }
+                if let current = conversationManager.currentConversation {
+                    agentEngine.loadConversation(current)
+                }
             }
             // Immediately update conversation title when first user message is added
             agentEngine.onUserMessageAdded = { [weak conversationManager] in
@@ -188,9 +202,6 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .createNewConversation)) { _ in
             requestNewConversation()
-        }
-        .onChange(of: agentEngine.workingDirectory) { _, newValue in
-            conversationManager.updateWorkingDirectory(newValue)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -277,6 +288,158 @@ struct ContentView: View {
             }
         )
     }
+
+    private var agentEngine: AgentEngine {
+        dependencies.agentEngine
+    }
+
+    private var conversationManager: ConversationManager {
+        dependencies.conversationManager
+    }
+
+    private var sidebarRuntimeState: SidebarRuntimeState {
+        dependencies.sidebarRuntimeState
+    }
+
+    private var mainContentRuntimeState: MainContentRuntimeState {
+        dependencies.mainContentRuntimeState
+    }
+}
+
+@MainActor
+private final class ContentViewDependencies: ObservableObject {
+    let agentEngine = AgentEngine()
+    let conversationManager = ConversationManager()
+    let sidebarRuntimeState = SidebarRuntimeState()
+    let mainContentRuntimeState = MainContentRuntimeState()
+}
+
+@MainActor
+final class SidebarRuntimeState: ObservableObject {
+    @Published private(set) var isNavigationLocked = false
+    @Published private(set) var isSettingsLocked = false
+
+    func update(isProcessing: Bool, pendingUserDecision: AgentEngine.PendingUserDecision?) {
+        let isLocked = isProcessing && pendingUserDecision == nil
+        guard isNavigationLocked != isLocked || isSettingsLocked != isLocked else { return }
+        isNavigationLocked = isLocked
+        isSettingsLocked = isLocked
+    }
+}
+
+private struct RuntimeStateBridge: View {
+    @ObservedObject var agentEngine: AgentEngine
+    let conversationManager: ConversationManager
+    let sidebarRuntimeState: SidebarRuntimeState
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear(perform: syncRuntimeState)
+            .onChange(of: agentEngine.isProcessing) { _, _ in
+                syncRuntimeState()
+            }
+            .onChange(of: agentEngine.pendingUserDecision) { _, _ in
+                syncRuntimeState()
+            }
+            .onChange(of: agentEngine.workingDirectory) { _, newValue in
+                conversationManager.updateWorkingDirectory(newValue)
+            }
+    }
+
+    private func syncRuntimeState() {
+        sidebarRuntimeState.update(
+            isProcessing: agentEngine.isProcessing,
+            pendingUserDecision: agentEngine.pendingUserDecision
+        )
+    }
+}
+
+private struct ContextPanelHost: View {
+    @ObservedObject var agentEngine: AgentEngine
+
+    var body: some View {
+        let snapshot = ContextPanelSnapshot(agentEngine: agentEngine)
+
+        ContextPanel(
+            singleAgentPlan: agentEngine.currentSingleAgentPlan,
+            taskPlan: agentEngine.currentTaskPlan,
+            pipeline: agentEngine.currentPipeline,
+            singleAgentVerification: agentEngine.singleAgentVerificationSummary,
+            pendingUserDecision: agentEngine.pendingUserDecision,
+            runtimeRoles: snapshot.runtimeRoles,
+            messageCount: snapshot.visibleMessageCount,
+            workingDirectory: snapshot.workingDirectory,
+            estimatedTokens: snapshot.estimatedTokens,
+            contextWindow: snapshot.contextWindow,
+            recentFiles: snapshot.recentFiles
+        )
+    }
+}
+
+@MainActor
+fileprivate final class MainContentRuntimeState: ObservableObject {
+    @Published fileprivate(set) var snapshot = MainContentRuntimeSnapshot.empty
+
+    fileprivate func update(snapshot newSnapshot: MainContentRuntimeSnapshot) {
+        guard snapshot.renderSignature != newSnapshot.renderSignature else { return }
+        snapshot = newSnapshot
+    }
+}
+
+private struct MainContentRuntimeBridge: View {
+    @ObservedObject var agentEngine: AgentEngine
+    @ObservedObject var runtimeState: MainContentRuntimeState
+
+    var body: some View {
+        let snapshot = MainContentRuntimeSnapshot(agentEngine: agentEngine)
+
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                runtimeState.update(snapshot: snapshot)
+            }
+            .onChange(of: snapshot.renderSignature) { _, _ in
+                runtimeState.update(snapshot: snapshot)
+            }
+    }
+}
+
+@MainActor
+private struct ContextPanelSnapshot {
+    let runtimeRoles: [AgentEngine.RuntimeModelRole]
+    let visibleMessageCount: Int
+    let workingDirectory: String?
+    let estimatedTokens: Int
+    let contextWindow: Int
+    let recentFiles: [String]
+
+    init(agentEngine: AgentEngine) {
+        runtimeRoles = agentEngine.runtimeModelRoles
+        visibleMessageCount = Self.visibleMessageCount(in: agentEngine.messages)
+        workingDirectory = agentEngine.workingDirectory
+        estimatedTokens = agentEngine.getTotalTokensUsed()
+        contextWindow = AIProvider.contextWindow(for: Self.primaryModelName(
+            runtimeRoles: runtimeRoles,
+            fallback: agentEngine.configuration.executionModel
+        ))
+        recentFiles = agentEngine.memory.session.recentFiles
+    }
+
+    private static func visibleMessageCount(in messages: [Message]) -> Int {
+        messages.reduce(0) { count, message in
+            count + (message.isVisibleInTranscript ? 1 : 0)
+        }
+    }
+
+    private static func primaryModelName(
+        runtimeRoles: [AgentEngine.RuntimeModelRole],
+        fallback: String
+    ) -> String {
+        runtimeRoles.first(where: \.isActive)?.modelName
+            ?? runtimeRoles.first?.modelName
+            ?? fallback
+    }
 }
 
 // MARK: - Background
@@ -303,24 +466,19 @@ struct AppBackgroundView: View {
 // MARK: - Sidebar
 
 struct SidebarView: View {
-    @ObservedObject var conversationManager: ConversationManager
-    let isNavigationLocked: Bool
-    let isSettingsLocked: Bool
-    let onSelect: (Conversation) -> Void
-    let onDelete: (Conversation) -> Void
+    @ObservedObject var sidebarState: SidebarState
+    @ObservedObject var runtimeState: SidebarRuntimeState
+    let onSelect: (ConversationSidebarItem) -> Void
+    let onDelete: (ConversationSidebarItem) -> Void
     let onNewConversation: () -> Void
     let onOpenSettings: () -> Void
 
-    @State private var hoveredConversation: UUID?
-    @State private var pendingDeleteConversation: Conversation?
-
-    private var draftCount: Int {
-        conversationManager.conversations.filter {
-            !$0.draftInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.count
-    }
+    @State private var pendingDeleteItem: ConversationSidebarItem?
 
     var body: some View {
+        let sidebarItems = sidebarState.items
+        let selectedConversationID = sidebarState.selectedConversationID
+
         VStack(spacing: 0) {
             // Header
             VStack(spacing: 12) {
@@ -379,19 +537,6 @@ struct SidebarView: View {
                     .help(newConversationHelpText)
                 }
 
-                HStack(spacing: 8) {
-                    SidebarMetric(
-                        value: "\(conversationManager.conversations.count)",
-                        label: "对话",
-                        isEmphasized: conversationManager.conversations.count > 0
-                    )
-                    SidebarMetric(
-                        value: draftCount == 0 ? "0" : "\(draftCount)",
-                        label: "草稿",
-                        isEmphasized: draftCount > 0
-                    )
-                }
-
                 if isNavigationLocked {
                     HStack(alignment: .top, spacing: 7) {
                         Image(systemName: "hourglass")
@@ -425,54 +570,38 @@ struct SidebarView: View {
                 .frame(height: 1)
 
             // Conversation list
-            if conversationManager.conversations.isEmpty {
-                VStack(spacing: 12) {
-                    Spacer()
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 28))
-                        .foregroundColor(Theme.textTertiary)
-                    Text("暂无对话")
-                        .font(.system(size: 13))
-                        .foregroundColor(Theme.textTertiary)
-                    Text("从左上角新建一个任务，或在首页直接输入需求开始。")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.textTertiary.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                    Spacer()
-                }
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(conversationManager.conversations) { conversation in
-                            ConversationRow(
-                                conversation: conversation,
-                                isSelected: conversationManager.currentConversation?.id == conversation.id,
-                                isHovered: hoveredConversation == conversation.id,
-                                isDisabled: isNavigationLocked
-                            )
-                            .onTapGesture {
-                                guard !isNavigationLocked else { return }
-                                onSelect(conversation)
-                            }
-                            .onHover { hovering in
-                                hoveredConversation = hovering ? conversation.id : nil
-                            }
-                            .contextMenu {
-                                Button("删除", role: .destructive) {
-                                    guard !isNavigationLocked else { return }
-                                    pendingDeleteConversation = conversation
-                                }
-                                .disabled(isNavigationLocked)
-                            }
-                        }
+            Group {
+                if sidebarItems.isEmpty {
+                    VStack(spacing: 12) {
+                        Spacer()
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 28))
+                            .foregroundColor(Theme.textTertiary)
+                        Text("暂无对话")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.textTertiary)
+                        Text("从左上角新建一个任务，或在首页直接输入需求开始。")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textTertiary.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                        Spacer()
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 8)
+                } else {
+                    SidebarConversationListView(
+                        items: sidebarItems,
+                        selectedID: selectedConversationID,
+                        isNavigationLocked: isNavigationLocked,
+                        onSelect: { item in
+                            onSelect(item)
+                        },
+                        onDelete: { item in
+                            pendingDeleteItem = item
+                        }
+                    )
                 }
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // Footer
             VStack(spacing: 0) {
@@ -516,17 +645,17 @@ struct SidebarView: View {
         )
         .alert("删除对话？", isPresented: deleteConfirmationBinding) {
             Button("取消", role: .cancel) {
-                pendingDeleteConversation = nil
+                pendingDeleteItem = nil
             }
             Button("删除", role: .destructive) {
                 guard !isNavigationLocked else {
-                    pendingDeleteConversation = nil
+                    pendingDeleteItem = nil
                     return
                 }
-                if let pendingDeleteConversation {
-                    onDelete(pendingDeleteConversation)
+                if let pendingDeleteItem {
+                    onDelete(pendingDeleteItem)
                 }
-                pendingDeleteConversation = nil
+                pendingDeleteItem = nil
             }
         } message: {
             Text(deleteConfirmationMessage)
@@ -542,170 +671,45 @@ struct SidebarView: View {
         isSettingsLocked ? "当前任务运行中，完成或停止后再修改设置" : "设置"
     }
 
+    private var isNavigationLocked: Bool {
+        runtimeState.isNavigationLocked
+    }
+
+    private var isSettingsLocked: Bool {
+        runtimeState.isSettingsLocked
+    }
+
     private var deleteConfirmationBinding: Binding<Bool> {
         Binding(
-            get: { pendingDeleteConversation != nil },
+            get: { pendingDeleteItem != nil },
             set: { isPresented in
                 if !isPresented {
-                    pendingDeleteConversation = nil
+                    pendingDeleteItem = nil
                 }
             }
         )
     }
 
     private var deleteConfirmationMessage: String {
-        guard let conversation = pendingDeleteConversation else {
+        guard let item = pendingDeleteItem else {
             return "这个操作无法撤销。"
         }
 
-        let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayTitle = title.isEmpty ? "未命名对话" : title
-        let messageCount = conversation.visibleMessageCount
-        let draft = conversation.draftInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let draftSuffix = draft.isEmpty ? "" : "，并包含未发送草稿"
-        return "将删除「\(displayTitle)」及其中 \(messageCount) 条可见消息\(draftSuffix)。这个操作无法撤销。"
-    }
-}
-
-struct ConversationRow: View {
-    let conversation: Conversation
-    let isSelected: Bool
-    let isHovered: Bool
-    var isDisabled: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "bubble.left")
-                    .font(.system(size: 12))
-                    .foregroundColor(isSelected ? Theme.accentPrimary : Theme.textTertiary)
-                    .frame(width: 18, height: 18)
-                    .background(
-                        Circle()
-                            .fill(isSelected ? Theme.accentPrimary.opacity(0.13) : Color.clear)
-                    )
-
-                Text(conversation.title)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
-                    .help(conversation.title)
-
-                Spacer(minLength: 8)
-
-                Text(conversation.updatedAt, style: .relative)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(Theme.textTertiary)
-            }
-
-            if let previewText {
-                Text(previewText)
-                    .font(.system(size: 11))
-                    .foregroundColor(isSelected ? Theme.textSecondary : Theme.textTertiary)
-                    .lineLimit(2)
-                    .help(previewText)
-            }
-
-            HStack(spacing: 10) {
-                if let pendingDecisionLabel {
-                    MetaPill(
-                        icon: "questionmark.circle",
-                        text: pendingDecisionLabel,
-                        isSelected: isSelected,
-                        tone: Theme.statusWarning
-                    )
-                }
-
-                if let messageMetaLabel {
-                    MetaPill(
-                        icon: "text.bubble",
-                        text: messageMetaLabel,
-                        isSelected: isSelected
-                    )
-                }
-
-                if conversation.workingDirectory != nil {
-                    MetaPill(
-                        icon: "folder",
-                        text: folderName,
-                        isSelected: isSelected,
-                        helpText: conversation.workingDirectory
-                    )
-                }
-
-                if !conversation.draftInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    MetaPill(
-                        icon: "square.and.pencil",
-                        text: "草稿",
-                        isSelected: isSelected
-                    )
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .fill(isSelected ? Theme.bgGlass : (isHovered ? Theme.bgGlass.opacity(0.55) : Color.clear))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .stroke(isSelected ? Theme.accentPrimary.opacity(0.28) : Color.clear, lineWidth: 1)
-        )
-        .opacity(isDisabled && !isSelected ? 0.58 : 1)
-        .contentShape(Rectangle())
-        .help(rowHelpText)
+        let draftSuffix = item.hasDraft ? "，并包含未发送草稿" : ""
+        return "将删除「\(displayTitle)」\(draftSuffix)。这个操作无法撤销。"
     }
 
-    private var rowHelpText: String {
-        isDisabled ? "当前任务运行中，完成或停止后再切换会话" : conversation.title
-    }
-
-    private var visibleMessageCount: Int {
-        conversation.visibleMessageCount
-    }
-
-    private var hasDraft: Bool {
-        !conversation.draftInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var previewText: String? {
-        conversation.latestPreviewContent
-    }
-
-    private var folderName: String {
-        guard let path = conversation.workingDirectory else { return "" }
-        return URL(fileURLWithPath: path).lastPathComponent
-    }
-
-    private var messageMetaLabel: String? {
-        if visibleMessageCount > 0 {
-            return "\(visibleMessageCount) 条消息"
-        }
-        if pendingDecisionLabel != nil || hasDraft {
-            return nil
-        }
-        return "未开始"
-    }
-
-    private var pendingDecisionLabel: String? {
-        guard let pendingDecision = conversation.pendingDecision else { return nil }
-
-        switch pendingDecision {
-        case .overwriteAgentFile:
-            return "等待覆盖确认"
-        case .chooseExecutionModeForTask:
-            return "等待模式确认"
-        }
-    }
 }
 
 // MARK: - Main Content
 
-struct MainContentView: View {
-    @ObservedObject var agentEngine: AgentEngine
+private struct MainContentView: View {
+    let agentEngine: AgentEngine
+    @ObservedObject var runtimeState: MainContentRuntimeState
     @Binding var inputText: String
+    @Binding var workingDirectory: String?
     @Binding var showingSettings: Bool
     @Binding var settingsInitialTab: SettingsTab
     @Binding var settingsLaunchContext: SettingsLaunchContext?
@@ -716,15 +720,19 @@ struct MainContentView: View {
 
     init(
         agentEngine: AgentEngine,
+        runtimeState: MainContentRuntimeState,
         inputText: Binding<String>,
+        workingDirectory: Binding<String?>,
         showingSettings: Binding<Bool>,
         settingsInitialTab: Binding<SettingsTab>,
         settingsLaunchContext: Binding<SettingsLaunchContext?>,
         onSubmit: @escaping () -> Bool,
         onNewChatSubmit: ((String) -> Bool)? = nil
     ) {
-        self._agentEngine = ObservedObject(wrappedValue: agentEngine)
+        self.agentEngine = agentEngine
+        self._runtimeState = ObservedObject(wrappedValue: runtimeState)
         self._inputText = inputText
+        self._workingDirectory = workingDirectory
         self._showingSettings = showingSettings
         self._settingsInitialTab = settingsInitialTab
         self._settingsLaunchContext = settingsLaunchContext
@@ -733,22 +741,36 @@ struct MainContentView: View {
     }
 
     var body: some View {
+        let _ = (
+            currentTaskPlan: agentEngine.currentTaskPlan,
+            currentPipeline: agentEngine.currentPipeline,
+            pendingUserDecision: agentEngine.pendingUserDecision,
+            singleAgentVerification: agentEngine.singleAgentVerificationSummary
+        )
+        let snapshot = runtimeState.snapshot
+        let hasVisibleTranscript = snapshot.visibleMessageCount > 0
+        let hasInternalActivity = !hasVisibleTranscript && (
+            snapshot.isProcessing ||
+            snapshot.pendingUserDecision != nil
+        )
+        let shouldShowInputArea = hasVisibleTranscript || snapshot.pendingUserDecision != nil
+
         VStack(spacing: 0) {
             // Top bar
             TopBar(
                 showingSettings: $showingSettings,
                 settingsInitialTab: $settingsInitialTab,
                 settingsLaunchContext: $settingsLaunchContext,
-                pipeline: agentEngine.currentPipeline,
-                singleAgentPlan: agentEngine.currentSingleAgentPlan,
+                pipeline: snapshot.currentPipeline,
+                singleAgentPlan: snapshot.currentSingleAgentPlan,
                 singleAgentVerification: agentEngine.singleAgentVerificationSummary,
                 currentTaskPlan: agentEngine.currentTaskPlan,
                 pendingUserDecision: agentEngine.pendingUserDecision,
-                isSettingsLocked: isRuntimeConfigurationLocked,
-                currentProvider: agentEngine.configuration.executionProvider,
-                currentModelName: agentEngine.primaryDisplayModelName,
-                currentWorkingDirectory: agentEngine.workingDirectory,
-                messageCount: agentEngine.messages.filter(\.isVisibleInTranscript).count,
+                isSettingsLocked: snapshot.isRuntimeConfigurationLocked,
+                currentProvider: snapshot.currentProvider,
+                currentModelName: snapshot.primaryModelName,
+                currentWorkingDirectory: snapshot.workingDirectory,
+                messageCount: snapshot.visibleMessageCount,
                 prefersCompactRuntimeChrome: hasVisibleTranscript && (
                     agentEngine.currentPipeline != nil ||
                     agentEngine.pendingUserDecision != nil ||
@@ -759,9 +781,9 @@ struct MainContentView: View {
             // Chat area
             if hasVisibleTranscript {
                 EnhancedChatView(
-                    messages: agentEngine.messages,
-                    isProcessing: agentEngine.isProcessing,
-                    currentToolCallId: agentEngine.currentToolCallId,
+                    messages: snapshot.messages,
+                    isProcessing: snapshot.isProcessing,
+                    currentToolCallId: snapshot.currentToolCallId,
                     currentPipeline: agentEngine.currentPipeline,
                     singleAgentVerification: agentEngine.singleAgentVerificationSummary,
                     currentTaskPlan: agentEngine.currentTaskPlan,
@@ -770,10 +792,10 @@ struct MainContentView: View {
                 .transition(.opacity)
             } else if hasInternalActivity {
                 InternalActivityView(
-                    isProcessing: agentEngine.isProcessing,
-                    pendingUserDecision: agentEngine.pendingUserDecision,
-                    workingDirectory: agentEngine.workingDirectory,
-                    onStop: agentEngine.isProcessing && agentEngine.pendingUserDecision == nil ? {
+                    isProcessing: snapshot.isProcessing,
+                    pendingUserDecision: snapshot.pendingUserDecision,
+                    workingDirectory: snapshot.workingDirectory,
+                    onStop: snapshot.isProcessing && snapshot.pendingUserDecision == nil ? {
                         agentEngine.stopProcessing()
                     } : nil
                 )
@@ -784,17 +806,17 @@ struct MainContentView: View {
                     onSubmit: { text in
                         onNewChatSubmit?(text) ?? false
                     },
-                    workingDirectory: $agentEngine.workingDirectory,
-                    modelName: agentEngine.primaryDisplayModelName,
-                    providerName: agentEngine.primaryDisplayProviderName,
-                    canAcceptInput: agentEngine.canAcceptUserInput,
-                    pendingUserDecision: agentEngine.pendingUserDecision
+                    workingDirectory: $workingDirectory,
+                    modelName: snapshot.primaryModelName,
+                    providerName: snapshot.primaryProviderName,
+                    canAcceptInput: snapshot.canAcceptInput,
+                    pendingUserDecision: snapshot.pendingUserDecision
                 )
                 .transition(.opacity)
             }
 
             // Error banner
-            if let error = agentEngine.error {
+            if let error = snapshot.error {
                 ErrorBanner(
                     message: error,
                     isNonBlocking: error.contains("已继续执行标准流程"),
@@ -802,7 +824,7 @@ struct MainContentView: View {
                     onResumeTask: restoreResumableTaskInput,
                     onOpenSettings: settingsShortcutAction(for: error, recoveryContext: agentEngine.errorRecoveryContext),
                     settingsButtonTitle: settingsShortcutTitle(for: error, recoveryContext: agentEngine.errorRecoveryContext),
-                    settingsHelpText: settingsShortcutHelpText(for: error, recoveryContext: agentEngine.errorRecoveryContext),
+                    settingsHelpText: settingsShortcutHelpText(for: error, recoveryContext: snapshot.errorRecoveryContext),
                     onDismiss: {
                         agentEngine.error = nil
                     }
@@ -814,13 +836,13 @@ struct MainContentView: View {
             if shouldShowInputArea {
                 InputArea(
                     text: $inputText,
-                    isProcessing: agentEngine.isProcessing,
-                    canAcceptInput: agentEngine.canAcceptUserInput,
-                    pendingUserDecision: agentEngine.pendingUserDecision,
+                    isProcessing: snapshot.isProcessing,
+                    canAcceptInput: snapshot.canAcceptInput,
+                    pendingUserDecision: snapshot.pendingUserDecision,
                     isFocused: $isInputFocused,
-                    workingDirectory: $agentEngine.workingDirectory,
-                    modelName: agentEngine.primaryDisplayModelName,
-                    providerName: agentEngine.primaryDisplayProviderName,
+                    workingDirectory: $workingDirectory,
+                    modelName: snapshot.primaryModelName,
+                    providerName: snapshot.primaryProviderName,
                     onSubmit: onSubmit,
                     onStop: {
                         agentEngine.stopProcessing()
@@ -867,7 +889,7 @@ struct MainContentView: View {
             return draft
         }
 
-        return agentEngine.messages
+        return runtimeState.snapshot.messages
             .reversed()
             .first(where: shouldUseMessageForTaskResume)?
             .content
@@ -927,6 +949,293 @@ struct MainContentView: View {
             error: error,
             recoveryContext: recoveryContext
         )
+    }
+}
+
+@MainActor
+private struct MainContentRuntimeSnapshot {
+    struct RenderSignature: Equatable {
+        let messages: MessagesSignature
+        let isProcessing: Bool
+        let currentToolCallId: String?
+        let currentPipeline: PipelineSignature
+        let currentSingleAgentPlan: SingleAgentPlanSignature
+        let currentTaskPlan: TaskPlanSignature
+        let singleAgentVerification: VerificationSignature
+        let pendingUserDecision: AgentEngine.PendingUserDecision?
+        let workingDirectory: String?
+        let canAcceptInput: Bool
+        let error: String?
+        let errorRecoveryContext: ErrorRecoveryContext?
+        let currentProvider: AIProvider
+        let primaryModelName: String
+        let primaryProviderName: String
+    }
+
+    struct MessagesSignature: Equatable {
+        let totalCount: Int
+        let visibleCount: Int
+        let totalContentUTF8: Int
+        let totalThinkingUTF8: Int
+        let streamingCount: Int
+        let totalToolCalls: Int
+        let totalToolResults: Int
+        let finalAnswerCount: Int
+        let lastMessageID: UUID?
+        let lastContentUTF8: Int
+        let lastThinkingUTF8: Int
+        let lastStreaming: Bool
+
+        init(messages: [Message]) {
+            totalCount = messages.count
+            visibleCount = messages.reduce(0) { $0 + ($1.isVisibleInTranscript ? 1 : 0) }
+            totalContentUTF8 = messages.reduce(0) { $0 + $1.content.utf8.count }
+            totalThinkingUTF8 = messages.reduce(0) { $0 + ($1.thinkingContent?.utf8.count ?? 0) }
+            streamingCount = messages.reduce(0) { $0 + ($1.isStreaming ? 1 : 0) }
+            totalToolCalls = messages.reduce(0) { $0 + ($1.toolCalls?.count ?? 0) }
+            totalToolResults = messages.reduce(0) { $0 + ($1.toolResults?.count ?? 0) }
+            finalAnswerCount = messages.reduce(0) { $0 + ($1.isFinalAnswer ? 1 : 0) }
+            let lastMessage = messages.last
+            lastMessageID = lastMessage?.id
+            lastContentUTF8 = lastMessage?.content.utf8.count ?? 0
+            lastThinkingUTF8 = lastMessage?.thinkingContent?.utf8.count ?? 0
+            lastStreaming = lastMessage?.isStreaming ?? false
+        }
+    }
+
+    struct PipelineSignature: Equatable {
+        let stageCount: Int
+        let runningStageCount: Int
+        let failedStageCount: Int
+        let cancelledStageCount: Int
+        let completedStageCount: Int
+        let totalSubstepCount: Int
+
+        init(pipeline: ExecutionPipeline?) {
+            guard let pipeline else {
+                stageCount = 0
+                runningStageCount = 0
+                failedStageCount = 0
+                cancelledStageCount = 0
+                completedStageCount = 0
+                totalSubstepCount = 0
+                return
+            }
+
+            stageCount = pipeline.stages.count
+            runningStageCount = pipeline.stages.reduce(0) { $0 + ($1.status == .running ? 1 : 0) }
+            failedStageCount = pipeline.stages.reduce(0) { $0 + ($1.status == .failed ? 1 : 0) }
+            cancelledStageCount = pipeline.stages.reduce(0) { $0 + ($1.status == .cancelled ? 1 : 0) }
+            completedStageCount = pipeline.stages.reduce(0) { $0 + ($1.status == .completed ? 1 : 0) }
+            totalSubstepCount = pipeline.stages.reduce(0) { $0 + $1.substeps.count }
+        }
+    }
+
+    struct SingleAgentPlanSignature: Equatable {
+        let stepCount: Int
+        let currentStep: Int
+        let status: TaskPlanStatus?
+        let taskUTF8: Int
+
+        init(plan: AgentEngine.SingleAgentPlan?) {
+            stepCount = plan?.steps.count ?? 0
+            currentStep = plan?.currentStep ?? 0
+            status = plan?.status
+            taskUTF8 = plan?.originalTask.utf8.count ?? 0
+        }
+    }
+
+    struct TaskPlanSignature: Equatable {
+        let subTaskCount: Int
+        let attentionCount: Int
+        let runningCount: Int
+        let failedCount: Int
+        let retryNeededCount: Int
+        let totalRetryCount: Int
+        let status: TaskPlanStatus?
+
+        init(plan: TaskPlan?) {
+            guard let plan else {
+                subTaskCount = 0
+                attentionCount = 0
+                runningCount = 0
+                failedCount = 0
+                retryNeededCount = 0
+                totalRetryCount = 0
+                status = nil
+                return
+            }
+
+            subTaskCount = plan.subTasks.count
+            attentionCount = plan.subTasks.reduce(0) { $0 + ($1.needsAttention ? 1 : 0) }
+            runningCount = plan.subTasks.reduce(0) { $0 + ($1.status == .running ? 1 : 0) }
+            failedCount = plan.subTasks.reduce(0) { $0 + ($1.status == .failed ? 1 : 0) }
+            retryNeededCount = plan.subTasks.reduce(0) { $0 + ($1.verificationStatus == .needsRetry ? 1 : 0) }
+            totalRetryCount = plan.subTasks.reduce(0) { $0 + $1.retryCount }
+            status = plan.status
+        }
+    }
+
+    struct VerificationSignature: Equatable {
+        let status: VerificationStatus?
+        let summaryUTF8: Int
+
+        init(outcome: VerifierService.VerificationOutcome?) {
+            status = outcome?.status
+            summaryUTF8 = outcome?.summary.utf8.count ?? 0
+        }
+    }
+
+    let messages: [Message]
+    let isProcessing: Bool
+    let currentToolCallId: String?
+    let currentPipeline: ExecutionPipeline?
+    let currentSingleAgentPlan: AgentEngine.SingleAgentPlan?
+    let currentTaskPlan: TaskPlan?
+    let singleAgentVerification: VerifierService.VerificationOutcome?
+    let pendingUserDecision: AgentEngine.PendingUserDecision?
+    let workingDirectory: String?
+    let canAcceptInput: Bool
+    let error: String?
+    let errorRecoveryContext: ErrorRecoveryContext?
+    let visibleMessageCount: Int
+    let isRuntimeConfigurationLocked: Bool
+    let currentProvider: AIProvider
+    let primaryModelName: String
+    let primaryProviderName: String
+    let renderSignature: RenderSignature
+
+    static let empty = MainContentRuntimeSnapshot(
+        messages: [],
+        isProcessing: false,
+        currentToolCallId: nil,
+        currentPipeline: nil,
+        currentSingleAgentPlan: nil,
+        currentTaskPlan:
+            nil,
+        singleAgentVerification: nil,
+        pendingUserDecision: nil,
+        workingDirectory: nil,
+        canAcceptInput: true,
+        error: nil,
+        errorRecoveryContext: nil,
+        visibleMessageCount: 0,
+        isRuntimeConfigurationLocked: false,
+        currentProvider: .claude,
+        primaryModelName: "",
+        primaryProviderName: "",
+        renderSignature: RenderSignature(
+            messages: MessagesSignature(messages: []),
+            isProcessing: false,
+            currentToolCallId: nil,
+            currentPipeline: PipelineSignature(pipeline: nil),
+            currentSingleAgentPlan: SingleAgentPlanSignature(plan: nil),
+            currentTaskPlan: TaskPlanSignature(plan: nil),
+            singleAgentVerification: VerificationSignature(outcome: nil),
+            pendingUserDecision: nil,
+            workingDirectory: nil,
+            canAcceptInput: true,
+            error: nil,
+            errorRecoveryContext: nil,
+            currentProvider: .claude,
+            primaryModelName: "",
+            primaryProviderName: ""
+        )
+    )
+
+    init(agentEngine: AgentEngine) {
+        let runtimeRoles = agentEngine.runtimeModelRoles
+        let messages = agentEngine.messages
+        let pendingUserDecision = agentEngine.pendingUserDecision
+        let visibleMessageCount = Self.visibleMessageCount(in: messages)
+        let currentProvider = agentEngine.configuration.executionProvider
+        let primaryModelName = runtimeRoles.first(where: \.isActive)?.modelName
+            ?? runtimeRoles.first?.modelName
+            ?? agentEngine.configuration.executionModel
+        let primaryProviderName = runtimeRoles.first(where: \.isActive)?.providerName
+            ?? runtimeRoles.first?.providerName
+            ?? agentEngine.configuration.executionProvider.displayName
+
+        self.messages = messages
+        isProcessing = agentEngine.isProcessing
+        currentToolCallId = agentEngine.currentToolCallId
+        currentPipeline = agentEngine.currentPipeline
+        currentSingleAgentPlan = agentEngine.currentSingleAgentPlan
+        currentTaskPlan = agentEngine.currentTaskPlan
+        singleAgentVerification = agentEngine.singleAgentVerificationSummary
+        self.pendingUserDecision = pendingUserDecision
+        workingDirectory = agentEngine.workingDirectory
+        canAcceptInput = agentEngine.canAcceptUserInput
+        error = agentEngine.error
+        errorRecoveryContext = agentEngine.errorRecoveryContext
+        self.visibleMessageCount = visibleMessageCount
+        isRuntimeConfigurationLocked = agentEngine.isProcessing && pendingUserDecision == nil
+        self.currentProvider = currentProvider
+        self.primaryModelName = primaryModelName
+        self.primaryProviderName = primaryProviderName
+        renderSignature = RenderSignature(
+            messages: MessagesSignature(messages: messages),
+            isProcessing: agentEngine.isProcessing,
+            currentToolCallId: agentEngine.currentToolCallId,
+            currentPipeline: PipelineSignature(pipeline: agentEngine.currentPipeline),
+            currentSingleAgentPlan: SingleAgentPlanSignature(plan: agentEngine.currentSingleAgentPlan),
+            currentTaskPlan: TaskPlanSignature(plan: agentEngine.currentTaskPlan),
+            singleAgentVerification: VerificationSignature(outcome: agentEngine.singleAgentVerificationSummary),
+            pendingUserDecision: pendingUserDecision,
+            workingDirectory: agentEngine.workingDirectory,
+            canAcceptInput: agentEngine.canAcceptUserInput,
+            error: agentEngine.error,
+            errorRecoveryContext: agentEngine.errorRecoveryContext,
+            currentProvider: currentProvider,
+            primaryModelName: primaryModelName,
+            primaryProviderName: primaryProviderName
+        )
+    }
+
+    private init(
+        messages: [Message],
+        isProcessing: Bool,
+        currentToolCallId: String?,
+        currentPipeline: ExecutionPipeline?,
+        currentSingleAgentPlan: AgentEngine.SingleAgentPlan?,
+        currentTaskPlan: TaskPlan?,
+        singleAgentVerification: VerifierService.VerificationOutcome?,
+        pendingUserDecision: AgentEngine.PendingUserDecision?,
+        workingDirectory: String?,
+        canAcceptInput: Bool,
+        error: String?,
+        errorRecoveryContext: ErrorRecoveryContext?,
+        visibleMessageCount: Int,
+        isRuntimeConfigurationLocked: Bool,
+        currentProvider: AIProvider,
+        primaryModelName: String,
+        primaryProviderName: String,
+        renderSignature: RenderSignature
+    ) {
+        self.messages = messages
+        self.isProcessing = isProcessing
+        self.currentToolCallId = currentToolCallId
+        self.currentPipeline = currentPipeline
+        self.currentSingleAgentPlan = currentSingleAgentPlan
+        self.currentTaskPlan = currentTaskPlan
+        self.singleAgentVerification = singleAgentVerification
+        self.pendingUserDecision = pendingUserDecision
+        self.workingDirectory = workingDirectory
+        self.canAcceptInput = canAcceptInput
+        self.error = error
+        self.errorRecoveryContext = errorRecoveryContext
+        self.visibleMessageCount = visibleMessageCount
+        self.isRuntimeConfigurationLocked = isRuntimeConfigurationLocked
+        self.currentProvider = currentProvider
+        self.primaryModelName = primaryModelName
+        self.primaryProviderName = primaryProviderName
+        self.renderSignature = renderSignature
+    }
+
+    private static func visibleMessageCount(in messages: [Message]) -> Int {
+        messages.reduce(0) { count, message in
+            count + (message.isVisibleInTranscript ? 1 : 0)
+        }
     }
 }
 
@@ -1609,32 +1918,6 @@ struct MetaPill: View {
             return tone.opacity(isSelected ? 0.28 : 0.20)
         }
         return isSelected ? Theme.accentPrimary.opacity(0.18) : Theme.borderSubtle
-    }
-}
-
-struct SidebarMetric: View {
-    let value: String
-    let label: String
-    var isEmphasized: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value)
-                .font(.system(size: 13, weight: isEmphasized ? .semibold : .medium, design: .rounded))
-                .foregroundColor(isEmphasized ? Theme.textPrimary : Theme.textSecondary)
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(Theme.textTertiary)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.bgGlass.opacity(isEmphasized ? 0.62 : 0.46))
-        .cornerRadius(Theme.radiusMD)
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radiusMD)
-                .stroke(Theme.borderSubtle, lineWidth: 1)
-        )
     }
 }
 

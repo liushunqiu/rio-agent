@@ -146,6 +146,15 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
             newChatSource.contains(".foregroundColor(Theme.textSecondary)"),
             "Quick prompt icons should sit back visually once the section is framed as secondary suggestions."
         )
+        XCTAssertFalse(
+            newChatSource.contains("ScrollView(showsIndicators: false)"),
+            "The landing page should avoid wrapping its fixed-height start surface in a vertical ScrollView because the extra scroll layout work shows up directly in the sidebar stutter path."
+        )
+        XCTAssertFalse(
+            newChatSource.contains("LazyVGrid(")
+                || newChatSource.contains("GridItem(.adaptive"),
+            "The landing page only renders four static templates, so it should not pay the lazy-grid layout cost on the empty-session hot path."
+        )
         XCTAssertTrue(
             newChatSource.contains("输入“是”或“否”继续，也可以直接写新任务，系统会自动切换。"),
             "NewChatPage confirmation mode should keep the replacement instruction copy visible."
@@ -169,6 +178,14 @@ final class NewChatPendingDecisionSourceTests: XCTestCase {
         XCTAssertTrue(
             newChatSource.contains("private var trimmedComposerText: String"),
             "The landing page should normalize the composer text once and reuse that truth for start-state decisions."
+        )
+        XCTAssertTrue(
+            newChatSource.contains("private var shouldAutofocusComposer: Bool {\n        if pendingUserDecision != nil { return true }\n        return !trimmedComposerText.isEmpty\n    }"),
+            "The landing page should only auto-focus when the user is resuming real input or must answer a pending confirmation, not on a completely empty start screen."
+        )
+        XCTAssertFalse(
+            newChatSource.contains("DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {\n                isInputFocused = true"),
+            "The landing page should not delay-focus the empty composer on launch because that keeps the start screen in the expensive active-text-editing path."
         )
         XCTAssertTrue(
             newChatSource.contains("if shouldShowCompactStartSummary {"),

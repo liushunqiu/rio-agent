@@ -17,12 +17,13 @@ final class SettingsNavigationLockSourceTests: XCTestCase {
             "Root settings requests should be centrally guarded so indirect settings entry points cannot mutate runtime configuration mid-task."
         )
         XCTAssertTrue(
-            source.contains("isSettingsLocked: isRuntimeConfigurationLocked"),
-            "Settings lock state should be passed into visible settings entry points instead of being inferred by child controls."
+            source.contains("runtimeState: sidebarRuntimeState"),
+            "Sidebar settings lock state should come from the lightweight runtime state so streaming updates do not invalidate the sidebar."
         )
         XCTAssertTrue(
-            source.contains("let isSettingsLocked: Bool"),
-            "SidebarView should receive the settings lock explicitly."
+            source.contains("@ObservedObject var runtimeState: SidebarRuntimeState")
+                && source.contains("private var isSettingsLocked: Bool {\n        runtimeState.isSettingsLocked\n    }"),
+            "SidebarView should derive the settings lock from the isolated sidebar runtime state."
         )
         XCTAssertTrue(
             source.contains("var isSettingsLocked = false"),

@@ -503,18 +503,18 @@ class AgentMemory: ObservableObject {
         return chunks.reversed()
     }
 
-    func deleteMemoryNote(id: String) {
+    func deleteMemoryNote(id: String) throws {
         let remaining = persistedNotes.filter { $0.id != id }
-        saveMemoryNotes(remaining)
+        try saveMemoryNotes(remaining)
     }
 
-    func deleteMemoryNote(summary: String) {
+    func deleteMemoryNote(summary: String) throws {
         guard let note = persistedNotes.first(where: { $0.summary == summary }) else { return }
-        deleteMemoryNote(id: note.id)
+        try deleteMemoryNote(id: note.id)
     }
 
-    func clearMemoryMarkdown() {
-        saveMemoryNotes([])
+    func clearMemoryMarkdown() throws {
+        try saveMemoryNotes([])
     }
 
     private func upsertMemoryNote(summary: String, body: [String]) {
@@ -524,7 +524,11 @@ class AgentMemory: ObservableObject {
         var deduped = existing.filter { $0.summary != summary }
         deduped.insert(MemoryNote(summary: summary, body: body), at: 0)
         let limited = Array(deduped.prefix(40))
-        saveMemoryNotes(limited)
+        do {
+            try saveMemoryNotes(limited)
+        } catch {
+            RioLogger.config.error("⚠️ 保存 MEMORY.md 失败: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func shouldPersistMemory(summary: String, body: [String]) -> Bool {
@@ -537,7 +541,7 @@ class AgentMemory: ObservableObject {
         return true
     }
 
-    private func saveMemoryNotes(_ notes: [MemoryNote]) {
+    private func saveMemoryNotes(_ notes: [MemoryNote]) throws {
         let header = """
         # Agent Memory
 
@@ -554,13 +558,9 @@ class AgentMemory: ObservableObject {
 
         let content = ([header] + sections).joined(separator: "\n\n")
 
-        do {
-            try ensureMemoryDirectoryExists()
-            try content.write(toFile: memoryMarkdownPath(), atomically: true, encoding: .utf8)
-            persistedNotes = notes
-        } catch {
-            RioLogger.config.error("⚠️ 保存 MEMORY.md 失败: \(error.localizedDescription, privacy: .public)")
-        }
+        try ensureMemoryDirectoryExists()
+        try content.write(toFile: memoryMarkdownPath(), atomically: true, encoding: .utf8)
+        persistedNotes = notes
     }
     
     // MARK: - Memory Management
@@ -575,7 +575,11 @@ class AgentMemory: ObservableObject {
         session = SessionMemory()
         longTerm = LongTermMemory()
         saveLongTermMemory()
-        saveMemoryNotes([])
+        do {
+            try saveMemoryNotes([])
+        } catch {
+            RioLogger.config.error("⚠️ 清空 MEMORY.md 失败: \(error.localizedDescription, privacy: .public)")
+        }
     }
     
     /// Get memory statistics
