@@ -36,6 +36,10 @@ struct SidebarConversationListView: NSViewRepresentable {
             coordinator?.menu(for: row)
         }
 
+        // 性能优化：启用图层支持和硬件加速
+        tableView.wantsLayer = true
+        tableView.layerContentsRedrawPolicy = .duringViewResize
+
         let scrollView = SidebarConversationScrollView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -47,6 +51,10 @@ struct SidebarConversationListView: NSViewRepresentable {
         scrollView.contentInsets = NSEdgeInsets(top: 8, left: 0, bottom: 4, right: 0)
         scrollView.documentView = tableView
         scrollView.sidebarTableView = tableView
+
+        // 性能优化：启用图层支持
+        scrollView.wantsLayer = true
+        scrollView.layerContentsRedrawPolicy = .duringViewResize
 
         context.coordinator.tableView = tableView
         context.coordinator.configureLiveScrollObservation(scrollView)
@@ -314,7 +322,6 @@ private final class SidebarConversationCellView: NSTableCellView {
     static let rowHeight: CGFloat = 66
 
     private let cardView = FlippedView()
-    private let textView = SidebarConversationTextDrawingView()
     private let titleField = NSTextField(labelWithString: "")
     private let directoryField = NSTextField(labelWithString: "")
     private var renderedSelectionState: Bool?
@@ -334,16 +341,16 @@ private final class SidebarConversationCellView: NSTableCellView {
     }
 
     func configure(item: ConversationSidebarItem, isSelected: Bool, isDisabled: Bool) {
-        alphaValue = isDisabled && !isSelected ? 0.58 : 1
         let targetAlpha = isDisabled && !isSelected ? 0.58 : 1
         if renderedAlphaValue != targetAlpha {
+            alphaValue = targetAlpha
             renderedAlphaValue = targetAlpha
         }
 
-        var needsTextRedraw = false
+        var needsLayout = false
         if titleField.stringValue != item.title {
             titleField.stringValue = item.title
-            needsTextRedraw = true
+            needsLayout = true
         }
 
         if renderedSelectionState != isSelected {
@@ -351,29 +358,29 @@ private final class SidebarConversationCellView: NSTableCellView {
             titleField.textColor = isSelected ? AppKitSidebarColors.textPrimary : AppKitSidebarColors.textSecondary
             configureCard(isSelected: isSelected)
             renderedSelectionState = isSelected
-            needsTextRedraw = true
+            needsLayout = true
         }
 
         if directoryField.stringValue != item.workingDirectoryLabel {
             directoryField.stringValue = item.workingDirectoryLabel
-            needsTextRedraw = true
+            needsLayout = true
         }
         let directoryColor = item.workingDirectory == nil
             ? AppKitSidebarColors.textTertiary.withAlphaComponent(0.72)
             : AppKitSidebarColors.textTertiary
         if directoryField.textColor != directoryColor {
             directoryField.textColor = directoryColor
-            needsTextRedraw = true
+            needsLayout = true
         }
 
-        toolTip = [item.title, item.workingDirectoryLabel].joined(separator: "\n")
         let toolTipText = [item.title, item.workingDirectoryLabel].joined(separator: "\n")
         if renderedToolTip != toolTipText {
+            toolTip = toolTipText
             renderedToolTip = toolTipText
         }
 
-        if needsTextRedraw {
-            textView.needsDisplay = true
+        if needsLayout {
+            needsLayout = true
         }
     }
 
@@ -386,21 +393,19 @@ private final class SidebarConversationCellView: NSTableCellView {
         cardView.layer?.masksToBounds = true
         addSubview(cardView)
 
-        textView.configure(titleField: titleField, directoryField: directoryField)
-        cardView.addSubview(textView)
-
         configureTextField(titleField, font: .systemFont(ofSize: 13), color: AppKitSidebarColors.textSecondary)
         titleField.lineBreakMode = .byTruncatingMiddle
+        cardView.addSubview(titleField)
 
         configureTextField(directoryField, font: .systemFont(ofSize: 11), color: AppKitSidebarColors.textTertiary)
         directoryField.lineBreakMode = .byTruncatingMiddle
+        cardView.addSubview(directoryField)
     }
 
     override func layout() {
         super.layout()
 
         cardView.frame = bounds.insetBy(dx: 8, dy: 2)
-        textView.frame = cardView.bounds
         let textWidth = max(0, cardView.bounds.width - 24)
         titleField.frame = NSRect(x: 12, y: 10, width: textWidth, height: 19)
         directoryField.frame = NSRect(x: 12, y: 36, width: textWidth, height: 17)
@@ -427,28 +432,6 @@ private final class SidebarConversationCellView: NSTableCellView {
         cardView.layer?.borderWidth = isSelected ? 1 : 0
         cardView.layer?.borderColor = isSelected ? AppKitSidebarColors.accent.withAlphaComponent(0.30).cgColor : NSColor.clear.cgColor
         CATransaction.commit()
-    }
-}
-
-private final class SidebarConversationTextDrawingView: NSView {
-    private weak var titleField: NSTextField?
-    private weak var directoryField: NSTextField?
-
-    override var isFlipped: Bool { true }
-
-    func configure(titleField: NSTextField, directoryField: NSTextField) {
-        self.titleField = titleField
-        self.directoryField = directoryField
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-
-        guard let titleField,
-              let directoryField else { return }
-
-        titleField.cell?.draw(withFrame: titleField.frame, in: self)
-        directoryField.cell?.draw(withFrame: directoryField.frame, in: self)
     }
 }
 
