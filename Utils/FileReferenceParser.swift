@@ -1,5 +1,11 @@
 import Foundation
 
+extension Character {
+    var isNewline: Bool {
+        self == "\n" || self == "\r" || self == "\r\n"
+    }
+}
+
 enum FileReferenceParser {
     private static let marker = "@file:"
 
@@ -23,7 +29,8 @@ enum FileReferenceParser {
     }
 
     static func appendingReference(to text: String, path: String) -> String {
-        var cleaned = removingDanglingAt(from: text)
+        // 移除末尾的 @ 触发符，并清理用户在 @ 后可能误输入的文字
+        var cleaned = removingFilePickerTrigger(from: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let path = normalizedReferencePath(path) else { return cleaned }
         let reference = "\(marker)\(path)"
@@ -93,6 +100,56 @@ enum FileReferenceParser {
     private static func removingDanglingAt(from text: String) -> String {
         guard text.hasSuffix("@") else { return text }
         return String(text.dropLast())
+    }
+
+    /// 移除文件选择器触发符（末尾的 @ 或 @ 后跟随的文字）
+    /// 例如：
+    /// - "@" -> ""
+    /// - "hello @" -> "hello"
+    /// - "hello @你好" -> "hello"
+    /// - "@你好" -> ""
+    private static func removingFilePickerTrigger(from text: String) -> String {
+        let lines = text.components(separatedBy: .newlines)
+        guard let lastLine = lines.last else { return text }
+
+        // 查找最后一行中最后一个触发 @ 的位置（@ 前必须是空格、换行或字符串开头）
+        var triggerIndex: String.Index?
+
+        for i in lastLine.indices {
+            let char = lastLine[i]
+            if char == "@" {
+                // 检查 @ 前面是否是合法的触发位置
+                if i == lastLine.startIndex {
+                    // @ 在行首
+                    triggerIndex = i
+                } else {
+                    let beforeAt = lastLine[lastLine.index(before: i)]
+                    if beforeAt.isWhitespace || beforeAt.isNewline {
+                        // @ 前面是空格或换行
+                        triggerIndex = i
+                    }
+                }
+            }
+        }
+
+        guard let triggerIndex else {
+            // 没有找到触发符，返回原文本
+            return text
+        }
+
+        // 移除从触发位置到行尾的所有内容
+        let cleanedLastLine = String(lastLine[..<triggerIndex])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if lines.count == 1 {
+            return cleanedLastLine
+        } else {
+            var result = lines.dropLast()
+            if !cleanedLastLine.isEmpty {
+                result.append(cleanedLastLine)
+            }
+            return result.joined(separator: "\n")
+        }
     }
 
     private static func referenceEntries(in line: String) -> [ReferenceEntry] {

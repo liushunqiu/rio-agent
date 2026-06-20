@@ -302,6 +302,10 @@ struct NewChatPage: View {
             isEnabled: canEditContext
         ) {
             inputText = composer.text
+            // 恢复输入框焦点，并将光标移动到文本末尾（新行位置）
+            DispatchQueue.main.async {
+                isInputFocused = true
+            }
         }
         .onChange(of: canEditContext) { _, canEditContext in
             if !canEditContext {
