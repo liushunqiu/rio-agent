@@ -26,11 +26,14 @@ async fn main() {
             create_conversation,
             delete_conversation,
             get_conversation_messages,
+            update_conversation_title,
 
             // Config commands
-            save_config,
-            list_configs,
-            delete_config,
+            list_configurations,
+            create_configuration,
+            get_active_configuration,
+            set_active_configuration,
+            delete_configuration,
 
             // Tool commands
             list_tools,

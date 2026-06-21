@@ -155,9 +155,12 @@ pub async fn delete_conversation(
     // 移除缓存的引擎
     state.remove_engine(&conversation_id).await;
 
-    // TODO: 实现数据库删除
-    // state.storage.delete_session(&conversation_id).await
-    //     .map_err(|e| e.to_string())
+    // 删除数据库中的会话
+    state.storage.delete_session(&conversation_id).await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 
     Ok(())
 }
