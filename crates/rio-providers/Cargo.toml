@@ -1,0 +1,17 @@
+[package]
+name = "rio-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rio-core = { path = "../rio-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+reqwest = { workspace = true }
+async-trait = "0.1"
+tracing = { workspace = true }
