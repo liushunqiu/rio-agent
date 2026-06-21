@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Internal dependencies
+rio-identity = { path = "../rio-identity" }
+
+# Workspace dependencies
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
