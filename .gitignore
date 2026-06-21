@@ -25,3 +25,13 @@ Cargo.lock
 *.db
 *.db-shm
 *.db-wal
+
+# Node.js / Frontend
+node_modules/
+dist/
+*.local
+
+# Tauri
+rio-agent-ui/src-tauri/target/
+rio-agent-ui/src-tauri/Cargo.lock
+
