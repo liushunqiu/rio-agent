@@ -7,6 +7,7 @@ members = [
     "crates/rio-storage",
     "crates/rio-security",
     "crates/rio-cli",
+    "crates/rio-identity",
 ]
 
 [workspace.package]

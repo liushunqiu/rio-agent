@@ -154,7 +154,7 @@ impl Storage {
 
     pub async fn save_message(&self, session_id: &str, message: &Message) -> Result<()> {
         let tool_calls_json = message.tool_calls.as_ref()
-            .map(|calls| serde_json::to_string(calls))
+            .map(serde_json::to_string)
             .transpose()?;
 
         let role_str = match message.role {
