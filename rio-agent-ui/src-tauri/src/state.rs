@@ -53,7 +53,7 @@ impl AppState {
         // TODO: 从配置中读取
         let provider = self.create_default_provider()?;
         let engine = Arc::new(AgentEngine::new(
-            Arc::new(provider),
+            provider,
             self.tool_registry.clone(),
         ));
 
@@ -66,15 +66,15 @@ impl AppState {
 
     /// 创建默认 AI Provider
     /// TODO: 从数据库配置中读取
-    fn create_default_provider(&self) -> Result<Box<dyn AIProvider>> {
+    fn create_default_provider(&self) -> Result<Arc<dyn AIProvider>> {
         // 暂时返回 Claude Provider
         // 实际使用时需要从环境变量或配置文件读取 API Key
         let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .unwrap_or_else(|_| "".to_string());
+            .unwrap_or_else(|_| String::new());
 
-        Ok(Box::new(ClaudeProvider::new(
-            &api_key,
-            "claude-3-5-sonnet-20241022",
+        Ok(Arc::new(ClaudeProvider::new(
+            api_key,
+            "claude-3-5-sonnet-20241022".to_string(),
         )))
     }
 

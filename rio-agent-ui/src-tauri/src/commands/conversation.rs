@@ -1,4 +1,4 @@
-use tauri::{State, Window};
+use tauri::{State, Window, Emitter};
 use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
 
@@ -49,7 +49,7 @@ impl From<Message> for MessageInfo {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageChunk {
     pub conversation_id: String,
     pub content: String,
@@ -80,7 +80,7 @@ pub async fn send_message(
 
     // 获取流式响应
     let mut stream = engine
-        .process_message_streaming(vec![user_message])
+        .run_streaming(vec![user_message])
         .await
         .map_err(|e| e.to_string())?;
 
@@ -92,16 +92,16 @@ pub async fn send_message(
         match chunk_result {
             Ok(chunk) => {
                 full_response.push_str(&chunk);
-                let _ = window.emit(
-                    "message_chunk",
-                    MessageChunk {
-                        conversation_id: conversation_id.clone(),
-                        content: chunk,
-                    },
-                );
+                let payload = MessageChunk {
+                    conversation_id: conversation_id.clone(),
+                    content: chunk,
+                };
+                window.emit("message_chunk", payload)
+                    .map_err(|e| e.to_string())?;
             }
             Err(e) => {
-                let _ = window.emit("message_error", e.to_string());
+                window.emit("message_error", e.to_string())
+                    .map_err(|e| e.to_string())?;
                 return Err(e.to_string());
             }
         }

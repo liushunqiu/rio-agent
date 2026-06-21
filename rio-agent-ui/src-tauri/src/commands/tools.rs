@@ -2,7 +2,6 @@ use tauri::State;
 use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
-use rio_core::Tool;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolInfo {
@@ -16,9 +15,9 @@ pub struct ToolInfo {
 pub async fn list_tools(
     state: State<'_, AppState>,
 ) -> Result<Vec<ToolInfo>, String> {
-    let tools = state.tool_registry.list_tools();
+    let tools = state.tool_registry.all();
     Ok(tools
-        .into_iter()
+        .iter()
         .map(|tool| ToolInfo {
             name: tool.name().to_string(),
             description: tool.description().to_string(),
@@ -34,9 +33,12 @@ pub async fn execute_tool(
     args: serde_json::Value,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    state
+    let tool = state
         .tool_registry
-        .execute(&tool_name, args)
+        .get(&tool_name)
+        .ok_or_else(|| format!("Tool not found: {}", tool_name))?;
+
+    tool.execute(args)
         .await
         .map_err(|e| e.to_string())
 }
