@@ -2,9 +2,9 @@
 
 <div align="center">
 
-**原生 macOS AI 编程助手 · Swift 5.9+ · SwiftUI**
+**跨平台 AI 编程助手 · Rust · Tauri**
 
-支持多 AI 提供商 · 多 Agent DAG 协作 · 智能任务规划 · Critic 错误自愈
+多 AI 提供商 · 多 Agent 协作 · 流式输出 · 8 种内置工具
 
 [快速开始](#快速开始) · [核心特性](#核心特性) · [架构设计](#架构设计) · [开发指南](#开发指南)
 
@@ -14,59 +14,43 @@
 
 ## 系统要求
 
-- macOS 14.0+
-- Xcode 15.0+
-- Swift 5.9+
+- **Rust**: 1.75+
+- **Node.js**: 18+ (GUI 开发)
+- **平台**: macOS, Windows, Linux
 
 ## 快速开始
 
-### 方式 1：Xcode 开发（推荐）
-
-```bash
-open RioAgent.xcodeproj
-```
-
-支持断点调试、UI 预览、完整 IDE 功能。
-
-### 方式 2：命令行构建
+### CLI 模式
 
 ```bash
 # 构建
-swift build
+cargo build --release
 
-# 运行
-swift run
+# 运行 CLI
+cargo run --bin rio-cli
 
 # 运行测试
-swift test
+cargo test
+
+# 代码检查
+cargo clippy -- -D warnings
 ```
 
-### 方式 3：打包 .app
+### GUI 模式（Tauri）
 
 ```bash
-# 自动选择：有签名证书时使用 Keychain，否则回退到本地存储
-./create_app.sh
+# 一键启动开发服务器
+./start-gui.sh
 
-# 强制使用开发签名（需要 Apple Developer Team ID）
-RIO_DEVELOPMENT_TEAM=ABCDE12345 ./create_app.sh
-
-# 强制未签名模式（API Key 存储在 UserDefaults）
-./create_app.sh --unsigned
+# 或手动启动
+cd rio-agent-ui
+npm install
+npm run tauri:dev
 ```
 
-**签名说明**：
-- 使用 Keychain 存储 API Key 需要应用签名
-- 首次运行时选择"总是允许"以避免重复弹窗
-- 未签名模式自动切换到 UserDefaults 存储
-
-### 构建脚本快捷方式
-
+**环境变量**：
 ```bash
-./build.sh build    # 构建
-./build.sh run      # 构建并运行
-./build.sh app      # 打包已签名 .app
-./build.sh test     # 运行测试
-./build.sh clean    # 清理构建产物
+export ANTHROPIC_API_KEY='your-api-key-here'
 ```
 
 ---
@@ -76,393 +60,221 @@ RIO_DEVELOPMENT_TEAM=ABCDE12345 ./create_app.sh
 ### 🤖 双引擎架构
 
 - **单 Agent 引擎（AgentEngine）**  
-  处理简单到中等复杂度任务，支持流式输出、工具调用循环（最多 9999 次迭代）、错误自愈
+  处理简单到中等复杂度任务，支持流式输出、工具调用循环（最多 100 次迭代）、错误处理
 
 - **多 Agent 引擎（MultiAgentEngine）**  
-  四层流水线处理复杂任务：Planner 生成 DAG → 波次并行执行 → Critic 验证 → 结果汇总
+  复杂任务自动分解到多个专业 Agent，支持 Agent-to-Agent（A2A）通信、DAG 编排、死锁预防
 
-### 🛠️ 8 种内置工具
+### 🔧 8 种内置工具
 
-| 工具 | 描述 | 风险等级 |
-|------|------|----------|
-| `execute_command` | 执行 Shell 命令（支持管道、重定向） | 自动分类 |
-| `read_file` | 读取文件内容 | 安全 |
-| `write_file` | 写入文件（全量覆盖） | 需确认¹ |
-| `edit_file` | 搜索替换编辑 | 需确认¹ |
-| `apply_patch` | 应用 unified diff 补丁 | 需确认 |
-| `search_files` | 正则搜索文件内容 | 安全 |
-| `find_files` | 按名称模式查找文件 | 安全 |
-| `list_directory` | 列出目录内容 | 安全 |
+| 工具 | 功能 | 风险等级 |
+|------|------|---------|
+| `read_file` | 读取文件内容 | safe |
+| `write_file` | 写入文件 | normal |
+| `edit_file` | 编辑文件（部分替换） | normal |
+| `apply_patch` | 应用 diff 补丁 | normal |
+| `execute_command` | 执行 shell 命令 | 分级 |
+| `search_files` | 内容搜索（grep） | safe |
+| `find_files` | 文件名搜索 | safe |
+| `list_directory` | 列出目录 | safe |
 
-<sub>¹ 工作目录外的文件操作需要用户确认</sub>
+**命令风险分类**：
+- **safe**: 只读命令（ls, cat, grep, git status）
+- **normal**: 大部分命令（npm install, cargo build）
+- **dangerous**: 危险命令（rm -rf, sudo, curl, wget）
 
-### 🧠 智能子系统
+### 🌐 多 AI 提供商
 
-- **TaskPlanner** — 任务复杂度分析、步骤分解、执行指导
-- **AgentMemory** — 短期会话记忆 + 长期偏好学习（工具使用模式、错误历史、编码风格）
-- **ProjectAnalyzer** — 自动识别项目类型（iOS/macOS/Web/CLI）、框架、依赖、构建系统
-- **CodeNavigator** — 代码符号提取、定义跳转、引用查找（Swift/JS/Python/Rust/Go）
-- **MultiFileCoordinator** — 文件关系分析、协调多文件修改
-- **RefactoringAdvisor** — 代码异味检测、重构建议
-- **CriticService** — 错误分析与修复建议生成
+| 提供商 | 模型 | 特性 |
+|--------|------|------|
+| **Claude** | Sonnet/Opus 3.x/4.x | thinking mode, 200K context |
+| **OpenAI** | GPT-4.x, o1/o3 | vision, JSON mode, 1M context |
+| **Gemini** | 1.5/2.x | vision, JSON mode, 1M context |
+| **DeepSeek** | v3/r1 | thinking mode, 64K context |
 
-### 🔀 本地路由器（RouterService）
+### 🧠 多 Agent 协作
 
-可选的前置拦截层，支持两种模式：
+- **Agent 角色系统** - Orchestrator（协调）、Executor（执行）、Reviewer（审查）、Researcher（研究）
+- **@mention 路由** - `@agent_name`、`@agent1 @agent2`、`@all`
+- **共享内存系统** - Evidence Store（事实）、Lessons Store（经验）、Decision Store（决策）
+- **死锁预防** - 调用链追踪，防止 A→B→A 循环
 
-- **通用路由** — 使用配置的 AI 模型判断是否需要处理
-- **Qwen3.5-4B 路由** — 本地小模型结构化输出，支持路由到 code_expert / search_agent / data_analyst / chitchat 等目标节点
+### 💾 安全存储
 
-### 🎯 多提供商支持
-
-- **Claude（Anthropic）** — Sonnet/Opus/Haiku 3.x/4.x，支持 thinking、vision、200K 上下文
-- **OpenAI** — GPT-4.x、o1/o3，支持 vision、JSON 模式，最高 1M 上下文
-- **OpenAI 兼容 API** — DeepSeek、Qwen、Gemini、本地模型等
-
-通过 **ConfigSet** 管理多个模型配置：
-- 每个 ConfigSet = 一个模型实例（提供商 + Base URL + 模型名 + API Key）
-- API Key 安全存储在 macOS Keychain 中
-- 可为规划模型和执行模型分别指定不同的 ConfigSet
-
-### 🛡️ 安全机制
-
-#### 命令风险分类（CommandClassifier）
-
-自动分析 Shell 命令风险，支持管道、控制运算符（`&&`、`||`、`;`）、重定向的递归解析：
-
-- **safe** — 只读命令（ls、cat、grep、git status/log/diff）→ 自动执行
-- **normal** — 大多数命令 → 需要用户确认
-- **dangerous** — 危险命令（rm -rf、sudo、curl、wget、kill -9、sed -i）→ 始终需要确认
-
-#### 路径安全（PathSecurity）
-
-- 防止目录遍历攻击（`../`、符号链接等）
-- 工作目录外的文件操作需要用户确认
+- **API Key**: 操作系统原生 Keychain（macOS Keychain, Windows Credential Manager, Linux Secret Service）
+- **配置元数据**: SQLite 数据库
+- **对话历史**: SQLite 持久化
 
 ---
 
 ## 架构设计
 
-### 单 Agent 引擎流程
-
-```
-用户输入
-  ↓
-[可选] RouterService 前置拦截
-  ↓
-TaskPlanner 任务分析
-  ↓
-ConversationLoop 工具调用循环（最多 9999 次）
-  ├─ AI 模型推理
-  ├─ 工具调用与结果处理
-  ├─ 错误追踪 + Critic 分析（连续错误 ≥2 次）
-  └─ 上下文管理（智能 Token 估算、自动压缩）
-  ↓
-返回结果
-```
-
-### 多 Agent 引擎流程
-
-```
-用户输入
-  ↓
-Layer 2: Planner
-  Orchestrator 生成 DAG 子任务图（Worker 类型 + 依赖关系）
-  ↓
-Layer 3: Execution Guild
-  按波次并行执行（无依赖任务并行，有依赖任务等待）
-  每个 Worker 注入项目上下文（工作目录、git 状态、文件树、AGENT.md）
-  ↓
-Layer 4: Critic & Verification
-  PEV（Plan-Execute-Verify）重试循环
-  Critic 分析失败原因并生成修复建议
-  ↓
-Synthesis: Result Synthesis
-  Orchestrator 汇总所有子任务结果
-  ↓
-返回最终答案
-```
-
-**Worker 类型**：
-- `search` — 信息检索
-- `code` — 代码分析与生成
-- `file` — 文件操作
-- `general` — 通用任务
-- `custom` — 自定义系统提示词
-
-### 上下文管理
-
-- **智能 Token 估算** — 区分 ASCII / CJK / 结构化文本，准确估算上下文消耗
-- **自动压缩** — 接近模型上下文限制时，自动压缩旧工具输出
-- **项目上下文注入** — 多 Agent 模式下，每个 Worker 自动获取项目状态（工作目录、git 状态、文件树、AGENT.md）
-
----
-
-## UI 特性
-
-- ✨ **暗黑模式原生设计** — 自定义 Theme 设计系统
-- 🚀 **流式 Markdown 渲染** — 智能缓冲合并（12fps + 500 字符批量刷新）
-- 🔧 **工具调用可视化** — 状态卡片 + 文件操作动画
-- 📁 **多会话管理** — 侧边栏切换、自动标题生成
-- 📋 **任务计划实时展示** — TaskPlanView 可视化任务分解与执行进度
-- 💭 **Thinking Content 折叠显示** — 支持 Claude extended thinking
-- 📎 **文件引用管理** — 支持拖拽文件到输入框，自动提取内容并注入上下文
-
----
-
-## 内置命令
-
-| 命令 | 描述 |
-|------|------|
-| `/init` | AI 分析项目结构并生成 AGENT.md 上下文文件 |
-| `/clear` | 清除当前对话历史 |
-| `/compact` | 压缩对话上下文，节省 Token 消耗 |
-| `/export` | 导出当前对话为 Markdown 文件 |
-| `/help` | 显示帮助信息 |
-
----
-
-## 项目结构
+### 模块化 Crate 架构
 
 ```
 rio-agent/
-├── App/                    # 应用入口与全局状态
-│   ├── RioAgentApp.swift         # @main 入口
-│   └── AppState.swift            # 全局配置、错误定义
-├── Agent/                  # Agent 引擎核心
-│   ├── AgentEngine.swift         # 单 Agent 对话引擎
-│   ├── MultiAgentEngine.swift    # 多 Agent 协作引擎
-│   ├── ConversationLoop.swift    # 统一执行循环（流式 + 非流式）
-│   ├── TaskPlanner.swift         # 任务分析与分解
-│   ├── AgentMemory.swift         # 记忆系统
-│   ├── CriticService.swift       # Critic 错误分析
-│   ├── ProjectAnalyzer.swift     # 项目结构分析
-│   ├── CodeNavigator.swift       # 代码导航
-│   ├── MultiFileCoordinator.swift# 多文件协调
-│   └── RefactoringAdvisor.swift  # 重构建议
-├── Services/               # AI API 服务层
-│   ├── AIService.swift           # 协议 + 工厂 + SSE 解析器
-│   ├── ClaudeService.swift       # Claude API
-│   ├── OpenAIService.swift       # OpenAI / 兼容 API
-│   └── RouterService.swift       # 路由服务
-├── Tools/                  # 工具系统
-│   ├── ToolProtocol.swift        # Tool 协议、CommandClassifier
-│   ├── ToolRegistry.swift        # 工具注册中心
-│   ├── ToolRecommender.swift     # 工具智能推荐
-│   └── [8 种内置工具实现]
-├── Models/                 # 数据模型
-│   ├── Message.swift             # 消息模型
-│   ├── Conversation.swift        # 会话模型
-│   ├── ToolCall.swift            # 工具调用与结果
-│   ├── ModelCapabilities.swift   # 模型能力矩阵
-│   ├── MultiAgentConfig.swift    # 多 Agent 配置
-│   └── ConfigSet.swift           # ConfigSet 管理
-├── Views/                  # SwiftUI 界面
-│   ├── ContentView.swift         # 主界面
-│   ├── SettingsView.swift        # 设置页
-│   ├── MultiAgentSettingsView.swift # 多 Agent 设置
-│   ├── ConfigSetManagementView.swift # ConfigSet 管理
-│   ├── EnhancedMessageBubble.swift   # 消息气泡
-│   ├── EnhancedToolCallCard.swift    # 工具调用卡片
-│   ├── MarkdownRenderer.swift    # Markdown 渲染器
-│   └── TaskPlanView.swift        # 任务计划视图
-├── ViewModels/             # 视图模型
-│   └── ComposerInputState.swift  # 输入状态与文件引用管理
-├── Utils/                  # 工具类
-│   ├── ProcessRunner.swift       # 进程运行器
-│   ├── PermissionManager.swift   # 权限管理
-│   ├── KeychainManager.swift     # Keychain 安全存储
-│   ├── PathSecurity.swift        # 路径安全检查
-│   └── Logger.swift              # 统一日志
-├── Theme/                  # 主题设计系统
-│   └── Theme.swift               # 颜色、渐变、间距、圆角、阴影
-└── Tests/                  # 单元测试
-    ├── SafetyRegressionTests.swift   # 安全回归测试
-    ├── ModelCapabilitiesTests.swift  # 模型能力测试
-    ├── MultiAgentRoutingTests.swift  # 多 Agent 路由测试
-    └── KeychainManagerTests.swift    # Keychain 测试
+├── crates/
+│   ├── rio-core          # Agent 引擎、消息类型、对话循环
+│   ├── rio-providers     # AI 提供商抽象（Claude/OpenAI/Gemini/DeepSeek）
+│   ├── rio-tools         # 8 种内置工具
+│   ├── rio-storage       # SQLite 持久化层
+│   ├── rio-security      # 命令风险分类、路径验证
+│   ├── rio-cli           # 命令行接口
+│   ├── rio-identity      # Agent 角色系统
+│   ├── rio-router        # A2A 路由、@mention 解析
+│   └── rio-memory        # 共享内存（Evidence/Lessons/Decisions）
+└── rio-agent-ui/         # Tauri GUI (Svelte 5 + TailwindCSS)
+```
+
+### 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| **后端** | Rust 1.75+, Tokio (异步), SQLx (数据库), Reqwest (HTTP) |
+| **前端** | Tauri 2.0, Svelte 5, TypeScript, Vite |
+| **AI 集成** | 流式 SSE, JSON Schema 工具调用 |
+| **存储** | SQLite, OS Keychain |
+| **安全** | 命令分级、路径验证、Keyring |
+
+### 执行流程
+
+#### 单 Agent 模式
+```
+用户输入 → AgentEngine
+  ↓
+AI Provider (流式)
+  ↓
+工具调用? 
+  ├─ 是 → 执行工具 → 返回结果 → AI Provider（继续）
+  └─ 否 → 返回最终响应
+```
+
+#### 多 Agent 模式
+```
+复杂任务 → MultiAgentEngine
+  ↓
+生成 Agent 实例（Orchestrator/Executor/Reviewer）
+  ↓
+A2A 消息路由（@mention）
+  ↓
+并发执行 + 共享内存
+  ↓
+死锁预防 + 超时保护
+  ↓
+结果聚合
 ```
 
 ---
 
 ## 开发指南
 
-### Xcode 项目管理
-
-⚠️ **重要**：Xcode 项目由 xcodegen 从 `project.yml` 生成，**不要手动修改 `.xcodeproj`**。
+### 项目结构
 
 ```bash
-# 新增/删除 Swift 文件后重新生成项目
-xcodegen generate
+# 工作区根目录
+/Users/liushunqiu/Desktop/rio-agent
+
+# Rust 代码
+crates/*/src/
+
+# Tauri GUI
+rio-agent-ui/
+  ├── src/                # Svelte 前端
+  ├── src-tauri/          # Rust 后端
+  └── dist/               # 构建产物
+```
+
+### 开发命令
+
+```bash
+# 构建所有 crates
+cargo build
+
+# 只构建 CLI
+cargo build --bin rio-cli
+
+# 运行测试（71 tests）
+cargo test
+
+# 检查特定 crate
+cargo check -p rio-core
+
+# 格式化代码
+cargo fmt
+
+# Lint（零警告要求）
+cargo clippy -- -D warnings
+
+# GUI 开发
+cd rio-agent-ui
+npm run tauri:dev
 ```
 
 ### 添加新工具
 
-1. 在 `Tools/` 创建实现 `Tool` 协议的类
-2. 实现 `name`、`description`、`parameters`、`execute(arguments:)`
-3. 在 `ToolRegistry.registerDefaultTools()` 中注册
+1. 在 `crates/rio-tools/src/` 创建新文件
+2. 实现 `Tool` trait
+3. 在 `register_default_tools()` 中注册
 
-示例：
+```rust
+pub struct MyTool;
 
-```swift
-class MyTool: Tool {
-    let name = "my_tool"
-    let description = "工具描述"
-    let parameters: [String: Any] = [
-        "type": "object",
-        "properties": [
-            "param": ["type": "string", "description": "参数描述"]
-        ],
-        "required": ["param"]
-    ]
-    
-    func execute(arguments: [String: Any]) async throws -> String {
-        // 工具实现
-        return "执行结果"
+#[async_trait]
+impl Tool for MyTool {
+    fn name(&self) -> &str { "my_tool" }
+    fn description(&self) -> &str { "Does something useful" }
+    fn parameters(&self) -> serde_json::Value { /* JSON schema */ }
+    async fn execute(&self, args: serde_json::Value) -> Result<String> {
+        // Implementation
     }
 }
 ```
 
-### 添加新 AI 服务提供商
+### 添加新 AI 提供商
 
-1. 在 `Services/` 创建实现 `AIService` 协议的类
-2. 在 `AIProvider` 枚举中添加新 case（`AppState.swift`）
-3. 在 `AIServiceFactory.createService()` 中添加新提供商分支
+1. 在 `crates/rio-providers/src/` 创建新文件
+2. 实现 `AIProvider` trait
+3. 实现 `send_message()` 和 `stream_message()` 方法
 
-### 测试命令分类
+```rust
+pub struct MyProvider {
+    api_key: String,
+    model: String,
+}
 
-**安全关键逻辑** — 修改 `CommandClassifier` 时务必在 `SafetyRegressionTests.swift` 添加测试用例：
-
-```swift
-func testCommandRiskLevel() {
-    XCTAssertEqual(CommandClassifier.classify("ls -la"), .safe)
-    XCTAssertEqual(CommandClassifier.classify("rm -rf /"), .dangerous)
-    XCTAssertEqual(CommandClassifier.classify("git commit"), .normal)
+#[async_trait]
+impl AIProvider for MyProvider {
+    async fn send_message(&self, messages: &[Message], tools: Option<Vec<Value>>) 
+        -> Result<Message> { /* ... */ }
     
-    // 测试复合命令
-    XCTAssertEqual(CommandClassifier.classify("ls && rm -rf /"), .dangerous)
+    async fn stream_message(&self, messages: &[Message], tools: Option<Vec<Value>>) 
+        -> Result<Receiver<Result<StreamChunk>>> { /* ... */ }
+    
+    fn model_name(&self) -> &str { &self.model }
 }
 ```
 
-### 运行测试
+### 测试策略
 
 ```bash
-# 命令行
-swift test
+# 运行所有测试
+cargo test
 
-# Xcode
-⌘U
+# 特定模块测试
+cargo test -p rio-security
+cargo test -p rio-router
+cargo test -p rio-memory
+
+# 显示输出
+cargo test -- --nocapture
 ```
 
-关键测试套件：
-- `SafetyRegressionTests` — 命令风险分类
-- `ModelCapabilitiesTests` — 模型模式匹配
-- `MultiAgentRoutingTests` — DAG 依赖解析
-- `KeychainManagerTests` — 安全存储操作
-
----
-
-## 技术细节
-
-### Info.plist 嵌入
-
-项目使用 SPM 的 `linkerSettings` 将 `Info.plist` 嵌入二进制文件（见 `Package.swift`），而非单独打包。plist 链接在 `__TEXT/__info_plist` 段。
-
-### API Key 存储策略
-
-| 签名状态 | 存储方式 | 说明 |
-|----------|----------|------|
-| 已签名 | macOS Keychain | 安全存储，需首次授权"总是允许" |
-| 未签名 | UserDefaults | 避免重复密码弹窗，适合本地开发 |
-
-配置元数据（provider、baseURL、model name）始终存储在 UserDefaults。
-
-### 流式响应解析
-
-使用 SSE（Server-Sent Events）格式，通过 `data:` 前缀标识数据块。支持不完整块的缓冲积累与断点续传。
-
-### 模型能力矩阵
-
-`ModelCapabilities` 使用数据驱动的模式匹配数据库，覆盖 30+ 模型：
-
-- **模式顺序敏感** — 更具体的模式（如 `gpt-4.1`）必须排在通用模式（如 `gpt-4`）之前
-- **自动检测** — 上下文窗口大小、thinking 模式、vision 支持、JSON 模式等
-
----
-
-## 常见问题
-
-### 1. 为什么重复弹出 Keychain 密码框？
-
-**原因**：应用未签名或签名不稳定。
-
-**解决方案**：
-```bash
-# 方式 1：使用稳定签名（推荐）
-RIO_DEVELOPMENT_TEAM=YOUR_TEAM_ID ./create_app.sh
-
-# 方式 2：使用未签名模式（自动切换到 UserDefaults 存储）
-./create_app.sh --unsigned
-```
-
-### 2. 如何切换 AI 模型？
-
-在设置页面（右上角齿轮图标）：
-1. 点击"管理 ConfigSet"
-2. 添加新的 ConfigSet（提供商 + Base URL + 模型名 + API Key）
-3. 在"执行模型"下拉框中选择新的 ConfigSet
-
-### 3. 多 Agent 模式什么时候触发？
-
-在设置页面启用"多 Agent 协作"，AI 会根据任务复杂度自动选择：
-- **simple / moderate** → 单 Agent 引擎
-- **complex / veryComplex** → 多 Agent 引擎
-
-### 4. 如何配置本地路由器（Qwen3.5-4B）？
-
-1. 启动本地 OpenAI 兼容 API 服务（如 vLLM、Ollama）
-2. 在设置页面启用"使用路由器"
-3. 选择"Qwen3.5-4B 路由"
-4. 配置 Base URL 和模型名
-
-**关键配置**：必须禁用 thinking 模式以避免 JSON 结构破坏：
-```json
-{
-  "chat_template_kwargs": {
-    "enable_thinking": false
-  }
-}
-```
-
-### 5. 项目上下文如何注入？
-
-- **单 Agent 模式** — 在 AGENT.md 文件中维护项目上下文，AI 自动读取
-- **多 Agent 模式** — `MultiAgentEngine.buildProjectContext()` 自动生成富上下文（工作目录、git 状态、文件树、AGENT.md），注入每个 Worker
-
----
-
-## 依赖声明
-
-🚀 **零外部依赖** — 纯 Swift 标准库 + Foundation + SwiftUI
-
-所有功能从零实现：
-- SSE 解析
-- JSON 处理
-- 进程执行
-- Keychain 操作
-
-最小化供应链风险。
-
----
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-提交前请确保：
-1. ✅ 所有测试通过（`swift test`）
-2. ✅ 代码符合项目风格
-3. ✅ 关键逻辑变更添加测试用例（尤其是 `CommandClassifier`、`ModelCapabilities`）
+**测试覆盖**（71 tests）:
+- rio-security: 8 tests (命令分类)
+- rio-router: 31 tests (@mention 解析 + A2A 路由)
+- rio-memory: 26 tests (Evidence/Lessons/Decisions)
+- rio-identity: 4 tests (角色和能力)
+- rio-core: 2 tests (基础功能)
 
 ---
 
@@ -474,15 +286,12 @@ MIT License
 
 ## 致谢
 
-感谢以下开源项目的灵感：
-- [Claude API](https://docs.anthropic.com/)
-- [OpenAI API](https://platform.openai.com/docs/)
-- [SwiftUI](https://developer.apple.com/xcode/swiftui/)
+架构灵感来源：
+- [Clowder AI](https://github.com/pico-rb/clowder-ai) - 多 Agent 协作设计
+- [Anthropic Claude](https://anthropic.com) - AI 能力支持
 
 ---
 
-<div align="center">
+**构建状态**: ✅ 所有测试通过 · ✅ 零 Clippy 警告 · ✅ Tauri GUI 可运行
 
-**Made with ❤️ using Swift & SwiftUI**
-
-</div>
+最后更新: 2026-06-21
